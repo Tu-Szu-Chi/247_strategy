@@ -1,0 +1,2 @@
+[console_scripts]
+qt-platform = qt_platform.cli.main:main

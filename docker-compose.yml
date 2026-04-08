@@ -1,0 +1,17 @@
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: qt-platform-timescaledb
+    environment:
+      POSTGRES_DB: trading
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - timescaledb-data:/var/lib/postgresql/data
+      - ./docker/init-timescaledb.sql:/docker-entrypoint-initdb.d/init-timescaledb.sql:ro
+
+volumes:
+  timescaledb-data:
+

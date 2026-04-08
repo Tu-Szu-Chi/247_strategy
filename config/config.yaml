@@ -1,0 +1,17 @@
+app:
+  timezone: "Asia/Taipei"
+  session_mode: "day_and_night"
+
+database:
+  url: "sqlite:///local.db"
+
+finmind:
+  base_url: "https://api.finmindtrade.com/api/v4"
+  token_env: "FINMIND_TOKEN"
+  rps_limit: 1
+  retry_limit: 2
+  backoff_factor: 2.0
+  timeout_seconds: 30
+
+reporting:
+  output_dir: "reports"

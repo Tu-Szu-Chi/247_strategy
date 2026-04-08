@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qt-platform"
+version = "0.1.0"
+description = "Research-first quantitative trading platform for Taiwan index futures."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "Quentin Tu" }
+]
+dependencies = [
+  "PyYAML>=6.0,<7.0",
+  "psycopg[binary]>=3.2,<4.0",
+]
+
+[project.optional-dependencies]
+reports = [
+  "quantstats>=0.0.62,<0.1",
+]
+dev = [
+  "pytest>=8.0,<9.0",
+]
+
+[project.scripts]
+qt-platform = "qt_platform.cli.main:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+

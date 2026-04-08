@@ -1,0 +1,16 @@
+phandas/
+Kronos/
+backtrader/
+.idea/
+.venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+dist/
+build/
+*.pyc
+*.pyo
+*.pyd
+*.db
+reports/
+.env
