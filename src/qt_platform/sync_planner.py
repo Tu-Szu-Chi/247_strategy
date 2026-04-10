@@ -37,15 +37,7 @@ class SyncPlan:
     items: list[SyncPlanItem]
 
     def to_dict(self) -> dict:
-        payload = asdict(self)
-        for item in payload["items"]:
-            item["missing_dates"] = [value.isoformat() for value in item["missing_dates"]]
-        for timeframe_total in payload["timeframe_totals"].values():
-            if "request_dates" in timeframe_total:
-                timeframe_total["request_dates"] = [value.isoformat() for value in timeframe_total["request_dates"]]
-        payload["start_date"] = self.start_date.isoformat()
-        payload["end_date"] = self.end_date.isoformat()
-        return payload
+        return _serialize_dates(asdict(self))
 
 
 def plan_sync(
@@ -197,3 +189,13 @@ def _estimated_requests(strategy: str, missing_dates: list[date]) -> int:
     if strategy in {"per_symbol_per_day_tick", "per_symbol_per_day_chain"}:
         return len(missing_dates)
     return len(missing_dates)
+
+
+def _serialize_dates(value):
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {key: _serialize_dates(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_serialize_dates(item) for item in value]
+    return value

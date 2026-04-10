@@ -35,10 +35,10 @@ class PostgresBarStore(BarRepository):
                     ) VALUES (
                         %(ts)s, %(trading_day)s, %(symbol)s, %(instrument_key)s, %(contract_month)s, %(strike_price)s, %(call_put)s, %(session)s, %(open)s, %(high)s, %(low)s, %(close)s, %(volume)s, %(open_interest)s, %(source)s, %(build_source)s
                     )
-                    ON CONFLICT (ts, symbol, contract_month, session) DO UPDATE SET
-                        instrument_key = EXCLUDED.instrument_key,
+                    ON CONFLICT (ts, instrument_key, contract_month, session) DO UPDATE SET
                         strike_price = EXCLUDED.strike_price,
                         call_put = EXCLUDED.call_put,
+                        symbol = EXCLUDED.symbol,
                         open = EXCLUDED.open,
                         high = EXCLUDED.high,
                         low = EXCLUDED.low,
@@ -159,7 +159,7 @@ class PostgresBarStore(BarRepository):
                         ts TIMESTAMPTZ NOT NULL,
                         trading_day DATE NOT NULL,
                         symbol TEXT NOT NULL,
-                        instrument_key TEXT,
+                        instrument_key TEXT NOT NULL,
                         contract_month TEXT NOT NULL,
                         strike_price DOUBLE PRECISION,
                         call_put TEXT,
@@ -172,7 +172,7 @@ class PostgresBarStore(BarRepository):
                         open_interest DOUBLE PRECISION,
                         source TEXT NOT NULL,
                         build_source TEXT NOT NULL DEFAULT 'historical',
-                        PRIMARY KEY (ts, symbol, contract_month, session)
+                        PRIMARY KEY (ts, instrument_key, contract_month, session)
                     )
                     """
                 )
@@ -182,7 +182,7 @@ class PostgresBarStore(BarRepository):
                         ts TIMESTAMPTZ NOT NULL,
                         trading_day DATE NOT NULL,
                         symbol TEXT NOT NULL,
-                        instrument_key TEXT,
+                        instrument_key TEXT NOT NULL,
                         contract_month TEXT NOT NULL,
                         strike_price DOUBLE PRECISION,
                         call_put TEXT,
@@ -195,7 +195,7 @@ class PostgresBarStore(BarRepository):
                         open_interest DOUBLE PRECISION,
                         source TEXT NOT NULL,
                         build_source TEXT NOT NULL DEFAULT 'historical',
-                        PRIMARY KEY (ts, symbol, contract_month, session)
+                        PRIMARY KEY (ts, instrument_key, contract_month, session)
                     )
                     """
                 )
@@ -261,16 +261,23 @@ class PostgresBarStore(BarRepository):
 
         cur.execute("ALTER TABLE bars_1m ALTER COLUMN trading_day SET NOT NULL")
         cur.execute("ALTER TABLE bars_1d ALTER COLUMN trading_day SET NOT NULL")
+        cur.execute("UPDATE bars_1m SET instrument_key = symbol WHERE instrument_key IS NULL")
+        cur.execute("UPDATE bars_1d SET instrument_key = symbol WHERE instrument_key IS NULL")
         cur.execute("UPDATE bars_1m SET build_source = 'historical' WHERE build_source IS NULL")
         cur.execute("UPDATE bars_1d SET build_source = 'historical' WHERE build_source IS NULL")
+        cur.execute("ALTER TABLE bars_1m ALTER COLUMN instrument_key SET NOT NULL")
+        cur.execute("ALTER TABLE bars_1d ALTER COLUMN instrument_key SET NOT NULL")
         cur.execute("ALTER TABLE bars_1m ALTER COLUMN build_source SET NOT NULL")
         cur.execute("ALTER TABLE bars_1d ALTER COLUMN build_source SET NOT NULL")
+        _ensure_primary_key(cur, "bars_1m", ("ts", "instrument_key", "contract_month", "session"))
+        _ensure_primary_key(cur, "bars_1d", ("ts", "instrument_key", "contract_month", "session"))
 
     @staticmethod
     def _bar_to_row(bar: Bar) -> dict:
         row = asdict(bar)
         row["ts"] = _utc(bar.ts)
         row["trading_day"] = bar.trading_day
+        row["instrument_key"] = bar.instrument_key or bar.symbol
         return row
 
     @staticmethod
@@ -315,3 +322,25 @@ def _table_name(timeframe: str) -> str:
     if timeframe not in mapping:
         raise ValueError(f"Unsupported timeframe for storage: {timeframe}")
     return mapping[timeframe]
+
+
+def _ensure_primary_key(cur, table: str, expected_columns: tuple[str, ...]) -> None:
+    cur.execute(
+        """
+        SELECT con.conname,
+               array_agg(att.attname ORDER BY ord.ordinality)
+        FROM pg_constraint con
+        JOIN pg_class rel ON rel.oid = con.conrelid
+        JOIN unnest(con.conkey) WITH ORDINALITY AS ord(attnum, ordinality) ON TRUE
+        JOIN pg_attribute att ON att.attrelid = rel.oid AND att.attnum = ord.attnum
+        WHERE rel.relname = %s AND con.contype = 'p'
+        GROUP BY con.conname
+        """,
+        (table,),
+    )
+    row = cur.fetchone()
+    if row and tuple(row[1]) == expected_columns:
+        return
+    if row:
+        cur.execute(f"ALTER TABLE {table} DROP CONSTRAINT {row[0]}")
+    cur.execute(f"ALTER TABLE {table} ADD PRIMARY KEY ({', '.join(expected_columns)})")

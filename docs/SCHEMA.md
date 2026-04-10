@@ -115,6 +115,10 @@
   - 不允許日資料寫進 `bars_1m`
   - `source` / `build_source` 語意與 `bars_1m` 相同
   - 目前也保留 `instrument_key / strike_price / call_put`
+  - 唯一鍵必須以 `instrument_key` 為主，不可只用 `symbol`
+    - `stock/future`: `instrument_key` 可等於 root symbol
+    - `option`: `instrument_key` 需包含 `symbol + contract_date + strike_price + call_put`
+  - 否則同一天整條 option chain 會互相覆蓋
 
 ### `raw_ticks`
 - 目前尚未落地

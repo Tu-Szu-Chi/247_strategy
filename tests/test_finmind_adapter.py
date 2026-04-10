@@ -179,6 +179,42 @@ class FinMindAdapterTest(unittest.TestCase):
         self.assertEqual(len(adapter.calls), 3)
         self.assertEqual(len(grouped["MTX"]), 3)
 
+    def test_fetch_option_daily_uses_v4_single_day_windows(self) -> None:
+        class StubFinMindAdapter(FinMindAdapter):
+            def __init__(self):
+                super().__init__(
+                    FinMindSettings(
+                        base_url="https://api.finmindtrade.com/api/v4",
+                        token_env="FINMIND_TOKEN",
+                        rps_limit=1,
+                        retry_limit=1,
+                        backoff_factor=2.0,
+                        timeout_seconds=30,
+                    )
+                )
+                self.calls = []
+
+            def _get(self, api_version: str = "v4", **params: str) -> dict:
+                self.calls.append((api_version, params))
+                return {"data": []}
+
+        adapter = StubFinMindAdapter()
+        adapter._fetch_option_daily(
+            symbol="TXO",
+            start_date=datetime(2024, 1, 1).date(),
+            end_date=datetime(2024, 1, 3).date(),
+            session_scope="day_and_night",
+        )
+
+        self.assertEqual(
+            adapter.calls,
+            [
+                ("v4", {"dataset": "TaiwanOptionDaily", "data_id": "TXO", "start_date": "2024-01-01", "end_date": "2024-01-01", "timeout_seconds": 120}),
+                ("v4", {"dataset": "TaiwanOptionDaily", "data_id": "TXO", "start_date": "2024-01-02", "end_date": "2024-01-02", "timeout_seconds": 120}),
+                ("v4", {"dataset": "TaiwanOptionDaily", "data_id": "TXO", "start_date": "2024-01-03", "end_date": "2024-01-03", "timeout_seconds": 120}),
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

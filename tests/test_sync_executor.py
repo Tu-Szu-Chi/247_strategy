@@ -163,7 +163,55 @@ class SyncExecutorTest(unittest.TestCase):
         actions = {(item.symbol, item.timeframe): item.action for item in result.items}
         self.assertEqual(actions[("2330", "1d")], "synced")
         self.assertEqual(actions[("TXO", "1d")], "synced")
-        self.assertEqual(len(provider.single_calls), 2)
+        self.assertEqual(len(provider.single_calls), 4)
+
+    def test_sync_registry_option_daily_continues_on_per_day_failure(self) -> None:
+        class FlakyOptionProvider(RecordingProvider):
+            def supports_history(self, market: str, instrument_type: str, symbol: str, timeframe: str) -> bool:
+                return market == "TAIFEX" and instrument_type == "option" and symbol == "TXO" and timeframe == "1d"
+
+            def fetch_history(self, symbol, start_date, end_date, timeframe, session_scope):
+                self.single_calls.append((symbol, start_date, end_date, timeframe, session_scope))
+                if start_date.isoformat() == "2024-01-02":
+                    raise RuntimeError("simulated timeout")
+                return [
+                    Bar(
+                        ts=datetime.combine(start_date, datetime.min.time()),
+                        trading_day=start_date,
+                        symbol=symbol,
+                        instrument_key=f"{symbol}:{start_date.isoformat()}",
+                        contract_month="202401W1",
+                        strike_price=18000.0,
+                        call_put="call",
+                        session="day",
+                        open=1,
+                        high=1,
+                        low=1,
+                        close=1,
+                        volume=1,
+                        open_interest=5,
+                        source="test",
+                    )
+                ]
+
+        with TemporaryDirectory() as temp_dir:
+            store = SQLiteBarStore(f"{temp_dir}/bars.db")
+            provider = FlakyOptionProvider()
+            result = sync_registry(
+                store=store,
+                provider=provider,
+                entries=[SymbolRegistryEntry(symbol="TXO", root_symbol="TXO", market="TAIFEX", instrument_type="option")],
+                start_date=date(2024, 1, 1),
+                end_date=date(2024, 1, 3),
+                timeframes=["1d"],
+                requests_per_hour=6000,
+                target_utilization=0.8,
+            )
+
+        self.assertEqual(len(provider.single_calls), 3)
+        self.assertEqual(result.items[0].action, "partial_failed")
+        self.assertEqual(result.items[0].upserted_bars, 2)
+        self.assertIn("Failed dates=1", result.items[0].notes[0])
 
 
 if __name__ == "__main__":

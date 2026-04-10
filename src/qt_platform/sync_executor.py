@@ -233,15 +233,29 @@ def _execute_item(
             ],
         )
 
+    if item.request_strategy == "per_symbol_per_day_chain":
+        return _execute_per_day_chain_item(
+            service=service,
+            item=item,
+            session_scope=session_scope,
+        )
+
     requested_start = item.missing_dates[0]
     requested_end = item.missing_dates[-1]
-    upserted = service.backfill(
-        symbol=item.root_symbol,
-        start_date=requested_start,
-        end_date=requested_end,
-        timeframe=item.timeframe,
-        session_scope=session_scope,
-    )
+    try:
+        upserted = service.backfill(
+            symbol=item.root_symbol,
+            start_date=requested_start,
+            end_date=requested_end,
+            timeframe=item.timeframe,
+            session_scope=session_scope,
+        )
+        action = "synced"
+        notes: list[str] = []
+    except Exception as exc:
+        upserted = 0
+        action = "failed"
+        notes = [f"Sync failed: {exc}"]
     return SyncExecutionItem(
         symbol=item.symbol,
         root_symbol=item.root_symbol,
@@ -249,10 +263,56 @@ def _execute_item(
         instrument_type=item.instrument_type,
         timeframe=item.timeframe,
         mode=item.mode,
-        action="synced",
+        action=action,
         requested_start_date=requested_start,
         requested_end_date=requested_end,
         upserted_bars=upserted,
         estimated_requests=item.estimated_requests,
-        notes=[],
+        notes=notes,
+    )
+
+
+def _execute_per_day_chain_item(
+    service: MaintenanceService,
+    item: SyncPlanItem,
+    session_scope: str,
+) -> SyncExecutionItem:
+    upserted_total = 0
+    failed_dates: list[date] = []
+
+    for day in item.missing_dates:
+        try:
+            upserted_total += service.backfill(
+                symbol=item.root_symbol,
+                start_date=day,
+                end_date=day,
+                timeframe=item.timeframe,
+                session_scope=session_scope,
+            )
+        except Exception:
+            failed_dates.append(day)
+
+    notes: list[str] = []
+    action = "synced"
+    if failed_dates:
+        action = "partial_failed" if upserted_total > 0 else "failed"
+        failed_preview = ", ".join(day.isoformat() for day in failed_dates[:5])
+        notes.append(
+            f"Failed dates={len(failed_dates)}. Sample: {failed_preview}"
+            + (" ..." if len(failed_dates) > 5 else "")
+        )
+
+    return SyncExecutionItem(
+        symbol=item.symbol,
+        root_symbol=item.root_symbol,
+        market=item.market,
+        instrument_type=item.instrument_type,
+        timeframe=item.timeframe,
+        mode=item.mode,
+        action=action,
+        requested_start_date=item.missing_dates[0],
+        requested_end_date=item.missing_dates[-1],
+        upserted_bars=upserted_total,
+        estimated_requests=item.estimated_requests,
+        notes=notes,
     )

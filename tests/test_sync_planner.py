@@ -95,6 +95,23 @@ class SyncPlannerTest(unittest.TestCase):
         self.assertEqual(items[("TXO", "1d")].estimated_requests, 3)
         self.assertEqual(plan.timeframe_totals["1d"]["estimated_requests"], 4)
 
+    def test_plan_sync_to_dict_serializes_nested_dates(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            store = SQLiteBarStore(f"{temp_dir}/bars.db")
+            plan = plan_sync(
+                store=store,
+                entries=[SymbolRegistryEntry(symbol="MTX", root_symbol="MTX", market="TAIFEX", instrument_type="future")],
+                start_date=datetime(2024, 1, 1).date(),
+                end_date=datetime(2024, 1, 2).date(),
+                timeframes=["1d"],
+                requests_per_hour=6000,
+                target_utilization=0.8,
+            )
+
+        payload = plan.to_dict()
+        request_dates = payload["timeframe_totals"]["1d"]["strategy_breakdown"]["bulk_daily_all_symbols"]["request_dates"]
+        self.assertEqual(request_dates, ["2024-01-01", "2024-01-02"])
+
 
 if __name__ == "__main__":
     unittest.main()

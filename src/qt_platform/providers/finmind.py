@@ -115,10 +115,10 @@ class FinMindAdapter(BaseProvider):
         bars: list[Bar] = []
         while day <= end_date:
             payload = self._get(
-                api_version="v3",
                 dataset=self.OPTION_DAILY_DATASET,
                 data_id=symbol,
-                date=day.isoformat(),
+                start_date=day.isoformat(),
+                end_date=day.isoformat(),
                 timeout_seconds=max(self.settings.timeout_seconds, 120),
             )
             bars.extend(self._normalize_option_row(row, session_scope=session_scope) for row in payload.get("data", []))

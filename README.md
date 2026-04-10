@@ -42,9 +42,11 @@ PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml ba
 - `sync-registry` executes historical sync from `config/symbols.csv`. In the current phase it runs `bootstrap` and `catch_up`, while `repair` is intentionally skipped unless `--allow-repair` is passed.
 - `1d` planning assumes FinMind bulk-daily requests can fetch all futures symbols for one date in one request.
 - `1m` planning assumes one request per `symbol + date`, and currently checks `trading_day` presence only rather than minute-level completeness.
-- `sync-registry` currently supports `TAIFEX` historical data through FinMind. Other markets in the registry are left in place but reported as `skipped_unsupported`.
+- `sync-registry` currently supports `TAIFEX futures 1d/1m`, `TWSE stocks 1d`, and `TAIFEX TXO 1d` through FinMind.
 - `config/symbols.csv` now supports `instrument_type`, so futures / options / stocks can coexist in the registry without forcing the current provider to sync unsupported products.
 - For Taiwan index options, `TXO` is the only FinMind `TaiwanOptionDaily` id currently kept in the active registry. Other TAIFEX option product codes should be re-added only after provider behavior is verified.
+- `TaiwanOptionDaily` should use `v4` single-day windows. The older `v3 + date` path was observed to hang on real requests.
+- Option daily storage must key on `instrument_key` instead of bare `symbol`, or one trading day of `TXO` chain data will overwrite itself.
 - `TaiwanFuturesTick` requires a Sponsor-capable FinMind account. With a free-level token, `1m` backfill will fail upstream even though the pipeline is implemented.
 - Important data structures are documented in `docs/SCHEMA.md`.
 - Data-source boundaries and pipeline design are documented in `docs/DATA_PIPELINE.md`.
