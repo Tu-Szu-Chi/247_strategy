@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 from typing import Any
 
@@ -14,6 +14,7 @@ class Side(str, Enum):
 @dataclass(frozen=True)
 class Bar:
     ts: datetime
+    trading_day: date
     symbol: str
     contract_month: str
     session: str
@@ -24,6 +25,10 @@ class Bar:
     volume: float
     open_interest: float | None
     source: str
+    instrument_key: str | None = None
+    strike_price: float | None = None
+    call_put: str | None = None
+    build_source: str = "historical"
 
 
 @dataclass(frozen=True)
@@ -72,4 +77,3 @@ class BacktestResult:
     fills: list[Fill]
     trades: list[Trade]
     metrics: dict[str, Any] = field(default_factory=dict)
-

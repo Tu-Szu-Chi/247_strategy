@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta
 
 from qt_platform.domain import Gap
 from qt_platform.providers.base import BaseProvider
+from qt_platform.session import iter_expected_bar_timestamps
 from qt_platform.storage.base import BarRepository
 
 
@@ -12,23 +13,19 @@ class MaintenanceService:
         self.provider = provider
         self.store = store
 
-    def scan_gaps(self, symbol: str, start: datetime, end: datetime, expected_step: timedelta) -> list[Gap]:
+    def scan_gaps(
+        self,
+        symbol: str,
+        start: datetime,
+        end: datetime,
+        expected_step: timedelta,
+        session_scope: str = "day_and_night",
+    ) -> list[Gap]:
         bars = self.store.list_bars(timeframe="1m", symbol=symbol, start=start, end=end)
-        if not bars:
-            return [Gap(start=start, end=end)]
-
-        gaps: list[Gap] = []
-        expected = start
-        for bar in bars:
-            if bar.ts > expected:
-                gaps.append(Gap(start=expected, end=bar.ts - expected_step))
-            next_expected = bar.ts + expected_step
-            if next_expected > expected:
-                expected = next_expected
-
-        if expected <= end:
-            gaps.append(Gap(start=expected, end=end))
-        return gaps
+        expected = iter_expected_bar_timestamps(start, end, expected_step, session_scope)
+        actual = {bar.ts for bar in bars}
+        missing = [ts for ts in expected if ts not in actual]
+        return _compress_missing_timestamps(missing, expected_step)
 
     def catch_up(
         self,
@@ -68,3 +65,21 @@ class MaintenanceService:
             cursor_ts=cursor_ts,
         )
         return inserted
+
+
+def _compress_missing_timestamps(missing: list[datetime], step: timedelta) -> list[Gap]:
+    if not missing:
+        return []
+
+    gaps: list[Gap] = []
+    gap_start = missing[0]
+    previous = missing[0]
+
+    for ts in missing[1:]:
+        if ts - previous != step:
+            gaps.append(Gap(start=gap_start, end=previous))
+            gap_start = ts
+        previous = ts
+
+    gaps.append(Gap(start=gap_start, end=previous))
+    return gaps

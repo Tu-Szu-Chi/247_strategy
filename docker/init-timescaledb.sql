@@ -2,8 +2,12 @@ CREATE EXTENSION IF NOT EXISTS timescaledb;
 
 CREATE TABLE IF NOT EXISTS bars_1m (
     ts TIMESTAMPTZ NOT NULL,
+    trading_day DATE NOT NULL,
     symbol TEXT NOT NULL,
+    instrument_key TEXT,
     contract_month TEXT NOT NULL,
+    strike_price DOUBLE PRECISION,
+    call_put TEXT,
     session TEXT NOT NULL,
     open DOUBLE PRECISION NOT NULL,
     high DOUBLE PRECISION NOT NULL,
@@ -12,6 +16,7 @@ CREATE TABLE IF NOT EXISTS bars_1m (
     volume DOUBLE PRECISION NOT NULL,
     open_interest DOUBLE PRECISION,
     source TEXT NOT NULL,
+    build_source TEXT NOT NULL DEFAULT 'historical',
     PRIMARY KEY (ts, symbol, contract_month, session)
 );
 
@@ -19,8 +24,12 @@ SELECT create_hypertable('bars_1m', 'ts', if_not_exists => TRUE);
 
 CREATE TABLE IF NOT EXISTS bars_1d (
     ts TIMESTAMPTZ NOT NULL,
+    trading_day DATE NOT NULL,
     symbol TEXT NOT NULL,
+    instrument_key TEXT,
     contract_month TEXT NOT NULL,
+    strike_price DOUBLE PRECISION,
+    call_put TEXT,
     session TEXT NOT NULL,
     open DOUBLE PRECISION NOT NULL,
     high DOUBLE PRECISION NOT NULL,
@@ -29,6 +38,7 @@ CREATE TABLE IF NOT EXISTS bars_1d (
     volume DOUBLE PRECISION NOT NULL,
     open_interest DOUBLE PRECISION,
     source TEXT NOT NULL,
+    build_source TEXT NOT NULL DEFAULT 'historical',
     PRIMARY KEY (ts, symbol, contract_month, session)
 );
 

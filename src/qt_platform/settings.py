@@ -42,11 +42,19 @@ class ReportingSettings:
 
 
 @dataclass(frozen=True)
+class SyncSettings:
+    registry_path: str = "config/symbols.csv"
+    requests_per_hour: int = 6000
+    target_utilization: float = 0.8
+
+
+@dataclass(frozen=True)
 class Settings:
     app: AppSettings
     database: DatabaseSettings
     finmind: FinMindSettings
     reporting: ReportingSettings
+    sync: SyncSettings
 
 
 def load_settings(path: str | Path) -> Settings:
@@ -61,6 +69,7 @@ def load_settings(path: str | Path) -> Settings:
         database=DatabaseSettings(**_section(raw, "database")),
         finmind=FinMindSettings(**_section(raw, "finmind")),
         reporting=ReportingSettings(**_section(raw, "reporting")),
+        sync=SyncSettings(**_section(raw, "sync")),
     )
 
 

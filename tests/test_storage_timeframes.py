@@ -10,8 +10,8 @@ class StorageTimeframesTest(unittest.TestCase):
     def test_1m_and_1d_are_stored_separately(self) -> None:
         with TemporaryDirectory() as temp_dir:
             store = SQLiteBarStore(f"{temp_dir}/bars.db")
-            minute_bar = Bar(datetime(2024, 1, 2, 8, 45), "TX", "202401", "day", 1, 2, 0.5, 1.5, 10, None, "test")
-            daily_bar = Bar(datetime(2024, 1, 2, 0, 0), "TX", "202401", "day", 3, 4, 2, 3.5, 100, 50, "test")
+            minute_bar = Bar(datetime(2024, 1, 2, 8, 45), datetime(2024, 1, 2).date(), "TX", "202401", "day", 1, 2, 0.5, 1.5, 10, None, "test")
+            daily_bar = Bar(datetime(2024, 1, 2, 0, 0), datetime(2024, 1, 2).date(), "TX", "202401", "day", 3, 4, 2, 3.5, 100, 50, "test")
 
             store.upsert_bars("1m", [minute_bar])
             store.upsert_bars("1d", [daily_bar])

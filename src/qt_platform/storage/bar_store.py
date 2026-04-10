@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import asdict
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Iterable
 
@@ -13,8 +13,12 @@ from qt_platform.storage.base import BarRepository
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS bars_1m (
     ts TEXT NOT NULL,
+    trading_day TEXT NOT NULL,
     symbol TEXT NOT NULL,
+    instrument_key TEXT,
     contract_month TEXT NOT NULL,
+    strike_price REAL,
+    call_put TEXT,
     session TEXT NOT NULL,
     open REAL NOT NULL,
     high REAL NOT NULL,
@@ -23,13 +27,18 @@ CREATE TABLE IF NOT EXISTS bars_1m (
     volume REAL NOT NULL,
     open_interest REAL,
     source TEXT NOT NULL,
+    build_source TEXT NOT NULL DEFAULT 'historical',
     PRIMARY KEY (ts, symbol, contract_month, session)
 );
 
 CREATE TABLE IF NOT EXISTS bars_1d (
     ts TEXT NOT NULL,
+    trading_day TEXT NOT NULL,
     symbol TEXT NOT NULL,
+    instrument_key TEXT,
     contract_month TEXT NOT NULL,
+    strike_price REAL,
+    call_put TEXT,
     session TEXT NOT NULL,
     open REAL NOT NULL,
     high REAL NOT NULL,
@@ -38,6 +47,7 @@ CREATE TABLE IF NOT EXISTS bars_1d (
     volume REAL NOT NULL,
     open_interest REAL,
     source TEXT NOT NULL,
+    build_source TEXT NOT NULL DEFAULT 'historical',
     PRIMARY KEY (ts, symbol, contract_month, session)
 );
 
@@ -67,18 +77,22 @@ class SQLiteBarStore(BarRepository):
             conn.executemany(
                 f"""
                 INSERT INTO {table} (
-                    ts, symbol, contract_month, session, open, high, low, close, volume, open_interest, source
+                    ts, trading_day, symbol, instrument_key, contract_month, strike_price, call_put, session, open, high, low, close, volume, open_interest, source, build_source
                 ) VALUES (
-                    :ts, :symbol, :contract_month, :session, :open, :high, :low, :close, :volume, :open_interest, :source
+                    :ts, :trading_day, :symbol, :instrument_key, :contract_month, :strike_price, :call_put, :session, :open, :high, :low, :close, :volume, :open_interest, :source, :build_source
                 )
                 ON CONFLICT(ts, symbol, contract_month, session) DO UPDATE SET
+                    instrument_key=excluded.instrument_key,
+                    strike_price=excluded.strike_price,
+                    call_put=excluded.call_put,
                     open=excluded.open,
                     high=excluded.high,
                     low=excluded.low,
                     close=excluded.close,
                     volume=excluded.volume,
                     open_interest=excluded.open_interest,
-                    source=excluded.source
+                    source=excluded.source,
+                    build_source=excluded.build_source
                 """,
                 rows,
             )
@@ -89,7 +103,7 @@ class SQLiteBarStore(BarRepository):
         with sqlite3.connect(self.path) as conn:
             cursor = conn.execute(
                 f"""
-                SELECT ts, symbol, contract_month, session, open, high, low, close, volume, open_interest, source
+                SELECT ts, trading_day, symbol, instrument_key, contract_month, strike_price, call_put, session, open, high, low, close, volume, open_interest, source, build_source
                 FROM {table}
                 WHERE symbol = ? AND ts >= ? AND ts <= ?
                 ORDER BY ts
@@ -110,6 +124,27 @@ class SQLiteBarStore(BarRepository):
         if not row or row[0] is None:
             return None
         return datetime.fromisoformat(row[0])
+
+    def list_trading_days(
+        self,
+        timeframe: str,
+        symbol: str,
+        start_date: date,
+        end_date: date,
+    ) -> list[date]:
+        table = _table_name(timeframe)
+        with sqlite3.connect(self.path) as conn:
+            cursor = conn.execute(
+                f"""
+                SELECT DISTINCT trading_day
+                FROM {table}
+                WHERE symbol = ? AND trading_day >= ? AND trading_day <= ?
+                ORDER BY trading_day
+                """,
+                (symbol, start_date.isoformat(), end_date.isoformat()),
+            )
+            rows = cursor.fetchall()
+        return [datetime.fromisoformat(f"{row[0]}T00:00:00").date() for row in rows]
 
     def update_sync_cursor(
         self,
@@ -163,27 +198,45 @@ class SQLiteBarStore(BarRepository):
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self.path) as conn:
             conn.executescript(SCHEMA)
+            for table in ("bars_1m", "bars_1d"):
+                for ddl in (
+                    f"ALTER TABLE {table} ADD COLUMN instrument_key TEXT",
+                    f"ALTER TABLE {table} ADD COLUMN strike_price REAL",
+                    f"ALTER TABLE {table} ADD COLUMN call_put TEXT",
+                    f"ALTER TABLE {table} ADD COLUMN build_source TEXT NOT NULL DEFAULT 'historical'",
+                ):
+                    try:
+                        conn.execute(ddl)
+                    except sqlite3.OperationalError as exc:
+                        if "duplicate column name" not in str(exc).lower():
+                            raise
 
     @staticmethod
     def _bar_to_row(bar: Bar) -> dict:
         row = asdict(bar)
         row["ts"] = bar.ts.isoformat()
+        row["trading_day"] = bar.trading_day.isoformat()
         return row
 
     @staticmethod
     def _row_to_bar(row: tuple) -> Bar:
         return Bar(
             ts=datetime.fromisoformat(row[0]),
-            symbol=row[1],
-            contract_month=row[2],
-            session=row[3],
-            open=float(row[4]),
-            high=float(row[5]),
-            low=float(row[6]),
-            close=float(row[7]),
-            volume=float(row[8]),
-            open_interest=float(row[9]) if row[9] is not None else None,
-            source=row[10],
+            trading_day=datetime.fromisoformat(f"{row[1]}T00:00:00").date(),
+            symbol=row[2],
+            instrument_key=row[3],
+            contract_month=row[4],
+            strike_price=float(row[5]) if row[5] is not None else None,
+            call_put=row[6],
+            session=row[7],
+            open=float(row[8]),
+            high=float(row[9]),
+            low=float(row[10]),
+            close=float(row[11]),
+            volume=float(row[12]),
+            open_interest=float(row[13]) if row[13] is not None else None,
+            source=row[14],
+            build_source=row[15],
         )
 
 

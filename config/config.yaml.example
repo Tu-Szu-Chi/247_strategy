@@ -16,3 +16,7 @@ finmind:
 reporting:
   output_dir: "reports"
 
+sync:
+  registry_path: "config/symbols.csv"
+  requests_per_hour: 6000
+  target_utilization: 0.8

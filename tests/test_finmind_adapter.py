@@ -2,10 +2,29 @@ import unittest
 from datetime import datetime
 
 from qt_platform.providers.finmind import FinMindAdapter
+from qt_platform.settings import FinMindSettings
 
 
 class FinMindAdapterTest(unittest.TestCase):
-    def test_normalize_row_maps_fields(self) -> None:
+    def test_supports_history_only_taifex(self) -> None:
+        adapter = FinMindAdapter(
+            FinMindSettings(
+                base_url="https://api.finmindtrade.com/api/v4",
+                token_env="FINMIND_TOKEN",
+                rps_limit=1,
+                retry_limit=1,
+                backoff_factor=2.0,
+                timeout_seconds=30,
+            )
+        )
+
+        self.assertTrue(adapter.supports_history(market="TAIFEX", instrument_type="future", symbol="MTX", timeframe="1d"))
+        self.assertTrue(adapter.supports_history(market="TAIFEX", instrument_type="future", symbol="MTX", timeframe="1m"))
+        self.assertTrue(adapter.supports_history(market="TWSE", instrument_type="stock", symbol="2330", timeframe="1d"))
+        self.assertTrue(adapter.supports_history(market="TAIFEX", instrument_type="option", symbol="TXO", timeframe="1d"))
+        self.assertFalse(adapter.supports_history(market="TAIFEX", instrument_type="option", symbol="TXO", timeframe="1m"))
+
+    def test_normalize_futures_row_maps_fields(self) -> None:
         row = {
             "date": "2024-04-08",
             "futures_id": "TX",
@@ -19,14 +38,62 @@ class FinMindAdapterTest(unittest.TestCase):
             "open_interest": 98765,
         }
 
-        bar = FinMindAdapter._normalize_row(row, session_scope="day_and_night")
+        bar = FinMindAdapter._normalize_futures_row(row, session_scope="day_and_night")
 
         self.assertEqual(bar.ts, datetime(2024, 4, 8, 0, 0, 0))
+        self.assertEqual(bar.trading_day.isoformat(), "2024-04-08")
         self.assertEqual(bar.symbol, "TX")
+        self.assertEqual(bar.instrument_key, "TX")
         self.assertEqual(bar.contract_month, "202404")
         self.assertEqual(bar.session, "day")
         self.assertEqual(bar.close, 20050.0)
         self.assertEqual(bar.open_interest, 98765.0)
+        self.assertEqual(bar.build_source, "finmind_daily")
+
+    def test_normalize_stock_row_maps_fields(self) -> None:
+        row = {
+            "date": "2024-04-08",
+            "stock_id": "2330",
+            "open": 800,
+            "max": 820,
+            "min": 790,
+            "close": 815,
+            "Trading_Volume": 123456,
+        }
+
+        bar = FinMindAdapter._normalize_stock_row(row)
+
+        self.assertEqual(bar.symbol, "2330")
+        self.assertEqual(bar.instrument_key, "2330")
+        self.assertEqual(bar.contract_month, "")
+        self.assertEqual(bar.session, "day")
+        self.assertEqual(bar.volume, 123456.0)
+        self.assertEqual(bar.build_source, "finmind_stock_daily")
+
+    def test_normalize_option_row_maps_fields(self) -> None:
+        row = {
+            "date": "2024-04-08",
+            "option_id": "TXO",
+            "contract_date": "202404W1",
+            "strike_price": 20000,
+            "call_put": "call",
+            "trading_session": "position",
+            "open": 100,
+            "max": 110,
+            "min": 95,
+            "close": 105,
+            "volume": 321,
+            "open_interest": 999,
+        }
+
+        bar = FinMindAdapter._normalize_option_row(row, session_scope="day_and_night")
+
+        self.assertEqual(bar.symbol, "TXO")
+        self.assertEqual(bar.contract_month, "202404W1")
+        self.assertEqual(bar.strike_price, 20000.0)
+        self.assertEqual(bar.call_put, "call")
+        self.assertEqual(bar.open_interest, 999.0)
+        self.assertEqual(bar.build_source, "finmind_option_daily")
 
     def test_aggregate_ticks_to_minute_bars(self) -> None:
         rows = [
@@ -57,12 +124,60 @@ class FinMindAdapterTest(unittest.TestCase):
 
         self.assertEqual(len(bars), 1)
         self.assertEqual(bars[0].ts, datetime(2024, 4, 8, 8, 45))
+        self.assertEqual(bars[0].trading_day.isoformat(), "2024-04-08")
         self.assertEqual(bars[0].open, 20000.0)
         self.assertEqual(bars[0].high, 20010.0)
         self.assertEqual(bars[0].low, 19990.0)
         self.assertEqual(bars[0].close, 19990.0)
         self.assertEqual(bars[0].volume, 6.0)
         self.assertEqual(bars[0].session, "day")
+        self.assertEqual(bars[0].instrument_key, "TX")
+        self.assertEqual(bars[0].build_source, "finmind_tick_agg")
+
+    def test_fetch_daily_batch_calls_one_request_per_day(self) -> None:
+        class StubFinMindAdapter(FinMindAdapter):
+            def __init__(self):
+                super().__init__(
+                    FinMindSettings(
+                        base_url="https://api.finmindtrade.com/api/v4",
+                        token_env="FINMIND_TOKEN",
+                        rps_limit=1,
+                        retry_limit=1,
+                        backoff_factor=2.0,
+                        timeout_seconds=30,
+                    )
+                )
+                self.calls = []
+
+            def _get(self, api_version: str = "v4", **params: str) -> dict:
+                self.calls.append((api_version, params))
+                return {
+                    "data": [
+                        {
+                            "date": params["start_date"],
+                            "futures_id": "MTX",
+                            "contract_date": "202401",
+                            "trading_session": "position",
+                            "open": 1,
+                            "max": 1,
+                            "min": 1,
+                            "close": 1,
+                            "volume": 1,
+                            "open_interest": 1,
+                        }
+                    ]
+                }
+
+        adapter = StubFinMindAdapter()
+        grouped = adapter._fetch_daily_batch(
+            symbols=["MTX"],
+            start_date=datetime(2024, 1, 1).date(),
+            end_date=datetime(2024, 1, 3).date(),
+            session_scope="day_and_night",
+        )
+
+        self.assertEqual(len(adapter.calls), 3)
+        self.assertEqual(len(grouped["MTX"]), 3)
 
 
 if __name__ == "__main__":

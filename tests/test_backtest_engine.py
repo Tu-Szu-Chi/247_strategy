@@ -21,8 +21,8 @@ class BacktestEngineTest(unittest.TestCase):
     def test_signal_fills_on_next_open(self) -> None:
         start = datetime(2024, 1, 1, 8, 45)
         bars = [
-            Bar(start, "TX", "202401", "day", 100, 101, 99, 100, 10, None, "test"),
-            Bar(start + timedelta(minutes=1), "TX", "202401", "day", 105, 106, 104, 105, 10, None, "test"),
+            Bar(start, start.date(), "TX", "202401", "day", 100, 101, 99, 100, 10, None, "test"),
+            Bar(start + timedelta(minutes=1), start.date(), "TX", "202401", "day", 105, 106, 104, 105, 10, None, "test"),
         ]
 
         result = run_backtest(bars=bars, strategy=OneShotStrategy(), config=BacktestConfig(starting_cash=1000))
