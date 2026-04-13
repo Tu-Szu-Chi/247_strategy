@@ -16,6 +16,16 @@ finmind:
 reporting:
   output_dir: "reports"
 
+shioaji:
+  api_key_env: "SH_API_KEY"
+  secret_key_env: "SH_SECRET_KEY"
+  daily_limit_bytes: 524288000
+  pause_threshold_ratio: 0.99
+  usage_check_interval_seconds: 30.0
+  usage_reset_hour: 0
+  usage_reset_minute: 0
+  usage_reset_buffer_seconds: 60
+
 sync:
   registry_path: "config/symbols.csv"
   requests_per_hour: 6000

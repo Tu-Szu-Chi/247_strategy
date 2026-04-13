@@ -6,7 +6,8 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Iterable
 
-from qt_platform.domain import Bar
+from qt_platform.domain import Bar, CanonicalTick, LiveRunMetadata
+from qt_platform.features import MinuteForceFeatures
 from qt_platform.session import trading_day_for
 from qt_platform.storage.base import BarRepository
 
@@ -27,6 +28,8 @@ CREATE TABLE IF NOT EXISTS bars_1m (
     close REAL NOT NULL,
     volume REAL NOT NULL,
     open_interest REAL,
+    up_ticks REAL,
+    down_ticks REAL,
     source TEXT NOT NULL,
     build_source TEXT NOT NULL DEFAULT 'historical',
     PRIMARY KEY (ts, instrument_key, contract_month, session)
@@ -47,6 +50,8 @@ CREATE TABLE IF NOT EXISTS bars_1d (
     close REAL NOT NULL,
     volume REAL NOT NULL,
     open_interest REAL,
+    up_ticks REAL,
+    down_ticks REAL,
     source TEXT NOT NULL,
     build_source TEXT NOT NULL DEFAULT 'historical',
     PRIMARY KEY (ts, instrument_key, contract_month, session)
@@ -60,6 +65,64 @@ CREATE TABLE IF NOT EXISTS sync_state (
     cursor_ts TEXT,
     updated_at TEXT NOT NULL,
     PRIMARY KEY (source, symbol, timeframe, session_scope)
+);
+
+CREATE TABLE IF NOT EXISTS raw_ticks (
+    ts TEXT NOT NULL,
+    trading_day TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    instrument_key TEXT NOT NULL,
+    contract_month TEXT NOT NULL,
+    strike_price REAL,
+    call_put TEXT,
+    session TEXT NOT NULL,
+    price REAL NOT NULL,
+    size REAL NOT NULL,
+    tick_direction TEXT,
+    total_volume REAL,
+    bid_side_total_vol REAL,
+    ask_side_total_vol REAL,
+    source TEXT NOT NULL,
+    payload_json TEXT,
+    PRIMARY KEY (ts, instrument_key, price, size, source)
+);
+
+CREATE TABLE IF NOT EXISTS minute_force_features_1m (
+    ts TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    instrument_key TEXT NOT NULL,
+    contract_month TEXT NOT NULL,
+    strike_price REAL,
+    call_put TEXT,
+    run_id TEXT NOT NULL DEFAULT '',
+    close REAL NOT NULL,
+    volume REAL NOT NULL,
+    up_ticks REAL,
+    down_ticks REAL,
+    tick_total REAL NOT NULL,
+    net_tick_count REAL NOT NULL,
+    tick_bias_ratio REAL NOT NULL,
+    volume_per_tick REAL,
+    force_score REAL NOT NULL,
+    PRIMARY KEY (ts, instrument_key, contract_month, run_id)
+);
+
+CREATE TABLE IF NOT EXISTS live_run_metadata (
+    run_id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    session_scope TEXT NOT NULL,
+    topic_count INTEGER NOT NULL,
+    symbols_json TEXT NOT NULL,
+    codes_json TEXT,
+    option_root TEXT,
+    underlying_future_symbol TEXT,
+    expiry_count INTEGER,
+    atm_window INTEGER,
+    call_put TEXT,
+    reference_price REAL,
+    status TEXT NOT NULL
 );
 """
 
@@ -78,9 +141,9 @@ class SQLiteBarStore(BarRepository):
             conn.executemany(
                 f"""
                 INSERT INTO {table} (
-                    ts, trading_day, symbol, instrument_key, contract_month, strike_price, call_put, session, open, high, low, close, volume, open_interest, source, build_source
+                    ts, trading_day, symbol, instrument_key, contract_month, strike_price, call_put, session, open, high, low, close, volume, open_interest, up_ticks, down_ticks, source, build_source
                 ) VALUES (
-                    :ts, :trading_day, :symbol, :instrument_key, :contract_month, :strike_price, :call_put, :session, :open, :high, :low, :close, :volume, :open_interest, :source, :build_source
+                    :ts, :trading_day, :symbol, :instrument_key, :contract_month, :strike_price, :call_put, :session, :open, :high, :low, :close, :volume, :open_interest, :up_ticks, :down_ticks, :source, :build_source
                 )
                 ON CONFLICT(ts, instrument_key, contract_month, session) DO UPDATE SET
                     strike_price=excluded.strike_price,
@@ -92,6 +155,8 @@ class SQLiteBarStore(BarRepository):
                     close=excluded.close,
                     volume=excluded.volume,
                     open_interest=excluded.open_interest,
+                    up_ticks=excluded.up_ticks,
+                    down_ticks=excluded.down_ticks,
                     source=excluded.source,
                     build_source=excluded.build_source
                 """,
@@ -104,7 +169,7 @@ class SQLiteBarStore(BarRepository):
         with sqlite3.connect(self.path) as conn:
             cursor = conn.execute(
                 f"""
-                SELECT ts, trading_day, symbol, instrument_key, contract_month, strike_price, call_put, session, open, high, low, close, volume, open_interest, source, build_source
+                SELECT ts, trading_day, symbol, instrument_key, contract_month, strike_price, call_put, session, open, high, low, close, volume, open_interest, up_ticks, down_ticks, source, build_source
                 FROM {table}
                 WHERE symbol = ? AND ts >= ? AND ts <= ?
                 ORDER BY ts
@@ -195,6 +260,180 @@ class SQLiteBarStore(BarRepository):
             return None
         return datetime.fromisoformat(row[0])
 
+    def append_ticks(self, ticks: Iterable[CanonicalTick]) -> int:
+        rows = [self._tick_to_row(tick) for tick in ticks]
+        if not rows:
+            return 0
+        with sqlite3.connect(self.path) as conn:
+            conn.executemany(
+                """
+                INSERT INTO raw_ticks (
+                    ts, trading_day, symbol, instrument_key, contract_month, strike_price, call_put, session, price, size, tick_direction, total_volume, bid_side_total_vol, ask_side_total_vol, source, payload_json
+                ) VALUES (
+                    :ts, :trading_day, :symbol, :instrument_key, :contract_month, :strike_price, :call_put, :session, :price, :size, :tick_direction, :total_volume, :bid_side_total_vol, :ask_side_total_vol, :source, :payload_json
+                )
+                ON CONFLICT(ts, instrument_key, price, size, source) DO UPDATE SET
+                    trading_day=excluded.trading_day,
+                    symbol=excluded.symbol,
+                    contract_month=excluded.contract_month,
+                    strike_price=excluded.strike_price,
+                    call_put=excluded.call_put,
+                    session=excluded.session,
+                    tick_direction=excluded.tick_direction,
+                    total_volume=excluded.total_volume,
+                    bid_side_total_vol=excluded.bid_side_total_vol,
+                    ask_side_total_vol=excluded.ask_side_total_vol,
+                    payload_json=excluded.payload_json
+                """,
+                rows,
+            )
+        return len(rows)
+
+    def list_ticks(self, symbol: str, start: datetime, end: datetime) -> list[CanonicalTick]:
+        with sqlite3.connect(self.path) as conn:
+            cursor = conn.execute(
+                """
+                SELECT ts, trading_day, symbol, instrument_key, contract_month, strike_price, call_put, session, price, size, tick_direction, total_volume, bid_side_total_vol, ask_side_total_vol, source, payload_json
+                FROM raw_ticks
+                WHERE symbol = ? AND ts >= ? AND ts <= ?
+                ORDER BY ts
+                """,
+                (symbol, start.isoformat(), end.isoformat()),
+            )
+            rows = cursor.fetchall()
+        return [self._row_to_tick(row) for row in rows]
+
+    def upsert_minute_force_features(self, features: Iterable[MinuteForceFeatures]) -> int:
+        rows = [self._feature_to_row(feature) for feature in features]
+        if not rows:
+            return 0
+        with sqlite3.connect(self.path) as conn:
+            conn.executemany(
+                """
+                INSERT INTO minute_force_features_1m (
+                    ts, symbol, instrument_key, contract_month, strike_price, call_put, run_id, close, volume, up_ticks, down_ticks,
+                    tick_total, net_tick_count, tick_bias_ratio, volume_per_tick, force_score
+                ) VALUES (
+                    :ts, :symbol, :instrument_key, :contract_month, :strike_price, :call_put, :run_id, :close, :volume, :up_ticks, :down_ticks,
+                    :tick_total, :net_tick_count, :tick_bias_ratio, :volume_per_tick, :force_score
+                )
+                ON CONFLICT(ts, instrument_key, contract_month, run_id) DO UPDATE SET
+                    symbol=excluded.symbol,
+                    strike_price=excluded.strike_price,
+                    call_put=excluded.call_put,
+                    close=excluded.close,
+                    volume=excluded.volume,
+                    up_ticks=excluded.up_ticks,
+                    down_ticks=excluded.down_ticks,
+                    tick_total=excluded.tick_total,
+                    net_tick_count=excluded.net_tick_count,
+                    tick_bias_ratio=excluded.tick_bias_ratio,
+                    volume_per_tick=excluded.volume_per_tick,
+                    force_score=excluded.force_score
+                """,
+                rows,
+            )
+        return len(rows)
+
+    def list_minute_force_features(
+        self,
+        symbol: str,
+        start: datetime,
+        end: datetime,
+        run_id: str | None = None,
+        instrument_keys: list[str] | None = None,
+        contract_month: str | None = None,
+        strike_price: float | None = None,
+        call_put: str | None = None,
+    ) -> list[MinuteForceFeatures]:
+        query = """
+            SELECT ts, symbol, instrument_key, contract_month, strike_price, call_put, run_id, close, volume, up_ticks, down_ticks,
+                   tick_total, net_tick_count, tick_bias_ratio, volume_per_tick, force_score
+            FROM minute_force_features_1m
+            WHERE symbol = ? AND ts >= ? AND ts <= ?
+        """
+        params: list = [symbol, start.isoformat(), end.isoformat()]
+        if run_id is not None:
+            query += " AND run_id = ?"
+            params.append(run_id)
+        if instrument_keys:
+            placeholders = ",".join("?" for _ in instrument_keys)
+            query += f" AND instrument_key IN ({placeholders})"
+            params.extend(instrument_keys)
+        if contract_month is not None:
+            query += " AND contract_month = ?"
+            params.append(contract_month)
+        if strike_price is not None:
+            query += " AND strike_price = ?"
+            params.append(strike_price)
+        if call_put is not None:
+            query += " AND call_put = ?"
+            params.append(call_put)
+        query += " ORDER BY ts"
+        with sqlite3.connect(self.path) as conn:
+            cursor = conn.execute(query, params)
+            rows = cursor.fetchall()
+        return [self._row_to_feature(row) for row in rows]
+
+    def create_live_run(self, metadata: LiveRunMetadata) -> None:
+        with sqlite3.connect(self.path) as conn:
+            conn.execute(
+                """
+                INSERT INTO live_run_metadata (
+                    run_id, provider, mode, started_at, session_scope, topic_count, symbols_json, codes_json,
+                    option_root, underlying_future_symbol, expiry_count, atm_window, call_put, reference_price, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id) DO UPDATE SET
+                    provider=excluded.provider,
+                    mode=excluded.mode,
+                    started_at=excluded.started_at,
+                    session_scope=excluded.session_scope,
+                    topic_count=excluded.topic_count,
+                    symbols_json=excluded.symbols_json,
+                    codes_json=excluded.codes_json,
+                    option_root=excluded.option_root,
+                    underlying_future_symbol=excluded.underlying_future_symbol,
+                    expiry_count=excluded.expiry_count,
+                    atm_window=excluded.atm_window,
+                    call_put=excluded.call_put,
+                    reference_price=excluded.reference_price,
+                    status=excluded.status
+                """,
+                (
+                    metadata.run_id,
+                    metadata.provider,
+                    metadata.mode,
+                    metadata.started_at.isoformat(),
+                    metadata.session_scope,
+                    metadata.topic_count,
+                    metadata.symbols_json,
+                    metadata.codes_json,
+                    metadata.option_root,
+                    metadata.underlying_future_symbol,
+                    metadata.expiry_count,
+                    metadata.atm_window,
+                    metadata.call_put,
+                    metadata.reference_price,
+                    metadata.status,
+                ),
+            )
+
+    def get_live_run(self, run_id: str) -> LiveRunMetadata | None:
+        with sqlite3.connect(self.path) as conn:
+            cursor = conn.execute(
+                """
+                SELECT run_id, provider, mode, started_at, session_scope, topic_count, symbols_json, codes_json,
+                       option_root, underlying_future_symbol, expiry_count, atm_window, call_put, reference_price, status
+                FROM live_run_metadata
+                WHERE run_id = ?
+                """,
+                (run_id,),
+            )
+            row = cursor.fetchone()
+        if not row:
+            return None
+        return self._row_to_live_run(row)
+
     def _ensure_schema(self) -> None:
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self.path) as conn:
@@ -205,6 +444,8 @@ class SQLiteBarStore(BarRepository):
                     f"ALTER TABLE {table} ADD COLUMN instrument_key TEXT",
                     f"ALTER TABLE {table} ADD COLUMN strike_price REAL",
                     f"ALTER TABLE {table} ADD COLUMN call_put TEXT",
+                    f"ALTER TABLE {table} ADD COLUMN up_ticks REAL",
+                    f"ALTER TABLE {table} ADD COLUMN down_ticks REAL",
                     f"ALTER TABLE {table} ADD COLUMN build_source TEXT NOT NULL DEFAULT 'historical'",
                 ):
                     try:
@@ -217,6 +458,38 @@ class SQLiteBarStore(BarRepository):
                 conn.execute(f"UPDATE {table} SET build_source = 'historical' WHERE build_source IS NULL")
                 if not _has_primary_key(conn, table, ("ts", "instrument_key", "contract_month", "session")):
                     _rebuild_table_with_primary_key(conn, table)
+            for ddl in (
+                "ALTER TABLE raw_ticks ADD COLUMN trading_day TEXT",
+                "ALTER TABLE raw_ticks ADD COLUMN instrument_key TEXT",
+                "ALTER TABLE raw_ticks ADD COLUMN contract_month TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE raw_ticks ADD COLUMN strike_price REAL",
+                "ALTER TABLE raw_ticks ADD COLUMN call_put TEXT",
+                "ALTER TABLE raw_ticks ADD COLUMN session TEXT",
+                "ALTER TABLE raw_ticks ADD COLUMN tick_direction TEXT",
+                "ALTER TABLE raw_ticks ADD COLUMN total_volume REAL",
+                "ALTER TABLE raw_ticks ADD COLUMN bid_side_total_vol REAL",
+                "ALTER TABLE raw_ticks ADD COLUMN ask_side_total_vol REAL",
+                "ALTER TABLE raw_ticks ADD COLUMN payload_json TEXT",
+            ):
+                try:
+                    conn.execute(ddl)
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column name" not in str(exc).lower():
+                        raise
+            conn.execute("UPDATE raw_ticks SET instrument_key = symbol WHERE instrument_key IS NULL")
+            conn.execute("UPDATE raw_ticks SET contract_month = '' WHERE contract_month IS NULL")
+            conn.execute("UPDATE raw_ticks SET session = 'unknown' WHERE session IS NULL")
+            conn.execute("UPDATE raw_ticks SET trading_day = substr(ts, 1, 10) WHERE trading_day IS NULL")
+            for ddl in (
+                "ALTER TABLE minute_force_features_1m ADD COLUMN run_id TEXT",
+                "ALTER TABLE minute_force_features_1m ADD COLUMN strike_price REAL",
+                "ALTER TABLE minute_force_features_1m ADD COLUMN call_put TEXT",
+            ):
+                try:
+                    conn.execute(ddl)
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column name" not in str(exc).lower():
+                        raise
 
     @staticmethod
     def _bar_to_row(bar: Bar) -> dict:
@@ -225,6 +498,48 @@ class SQLiteBarStore(BarRepository):
         row["trading_day"] = bar.trading_day.isoformat()
         row["instrument_key"] = bar.instrument_key or bar.symbol
         return row
+
+    @staticmethod
+    def _tick_to_row(tick: CanonicalTick) -> dict:
+        return {
+            "ts": tick.ts.isoformat(),
+            "trading_day": tick.trading_day.isoformat(),
+            "symbol": tick.symbol,
+            "instrument_key": tick.instrument_key or tick.symbol,
+            "contract_month": tick.contract_month,
+            "strike_price": tick.strike_price,
+            "call_put": tick.call_put,
+            "session": tick.session,
+            "price": tick.price,
+            "size": tick.size,
+            "tick_direction": tick.tick_direction,
+            "total_volume": tick.total_volume,
+            "bid_side_total_vol": tick.bid_side_total_vol,
+            "ask_side_total_vol": tick.ask_side_total_vol,
+            "source": tick.source,
+            "payload_json": tick.payload_json,
+        }
+
+    @staticmethod
+    def _feature_to_row(feature: MinuteForceFeatures) -> dict:
+        return {
+            "ts": feature.ts,
+            "symbol": feature.symbol,
+            "instrument_key": feature.instrument_key or feature.symbol,
+            "contract_month": feature.contract_month,
+            "strike_price": feature.strike_price,
+            "call_put": feature.call_put,
+            "run_id": feature.run_id or "",
+            "close": feature.close,
+            "volume": feature.volume,
+            "up_ticks": feature.up_ticks,
+            "down_ticks": feature.down_ticks,
+            "tick_total": feature.tick_total,
+            "net_tick_count": feature.net_tick_count,
+            "tick_bias_ratio": feature.tick_bias_ratio,
+            "volume_per_tick": feature.volume_per_tick,
+            "force_score": feature.force_score,
+        }
 
     @staticmethod
     def _row_to_bar(row: tuple) -> Bar:
@@ -243,8 +558,72 @@ class SQLiteBarStore(BarRepository):
             close=float(row[11]),
             volume=float(row[12]),
             open_interest=float(row[13]) if row[13] is not None else None,
+            up_ticks=float(row[14]) if row[14] is not None else None,
+            down_ticks=float(row[15]) if row[15] is not None else None,
+            source=row[16],
+            build_source=row[17],
+        )
+
+    @staticmethod
+    def _row_to_tick(row: tuple) -> CanonicalTick:
+        return CanonicalTick(
+            ts=datetime.fromisoformat(row[0]),
+            trading_day=datetime.fromisoformat(f"{row[1]}T00:00:00").date(),
+            symbol=row[2],
+            instrument_key=row[3],
+            contract_month=row[4],
+            strike_price=float(row[5]) if row[5] is not None else None,
+            call_put=row[6],
+            session=row[7],
+            price=float(row[8]),
+            size=float(row[9]),
+            tick_direction=row[10],
+            total_volume=float(row[11]) if row[11] is not None else None,
+            bid_side_total_vol=float(row[12]) if row[12] is not None else None,
+            ask_side_total_vol=float(row[13]) if row[13] is not None else None,
             source=row[14],
-            build_source=row[15],
+            payload_json=row[15],
+        )
+
+    @staticmethod
+    def _row_to_feature(row: tuple) -> MinuteForceFeatures:
+        return MinuteForceFeatures(
+            ts=row[0],
+            symbol=row[1],
+            instrument_key=row[2],
+            contract_month=row[3],
+            strike_price=float(row[4]) if row[4] is not None else None,
+            call_put=row[5],
+            run_id=row[6],
+            close=float(row[7]),
+            volume=float(row[8]),
+            up_ticks=float(row[9]) if row[9] is not None else None,
+            down_ticks=float(row[10]) if row[10] is not None else None,
+            tick_total=float(row[11]),
+            net_tick_count=float(row[12]),
+            tick_bias_ratio=float(row[13]),
+            volume_per_tick=float(row[14]) if row[14] is not None else None,
+            force_score=float(row[15]),
+        )
+
+    @staticmethod
+    def _row_to_live_run(row: tuple) -> LiveRunMetadata:
+        return LiveRunMetadata(
+            run_id=row[0],
+            provider=row[1],
+            mode=row[2],
+            started_at=datetime.fromisoformat(row[3]),
+            session_scope=row[4],
+            topic_count=int(row[5]),
+            symbols_json=row[6],
+            codes_json=row[7],
+            option_root=row[8],
+            underlying_future_symbol=row[9],
+            expiry_count=int(row[10]) if row[10] is not None else None,
+            atm_window=int(row[11]) if row[11] is not None else None,
+            call_put=row[12],
+            reference_price=float(row[13]) if row[13] is not None else None,
+            status=row[14],
         )
 
 
@@ -320,6 +699,8 @@ def _rebuild_table_with_primary_key(conn: sqlite3.Connection, table: str) -> Non
             close REAL NOT NULL,
             volume REAL NOT NULL,
             open_interest REAL,
+            up_ticks REAL,
+            down_ticks REAL,
             source TEXT NOT NULL,
             build_source TEXT NOT NULL DEFAULT 'historical',
             PRIMARY KEY (ts, instrument_key, contract_month, session)
@@ -329,7 +710,7 @@ def _rebuild_table_with_primary_key(conn: sqlite3.Connection, table: str) -> Non
     conn.execute(
         f"""
         INSERT INTO {temp_table} (
-            ts, trading_day, symbol, instrument_key, contract_month, strike_price, call_put, session, open, high, low, close, volume, open_interest, source, build_source
+            ts, trading_day, symbol, instrument_key, contract_month, strike_price, call_put, session, open, high, low, close, volume, open_interest, up_ticks, down_ticks, source, build_source
         )
         SELECT
             {_select_expr(columns, 'ts')},
@@ -346,6 +727,8 @@ def _rebuild_table_with_primary_key(conn: sqlite3.Connection, table: str) -> Non
             {_select_expr(columns, 'close')},
             {_select_expr(columns, 'volume')},
             {_select_expr(columns, 'open_interest', "NULL")},
+            {_select_expr(columns, 'up_ticks', "NULL")},
+            {_select_expr(columns, 'down_ticks', "NULL")},
             {_select_expr(columns, 'source')},
             {_select_expr(columns, 'build_source', "'historical'")}
         FROM {table}

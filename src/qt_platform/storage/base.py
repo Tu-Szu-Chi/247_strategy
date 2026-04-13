@@ -4,7 +4,8 @@ from abc import ABC, abstractmethod
 from datetime import date, datetime
 from typing import Iterable
 
-from qt_platform.domain import Bar
+from qt_platform.domain import Bar, CanonicalTick, LiveRunMetadata
+from qt_platform.features import MinuteForceFeatures
 
 
 class BarRepository(ABC):
@@ -49,4 +50,38 @@ class BarRepository(ABC):
         timeframe: str,
         session_scope: str,
     ) -> datetime | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def append_ticks(self, ticks: Iterable[CanonicalTick]) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_ticks(self, symbol: str, start: datetime, end: datetime) -> list[CanonicalTick]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def upsert_minute_force_features(self, features: Iterable[MinuteForceFeatures]) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_minute_force_features(
+        self,
+        symbol: str,
+        start: datetime,
+        end: datetime,
+        run_id: str | None = None,
+        instrument_keys: list[str] | None = None,
+        contract_month: str | None = None,
+        strike_price: float | None = None,
+        call_put: str | None = None,
+    ) -> list[MinuteForceFeatures]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def create_live_run(self, metadata: LiveRunMetadata) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_live_run(self, run_id: str) -> LiveRunMetadata | None:
         raise NotImplementedError

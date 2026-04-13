@@ -95,6 +95,7 @@
 - 用途: 回測主資料
 - 來源:
   - 現在: FinMind `tick -> 1m aggregation`
+  - 現在也可: broker-exported `1m CSV -> direct import`
   - 未來: broker live ticks `-> 1m aggregation`
 - 原則:
   - 只存 1 分 K 結果，不存 raw tick
@@ -105,8 +106,15 @@
   - 目前已落地 `call_put`
   - 目前已落地 `build_source`
     - 例如 `finmind_tick_agg`
+    - `csv_1m_import`
     - `shioaji_tick_agg`
     - `kgi_tick_agg`
+  - 目前已落地 `up_ticks / down_ticks`
+    - 主要來自 broker-exported `1m CSV`
+    - 可作為未來力道 proxy 的基礎欄位
+  - 對 index-like series，`instrument_key` 應保有實際標的身份
+    - 例如 `TWOTC -> index:TWOTC`
+    - 不應只寫成通用值 `index`
 
 ### `bars_1d`
 - 用途: 日資料研究與 bootstrap
@@ -121,7 +129,6 @@
   - 否則同一天整條 option chain 會互相覆蓋
 
 ### `raw_ticks`
-- 目前尚未落地
 - 用途:
   - 接 broker live tick feed
   - 建立自有歷史 tick 庫
@@ -129,6 +136,24 @@
 - 原則:
   - append-only
   - 保留 vendor payload 方便追查
+  - 目前已落地最小欄位:
+    - `ts`
+    - `trading_day`
+    - `symbol`
+    - `instrument_key`
+    - `contract_month`
+    - `strike_price`
+    - `call_put`
+    - `session`
+    - `price`
+    - `size`
+    - `tick_direction`
+    - `total_volume`
+    - `bid_side_total_vol`
+    - `ask_side_total_vol`
+    - `source`
+    - `payload_json`
+  - v1 先保證能錄進來，不先追求完整 broker feature surface
 
 ### `quote_state_1m`
 - 目前尚未落地

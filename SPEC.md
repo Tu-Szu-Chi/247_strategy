@@ -23,7 +23,7 @@ NOTE.md有些提示可以參考
 
 * **資料庫**：TimescaleDB（基於 PostgreSQL，優化時序資料儲存與查詢）
 
-* **即時行情**：KGI SuperPY（WebSocket）
+* **即時行情**：Shioaji（WebSocket）
 > python -m pip install kgisuperpy
 
 * **歷史資料**：FinMind API（Sponsor 專案）
@@ -200,8 +200,26 @@ secrets:
 
 ---
 
+## 8. User story
+### Pipeline
+服務啟動時
+(1.1) 如是台股期貨可交易時段, 連結websocket, 訂閱配置好的symbol,抓取live_dat並存到DB; 收盤時斷開socket訂閱
+(1.2) 如不是台股期貨可交易時段, 確認好開盤時間, 做類似setTimeout的定時器去觸發步驟(1.1)
+服務運行中
+(2) 如是可交易時段,策略即時監控行情, 且訊號要存到DB以利復盤
+### Strategy
+(1) 策略模組應要有良好的interface/抽象,可用於開盤時即時監控以及回測使用, 避免重工
+### UI
+(1) 客戶端透過websocket建立連線, 並在盤中訂閱"訊號" & "1m-k"的topic
+(2) 客戶端可讀取backtest產生的JSON格式報告並渲染在UI上
+### backtest
+(1) 回測報告皆用Json格式儲存, 以利客戶端可以渲染該report & chart
+### Portfolio
+<TBD>
+
+
 ### Reference
 以下三個專案都是github上開源的, 跟量化交易/回測有關
 ./Kronos 
 ./backtrader
-./phandasㄜ
+./phandas

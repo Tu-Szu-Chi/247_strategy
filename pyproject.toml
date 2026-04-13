@@ -20,6 +20,9 @@ dependencies = [
 reports = [
   "quantstats>=0.0.62,<0.1",
 ]
+live = [
+  "shioaji>=1.2,<2.0",
+]
 dev = [
   "pytest>=8.0,<9.0",
 ]
@@ -32,4 +35,3 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
-

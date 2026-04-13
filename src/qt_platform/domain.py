@@ -25,10 +25,32 @@ class Bar:
     volume: float
     open_interest: float | None
     source: str
+    up_ticks: float | None = None
+    down_ticks: float | None = None
     instrument_key: str | None = None
     strike_price: float | None = None
     call_put: str | None = None
     build_source: str = "historical"
+
+
+@dataclass(frozen=True)
+class CanonicalTick:
+    ts: datetime
+    trading_day: date
+    symbol: str
+    price: float
+    size: float
+    source: str
+    session: str
+    instrument_key: str | None = None
+    contract_month: str = ""
+    strike_price: float | None = None
+    call_put: str | None = None
+    tick_direction: str | None = None
+    total_volume: float | None = None
+    bid_side_total_vol: float | None = None
+    ask_side_total_vol: float | None = None
+    payload_json: str | None = None
 
 
 @dataclass(frozen=True)
@@ -67,6 +89,25 @@ class Trade:
 class Gap:
     start: datetime
     end: datetime
+
+
+@dataclass(frozen=True)
+class LiveRunMetadata:
+    run_id: str
+    provider: str
+    mode: str
+    started_at: datetime
+    session_scope: str
+    topic_count: int
+    symbols_json: str
+    codes_json: str | None = None
+    option_root: str | None = None
+    underlying_future_symbol: str | None = None
+    expiry_count: int | None = None
+    atm_window: int | None = None
+    call_put: str | None = None
+    reference_price: float | None = None
+    status: str = "started"
 
 
 @dataclass

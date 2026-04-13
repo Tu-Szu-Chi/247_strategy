@@ -1,0 +1,455 @@
+from __future__ import annotations
+
+import json
+import io
+import queue
+import re
+import sys
+from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import asdict
+from datetime import date, datetime
+from typing import Any, Iterable
+
+from qt_platform.domain import CanonicalTick
+from qt_platform.live.base import BaseLiveProvider, LiveUsageStatus
+from qt_platform.session import classify_session, trading_day_for
+from qt_platform.settings import ShioajiSettings
+
+
+ROOT_SYMBOL_PATTERN = re.compile(r"^[A-Z]+")
+
+
+class ShioajiLiveProvider(BaseLiveProvider):
+    def __init__(
+        self,
+        settings: ShioajiSettings,
+        idle_timeout_seconds: float = 30.0,
+        simulation: bool = False,
+    ) -> None:
+        self.settings = settings
+        self.idle_timeout_seconds = idle_timeout_seconds
+        self.simulation = simulation
+        self.api = None
+        self._sj = None
+        self._queue: queue.Queue[CanonicalTick] = queue.Queue()
+        self._contracts: dict[str, Any] = {}
+        self.connected = False
+        self._stop_reason: str | None = None
+
+    def connect(self) -> None:
+        if not self.settings.api_key:
+            raise RuntimeError("SH_API_KEY is missing.")
+        if not self.settings.secret_key:
+            raise RuntimeError("SH_SECRET_KEY is missing. Current loader also accepts SH_SCRET_KEY for compatibility.")
+
+        try:
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                import shioaji as sj
+        except ImportError as exc:  # pragma: no cover - depends on optional runtime dependency.
+            raise RuntimeError("shioaji is not installed. Install it with: pip install shioaji") from exc
+
+        self._sj = sj
+        self.api = sj.Shioaji(simulation=self.simulation)
+        self._register_callbacks()
+        self.api.on_event(self._handle_event)
+        self.api.login(
+            api_key=self.settings.api_key,
+            secret_key=self.settings.secret_key,
+        )
+        self.connected = True
+        self._stop_reason = None
+
+    def close(self) -> None:
+        if self.api is not None:
+            try:
+                self.api.logout()
+            except Exception:
+                pass
+        self.connected = False
+        self.api = None
+        self._sj = None
+        self._contracts.clear()
+        self._stop_reason = None
+
+    def stream_ticks(self, symbols: list[str], max_events: int | None = None) -> Iterable[CanonicalTick]:
+        if not self.connected or self.api is None or self._sj is None:
+            raise RuntimeError("ShioajiLiveProvider must be connected before streaming ticks.")
+
+        contracts = [self._resolve_contract(symbol) for symbol in symbols]
+        return self.stream_ticks_from_contracts(contracts=contracts, max_events=max_events)
+
+    def stream_ticks_from_contracts(self, contracts: list[Any], max_events: int | None = None) -> Iterable[CanonicalTick]:
+        if not self.connected or self.api is None or self._sj is None:
+            raise RuntimeError("ShioajiLiveProvider must be connected before streaming ticks.")
+        for contract in contracts:
+            code = getattr(contract, "code", None)
+            target_code = getattr(contract, "target_code", None)
+            if code:
+                self._contracts[str(code)] = contract
+            if target_code:
+                self._contracts[str(target_code)] = contract
+            self.api.quote.subscribe(
+                contract,
+                quote_type=self._sj.constant.QuoteType.Tick,
+                version=self._sj.constant.QuoteVersion.v1,
+            )
+
+        emitted = 0
+        last_usage_check = datetime.now()
+        try:
+            if self._should_pause_for_usage():
+                self._stop_reason = "usage_threshold_reached"
+                return
+            while max_events is None or emitted < max_events:
+                tick = self._queue.get(timeout=self.idle_timeout_seconds)
+                yield tick
+                emitted += 1
+                now = datetime.now()
+                if (now - last_usage_check).total_seconds() >= self.settings.usage_check_interval_seconds:
+                    if self._should_pause_for_usage():
+                        self._stop_reason = "usage_threshold_reached"
+                        return
+                    last_usage_check = now
+        except queue.Empty:
+            return
+        finally:
+            for contract in contracts:
+                try:
+                    self.api.quote.unsubscribe(
+                        contract,
+                        quote_type=self._sj.constant.QuoteType.Tick,
+                        version=self._sj.constant.QuoteVersion.v1,
+                    )
+                except Exception:
+                    pass
+
+    def usage_status(self) -> LiveUsageStatus | None:
+        if not self.connected or self.api is None:
+            return None
+        usage = self.api.usage()
+        limit_bytes = int(getattr(usage, "limit_bytes", self.settings.daily_limit_bytes) or self.settings.daily_limit_bytes)
+        return LiveUsageStatus(
+            bytes_used=int(getattr(usage, "bytes", 0) or 0),
+            limit_bytes=limit_bytes,
+            remaining_bytes=int(getattr(usage, "remaining_bytes", max(limit_bytes, 0)) or 0),
+            connections=int(getattr(usage, "connections", 0) or 0),
+        )
+
+    def stop_reason(self) -> str | None:
+        return self._stop_reason
+
+    def resolve_option_contracts(
+        self,
+        option_root: str = "TXO",
+        expiry_count: int = 2,
+        atm_window: int = 20,
+        underlying_future_symbol: str = "TXFR1",
+        call_put: str = "both",
+    ) -> list[Any]:
+        if not self.connected or self.api is None:
+            raise RuntimeError("ShioajiLiveProvider must be connected before resolving option contracts.")
+        option_chain = self.api.Contracts.Options[option_root]
+        contracts = [contract for contract in option_chain if _option_delivery_date(contract) is not None]
+        if not contracts:
+            raise ValueError(f"No option contracts found for root '{option_root}'.")
+
+        expiry_dates = _nearest_expiry_dates(contracts, expiry_count=expiry_count, today=date.today())
+        reference_price = self._resolve_reference_price(underlying_future_symbol)
+        return _select_option_contracts(
+            contracts=contracts,
+            expiry_dates=expiry_dates,
+            reference_price=reference_price,
+            atm_window=atm_window,
+            call_put=call_put,
+        )
+
+    def resolve_option_universe(
+        self,
+        option_root: str = "TXO",
+        expiry_count: int = 2,
+        atm_window: int = 20,
+        underlying_future_symbol: str = "TXFR1",
+        call_put: str = "both",
+    ) -> tuple[list[Any], float]:
+        if not self.connected or self.api is None:
+            raise RuntimeError("ShioajiLiveProvider must be connected before resolving option contracts.")
+        option_chain = self.api.Contracts.Options[option_root]
+        contracts = [contract for contract in option_chain if _option_delivery_date(contract) is not None]
+        if not contracts:
+            raise ValueError(f"No option contracts found for root '{option_root}'.")
+
+        expiry_dates = _nearest_expiry_dates(contracts, expiry_count=expiry_count, today=date.today())
+        reference_price = self._resolve_reference_price(underlying_future_symbol)
+        selected = _select_option_contracts(
+            contracts=contracts,
+            expiry_dates=expiry_dates,
+            reference_price=reference_price,
+            atm_window=atm_window,
+            call_put=call_put,
+        )
+        return selected, reference_price
+
+    def resolve_option_contract_symbols(
+        self,
+        option_root: str = "TXO",
+        expiry_count: int = 2,
+        atm_window: int = 20,
+        underlying_future_symbol: str = "TXFR1",
+        call_put: str = "both",
+    ) -> list[str]:
+        selected = self.resolve_option_contracts(
+            option_root=option_root,
+            expiry_count=expiry_count,
+            atm_window=atm_window,
+            underlying_future_symbol=underlying_future_symbol,
+            call_put=call_put,
+        )
+        return [str(contract.symbol) for contract in selected]
+
+    def _register_callbacks(self) -> None:
+        assert self.api is not None
+
+        @self.api.on_tick_fop_v1()
+        def _on_tick(exchange: Any, tick: Any) -> None:
+            code = getattr(tick, "code", None)
+            contract = self._contracts.get(code)
+            ts = _tick_datetime(tick)
+            root_symbol = _root_symbol_for_tick(code, contract)
+            canonical = CanonicalTick(
+                ts=ts,
+                trading_day=trading_day_for(ts),
+                symbol=root_symbol,
+                instrument_key=code or root_symbol,
+                contract_month=_contract_month(contract),
+                strike_price=_strike_price(contract),
+                call_put=_call_put(contract),
+                session=classify_session(ts),
+                price=float(getattr(tick, "close", 0.0)),
+                size=float(getattr(tick, "volume", 0.0)),
+                tick_direction=_map_tick_direction(getattr(tick, "tick_type", None)),
+                total_volume=_float_or_none(getattr(tick, "total_volume", None)),
+                bid_side_total_vol=_float_or_none(getattr(tick, "bid_side_total_vol", None)),
+                ask_side_total_vol=_float_or_none(getattr(tick, "ask_side_total_vol", None)),
+                source="shioaji_live",
+                payload_json=json.dumps(_serialize_tick_payload(exchange, tick), ensure_ascii=False, default=str),
+            )
+            self._queue.put(canonical)
+
+    def _handle_event(self, resp_code: int, event_code: int, info: str, event_str: str) -> None:
+        if resp_code in {0, 200}:
+            return
+        print(
+            f"Response Code: {resp_code} | Event Code: {event_code} | Info: {info} | Event: {event_str}",
+            file=sys.stderr,
+        )
+
+    def _resolve_contract(self, symbol: str) -> Any:
+        assert self.api is not None
+        contract = None
+        try:
+            contract = self.api.Contracts.Futures[symbol]
+        except Exception:
+            pass
+        if contract is None:
+            exc: Exception | None = None
+            try:
+                contract = self.api.Contracts.Options[symbol]
+            except Exception as err:
+                exc = err
+            if contract is None:
+                contract = self._resolve_option_contract_from_chain(symbol)
+            if contract is None:
+                raise ValueError(
+                    f"Unable to resolve Shioaji contract for symbol '{symbol}'. "
+                    "Pass the exact Shioaji contract code, for example TXFR1 or TXO20250418000C."
+                ) from exc
+        code = getattr(contract, "code", symbol)
+        target_code = getattr(contract, "target_code", None)
+        self._contracts[code] = contract
+        if target_code:
+            self._contracts[str(target_code)] = contract
+        return contract
+
+    def _resolve_option_contract_from_chain(self, symbol: str) -> Any | None:
+        assert self.api is not None
+        root = _normalize_root_symbol(symbol)
+        if root not in self.api.Contracts.Options:
+            return None
+        chain = self.api.Contracts.Options[root]
+        try:
+            contract = chain[symbol]
+            if contract is not None:
+                return contract
+        except Exception:
+            pass
+        for contract in chain:
+            if getattr(contract, "symbol", None) == symbol or getattr(contract, "code", None) == symbol:
+                return contract
+        return None
+
+    def _resolve_reference_price(self, underlying_future_symbol: str) -> float:
+        assert self.api is not None
+        future_contract = self.api.Contracts.Futures[underlying_future_symbol]
+        snapshots = self.api.snapshots([future_contract], timeout=5000)
+        if not snapshots:
+            raise RuntimeError(f"Unable to resolve snapshot for underlying future '{underlying_future_symbol}'.")
+        snapshot = snapshots[0]
+        price = getattr(snapshot, "close", None) or getattr(snapshot, "reference", None)
+        if price in (None, 0):
+            raise RuntimeError(f"Snapshot for '{underlying_future_symbol}' does not contain a usable reference price.")
+        return float(price)
+
+    def _should_pause_for_usage(self) -> bool:
+        usage = self.usage_status()
+        if usage is None:
+            return False
+        effective_limit = min(usage.limit_bytes, self.settings.daily_limit_bytes)
+        if effective_limit <= 0:
+            return False
+        return usage.bytes_used / effective_limit >= self.settings.pause_threshold_ratio
+
+
+def _tick_datetime(tick: Any) -> datetime:
+    ts = getattr(tick, "datetime", None)
+    if isinstance(ts, datetime):
+        return ts
+    raise ValueError("Shioaji tick payload does not expose a datetime field.")
+
+
+def _root_symbol_for_tick(code: str | None, contract: Any) -> str:
+    candidate = (
+        getattr(contract, "category", None)
+        or getattr(contract, "underlying_code", None)
+        or getattr(contract, "symbol", None)
+        or code
+        or ""
+    )
+    return _normalize_root_symbol(str(candidate))
+
+
+def _normalize_root_symbol(value: str) -> str:
+    if not value:
+        return value
+    match = ROOT_SYMBOL_PATTERN.match(value.upper())
+    return match.group(0) if match else value.upper()
+
+
+def _contract_month(contract: Any) -> str:
+    for attr in ("delivery_month", "delivery_date", "contract_date"):
+        value = getattr(contract, attr, None)
+        if value:
+            return str(value)
+    return ""
+
+
+def _strike_price(contract: Any) -> float | None:
+    return _float_or_none(getattr(contract, "strike_price", None))
+
+
+def _call_put(contract: Any) -> str | None:
+    value = getattr(contract, "option_right", None)
+    if value is None:
+        return None
+    raw = getattr(value, "value", value)
+    normalized = str(raw).strip().lower()
+    if normalized in {"c", "call", "buy"}:
+        return "call"
+    if normalized in {"p", "put", "sell"}:
+        return "put"
+    return normalized
+
+
+def _map_tick_direction(tick_type: Any) -> str | None:
+    if tick_type is None:
+        return None
+    value = getattr(tick_type, "value", tick_type)
+    name = getattr(tick_type, "name", str(tick_type)).lower()
+    if value == 1 or "buy" in name:
+        return "up"
+    if value == 2 or "sell" in name:
+        return "down"
+    return None
+
+
+def _serialize_tick_payload(exchange: Any, tick: Any) -> dict[str, Any]:
+    payload = {
+        "exchange": getattr(exchange, "value", str(exchange)),
+        "tick": _object_to_dict(tick),
+    }
+    return payload
+
+
+def _object_to_dict(value: Any) -> Any:
+    if hasattr(value, "__dataclass_fields__"):
+        return {k: _object_to_dict(v) for k, v in asdict(value).items()}
+    if hasattr(value, "__dict__"):
+        return {k: _object_to_dict(v) for k, v in vars(value).items()}
+    if isinstance(value, (list, tuple)):
+        return [_object_to_dict(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _object_to_dict(v) for k, v in value.items()}
+    if hasattr(value, "value"):
+        return getattr(value, "value")
+    return value
+
+
+def _float_or_none(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    return float(value)
+
+
+def _option_delivery_date(contract: Any) -> date | None:
+    raw = getattr(contract, "delivery_date", None)
+    if not raw:
+        return None
+    return datetime.strptime(str(raw), "%Y/%m/%d").date()
+
+
+def _nearest_expiry_dates(contracts: list[Any], expiry_count: int, today: date) -> list[date]:
+    unique_expiries = sorted({_option_delivery_date(contract) for contract in contracts if _option_delivery_date(contract) is not None})
+    future_or_today = [expiry for expiry in unique_expiries if expiry >= today]
+    pool = future_or_today or unique_expiries
+    return pool[:expiry_count]
+
+
+def _select_option_contracts(
+    contracts: list[Any],
+    expiry_dates: list[date],
+    reference_price: float,
+    atm_window: int,
+    call_put: str,
+) -> list[Any]:
+    call_put = call_put.lower()
+    if call_put not in {"both", "call", "put"}:
+        raise ValueError("call_put must be one of: both, call, put")
+
+    selected: list[Any] = []
+    for expiry in expiry_dates:
+        expiry_contracts = [contract for contract in contracts if _option_delivery_date(contract) == expiry]
+        strikes = sorted({float(contract.strike_price) for contract in expiry_contracts})
+        if not strikes:
+            continue
+        atm_index = min(range(len(strikes)), key=lambda idx: abs(strikes[idx] - reference_price))
+        start_idx = max(0, atm_index - atm_window)
+        end_idx = min(len(strikes), atm_index + atm_window + 1)
+        selected_strikes = set(strikes[start_idx:end_idx])
+
+        for contract in expiry_contracts:
+            if float(contract.strike_price) not in selected_strikes:
+                continue
+            normalized_cp = _call_put(contract)
+            if call_put == "call" and normalized_cp != "call":
+                continue
+            if call_put == "put" and normalized_cp != "put":
+                continue
+            selected.append(contract)
+
+    selected.sort(
+        key=lambda contract: (
+            _option_delivery_date(contract) or date.max,
+            float(contract.strike_price),
+            _call_put(contract) or "",
+        )
+    )
+    return selected

@@ -42,6 +42,29 @@ class ReportingSettings:
 
 
 @dataclass(frozen=True)
+class ShioajiSettings:
+    api_key_env: str = "SH_API_KEY"
+    secret_key_env: str = "SH_SECRET_KEY"
+    daily_limit_bytes: int = 524_288_000
+    pause_threshold_ratio: float = 0.99
+    usage_check_interval_seconds: float = 30.0
+    usage_reset_hour: int = 0
+    usage_reset_minute: int = 0
+    usage_reset_buffer_seconds: int = 60
+
+    @property
+    def api_key(self) -> str | None:
+        return os.getenv(self.api_key_env)
+
+    @property
+    def secret_key(self) -> str | None:
+        return (
+            os.getenv(self.secret_key_env)
+            or os.getenv("SH_SCRET_KEY")
+        )
+
+
+@dataclass(frozen=True)
 class SyncSettings:
     registry_path: str = "config/symbols.csv"
     requests_per_hour: int = 6000
@@ -54,6 +77,7 @@ class Settings:
     database: DatabaseSettings
     finmind: FinMindSettings
     reporting: ReportingSettings
+    shioaji: ShioajiSettings
     sync: SyncSettings
 
 
@@ -69,6 +93,7 @@ def load_settings(path: str | Path) -> Settings:
         database=DatabaseSettings(**_section(raw, "database")),
         finmind=FinMindSettings(**_section(raw, "finmind")),
         reporting=ReportingSettings(**_section(raw, "reporting")),
+        shioaji=ShioajiSettings(**_section(raw, "shioaji")),
         sync=SyncSettings(**_section(raw, "sync")),
     )
 

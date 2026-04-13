@@ -61,6 +61,22 @@ def _is_in_scope(ts: datetime, session_scope: str) -> bool:
     raise ValueError(f"Unsupported session scope: {session_scope}")
 
 
+def is_in_session_scope(ts: datetime, session_scope: str) -> bool:
+    return _is_in_scope(ts, session_scope)
+
+
+def next_session_start(ts: datetime, session_scope: str) -> datetime:
+    probe = ts + timedelta(minutes=1)
+    for _ in range(7):
+        trading_day = trading_day_for(probe)
+        windows = session_windows_for(trading_day, session_scope)
+        for session_start, _ in windows:
+            if session_start > ts:
+                return session_start
+        probe = datetime.combine(trading_day + timedelta(days=1), time(0, 0))
+    raise RuntimeError(f"Unable to resolve next session start for session_scope={session_scope}.")
+
+
 def session_windows_for(trading_day: date, session_scope: str) -> list[tuple[datetime, datetime]]:
     day_session = (
         datetime.combine(trading_day, DAY_SESSION_START),
