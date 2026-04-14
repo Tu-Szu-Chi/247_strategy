@@ -16,6 +16,7 @@ class FinMindAdapter(BaseProvider):
     FUTURES_DAILY_DATASET = "TaiwanFuturesDaily"
     FUTURES_TICK_DATASET = "TaiwanFuturesTick"
     STOCK_DAILY_DATASET = "TaiwanStockPrice"
+    STOCK_TICK_DATASET = "TaiwanStockPriceTick"
     OPTION_DAILY_DATASET = "TaiwanOptionDaily"
 
     def __init__(self, settings: FinMindSettings) -> None:
@@ -26,7 +27,7 @@ class FinMindAdapter(BaseProvider):
         if instrument_type == "future" and market == "TAIFEX":
             return timeframe in {"1d", "1m"}
         if instrument_type == "stock" and market == "TWSE":
-            return timeframe == "1d"
+            return timeframe in {"1d", "1m"}
         if instrument_type == "option" and market == "TAIFEX" and symbol == "TXO":
             return timeframe == "1d"
         return False
@@ -46,6 +47,8 @@ class FinMindAdapter(BaseProvider):
                 return self._fetch_stock_daily(symbol, start_date, end_date)
             return self._fetch_futures_daily(symbol, start_date, end_date, session_scope)
         if timeframe == "1m":
+            if symbol.isdigit():
+                return self._fetch_stock_minute_from_ticks(symbol, start_date, end_date, session_scope)
             return self._fetch_minute_from_ticks(symbol, start_date, end_date, session_scope)
         raise ValueError(f"Unsupported timeframe: {timeframe}")
 
@@ -169,6 +172,29 @@ class FinMindAdapter(BaseProvider):
             )
             rows = payload.get("data", [])
             bars.extend(self._aggregate_ticks(rows, session_scope=session_scope))
+            day += timedelta(days=1)
+        bars.sort(key=lambda item: item.ts)
+        return bars
+
+    def _fetch_stock_minute_from_ticks(
+        self,
+        symbol: str,
+        start_date: date,
+        end_date: date,
+        session_scope: str,
+    ) -> list[Bar]:
+        if session_scope == "night":
+            return []
+        day = start_date
+        bars: list[Bar] = []
+        while day <= end_date:
+            payload = self._get(
+                dataset=self.STOCK_TICK_DATASET,
+                data_id=symbol,
+                start_date=day.isoformat(),
+            )
+            rows = payload.get("data", [])
+            bars.extend(self._aggregate_stock_ticks(rows, session_scope=session_scope))
             day += timedelta(days=1)
         bars.sort(key=lambda item: item.ts)
         return bars
@@ -338,6 +364,50 @@ class FinMindAdapter(BaseProvider):
                     open_interest=None,
                     source="finmind",
                     build_source="finmind_tick_agg",
+                )
+            )
+        return bars
+
+    @staticmethod
+    def _aggregate_stock_ticks(rows: list[dict], session_scope: str) -> list[Bar]:
+        if session_scope == "night":
+            return []
+        buckets: dict[tuple[datetime, str, str], list[dict]] = {}
+
+        for row in rows:
+            ts = datetime.fromisoformat(f"{row['date']}T{row['Time']}")
+            session = classify_session(ts)
+            if session != "day":
+                continue
+            bucket_key = (
+                ts.replace(second=0, microsecond=0),
+                str(row["stock_id"]),
+                session,
+            )
+            buckets.setdefault(bucket_key, []).append(row)
+
+        bars: list[Bar] = []
+        for (minute_ts, symbol, session), bucket in sorted(buckets.items()):
+            ordered = sorted(bucket, key=lambda item: str(item["Time"]))
+            prices = [float(item["deal_price"]) for item in ordered]
+            bars.append(
+                Bar(
+                    ts=minute_ts,
+                    trading_day=minute_ts.date(),
+                    symbol=symbol,
+                    instrument_key=symbol,
+                    contract_month="",
+                    session=session,
+                    open=prices[0],
+                    high=max(prices),
+                    low=min(prices),
+                    close=prices[-1],
+                    volume=sum(float(item["volume"]) for item in ordered),
+                    open_interest=None,
+                    up_ticks=sum(1 for item in ordered if item.get("TickType") == 1),
+                    down_ticks=sum(1 for item in ordered if item.get("TickType") == 2),
+                    source="finmind",
+                    build_source="finmind_stock_tick_agg",
                 )
             )
         return bars

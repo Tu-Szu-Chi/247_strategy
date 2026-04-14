@@ -21,6 +21,7 @@ class FinMindAdapterTest(unittest.TestCase):
         self.assertTrue(adapter.supports_history(market="TAIFEX", instrument_type="future", symbol="MTX", timeframe="1d"))
         self.assertTrue(adapter.supports_history(market="TAIFEX", instrument_type="future", symbol="MTX", timeframe="1m"))
         self.assertTrue(adapter.supports_history(market="TWSE", instrument_type="stock", symbol="2330", timeframe="1d"))
+        self.assertTrue(adapter.supports_history(market="TWSE", instrument_type="stock", symbol="2330", timeframe="1m"))
         self.assertTrue(adapter.supports_history(market="TAIFEX", instrument_type="option", symbol="TXO", timeframe="1d"))
         self.assertFalse(adapter.supports_history(market="TAIFEX", instrument_type="option", symbol="TXO", timeframe="1m"))
 
@@ -212,6 +213,97 @@ class FinMindAdapterTest(unittest.TestCase):
                 ("v4", {"dataset": "TaiwanOptionDaily", "data_id": "TXO", "start_date": "2024-01-01", "end_date": "2024-01-01", "timeout_seconds": 120}),
                 ("v4", {"dataset": "TaiwanOptionDaily", "data_id": "TXO", "start_date": "2024-01-02", "end_date": "2024-01-02", "timeout_seconds": 120}),
                 ("v4", {"dataset": "TaiwanOptionDaily", "data_id": "TXO", "start_date": "2024-01-03", "end_date": "2024-01-03", "timeout_seconds": 120}),
+            ],
+        )
+
+    def test_aggregate_stock_ticks_to_minute_bars(self) -> None:
+        rows = [
+            {
+                "date": "2026-04-13",
+                "Time": "09:00:06.761851",
+                "stock_id": "2330",
+                "deal_price": 1985,
+                "volume": 2665,
+                "TickType": 2,
+            },
+            {
+                "date": "2026-04-13",
+                "Time": "09:00:06.877284",
+                "stock_id": "2330",
+                "deal_price": 1990,
+                "volume": 1,
+                "TickType": 1,
+            },
+            {
+                "date": "2026-04-13",
+                "Time": "09:00:59.000000",
+                "stock_id": "2330",
+                "deal_price": 1988,
+                "volume": 2,
+                "TickType": 1,
+            },
+        ]
+
+        bars = FinMindAdapter._aggregate_stock_ticks(rows, session_scope="day_and_night")
+
+        self.assertEqual(len(bars), 1)
+        self.assertEqual(bars[0].ts, datetime(2026, 4, 13, 9, 0))
+        self.assertEqual(bars[0].symbol, "2330")
+        self.assertEqual(bars[0].open, 1985.0)
+        self.assertEqual(bars[0].high, 1990.0)
+        self.assertEqual(bars[0].low, 1985.0)
+        self.assertEqual(bars[0].close, 1988.0)
+        self.assertEqual(bars[0].volume, 2668.0)
+        self.assertEqual(bars[0].up_ticks, 2)
+        self.assertEqual(bars[0].down_ticks, 1)
+        self.assertEqual(bars[0].build_source, "finmind_stock_tick_agg")
+
+    def test_fetch_stock_minute_from_ticks_uses_single_day_requests(self) -> None:
+        class StubFinMindAdapter(FinMindAdapter):
+            def __init__(self):
+                super().__init__(
+                    FinMindSettings(
+                        base_url="https://api.finmindtrade.com/api/v4",
+                        token_env="FINMIND_TOKEN",
+                        rps_limit=1,
+                        retry_limit=1,
+                        backoff_factor=2.0,
+                        timeout_seconds=30,
+                    )
+                )
+                self.calls = []
+
+            def _get(self, api_version: str = "v4", **params: str) -> dict:
+                self.calls.append((api_version, params))
+                return {
+                    "data": [
+                        {
+                            "date": params["start_date"],
+                            "Time": "09:00:00.000000",
+                            "stock_id": "2330",
+                            "deal_price": 100,
+                            "volume": 1,
+                            "TickType": 1,
+                        }
+                    ]
+                }
+
+        adapter = StubFinMindAdapter()
+        bars = adapter._fetch_stock_minute_from_ticks(
+            symbol="2330",
+            start_date=datetime(2024, 1, 1).date(),
+            end_date=datetime(2024, 1, 3).date(),
+            session_scope="day_and_night",
+        )
+
+        self.assertEqual(len(adapter.calls), 3)
+        self.assertEqual(len(bars), 3)
+        self.assertEqual(
+            adapter.calls,
+            [
+                ("v4", {"dataset": "TaiwanStockPriceTick", "data_id": "2330", "start_date": "2024-01-01"}),
+                ("v4", {"dataset": "TaiwanStockPriceTick", "data_id": "2330", "start_date": "2024-01-02"}),
+                ("v4", {"dataset": "TaiwanStockPriceTick", "data_id": "2330", "start_date": "2024-01-03"}),
             ],
         )
 

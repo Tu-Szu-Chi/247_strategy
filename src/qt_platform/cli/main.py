@@ -4,9 +4,11 @@ import argparse
 import json
 import os
 import sqlite3
+import threading
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from queue import Empty, Queue
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from uuid import uuid4
@@ -36,6 +38,8 @@ from qt_platform.reporting.performance import write_html_report
 from qt_platform.session import is_in_session_scope, next_session_start
 from qt_platform.settings import Settings, load_settings
 from qt_platform.storage.factory import build_bar_repository
+from qt_platform.strategies.force_imbalance import ForceImbalanceStrategy
+from qt_platform.strategies.mxf_2330_pulse import Mxf2330PulseStrategy
 from qt_platform.strategies.sma_cross import SmaCrossStrategy
 from qt_platform.symbol_registry import load_symbol_registry
 from qt_platform.sync_executor import sync_registry
@@ -73,6 +77,14 @@ def main() -> None:
     backtest.add_argument("--strategy", default="sma-cross")
     backtest.add_argument("--fast-window", type=int, default=5)
     backtest.add_argument("--slow-window", type=int, default=20)
+    backtest.add_argument("--min-force-score", type=float, default=500.0)
+    backtest.add_argument("--min-tick-bias-ratio", type=float, default=0.1)
+    backtest.add_argument("--long-only", action="store_true")
+    backtest.add_argument("--reference-symbol", default="2330")
+    backtest.add_argument("--growth-threshold", type=float, default=0.3)
+    backtest.add_argument("--max-position", type=int, default=2)
+    backtest.add_argument("--stop-loss-points", type=float, default=100.0)
+    backtest.add_argument("--force-exit-time", default="13:30")
 
     doctor = subparsers.add_parser("doctor")
     doctor.add_argument("--database-url")
@@ -151,6 +163,44 @@ def main() -> None:
     record_live.add_argument("--run-forever", action="store_true")
     record_live.add_argument("--log-file", default="logs/record-live.log")
 
+    record_live_registry = subparsers.add_parser("record-live-registry")
+    record_live_registry.add_argument("--database-url")
+    record_live_registry.add_argument("--provider", default="shioaji")
+    record_live_registry.add_argument("--registry")
+    record_live_registry.add_argument("--expiry-count", type=int, default=2)
+    record_live_registry.add_argument("--atm-window", type=int, default=20)
+    record_live_registry.add_argument("--underlying-future-symbol", default="TXFR1")
+    record_live_registry.add_argument("--call-put", default="both")
+    record_live_registry.add_argument("--max-events", type=int)
+    record_live_registry.add_argument("--batch-size", type=int, default=500)
+    record_live_registry.add_argument("--idle-timeout-seconds", type=float, default=30.0)
+    record_live_registry.add_argument("--simulation", action="store_true")
+    record_live_registry.add_argument("--session-scope", default="day_and_night")
+    record_live_registry.add_argument("--run-forever", action="store_true")
+    record_live_registry.add_argument("--log-file", default="logs/record-live-registry.log")
+
+    run_runtime = subparsers.add_parser("run-runtime")
+    run_runtime.add_argument("--database-url")
+    run_runtime.add_argument("--registry")
+    run_runtime.add_argument("--history-start-date")
+    run_runtime.add_argument("--history-end-date")
+    run_runtime.add_argument("--timeframes", default="1d,1m")
+    run_runtime.add_argument("--session-scope", default="day_and_night")
+    run_runtime.add_argument("--requests-per-hour", type=int)
+    run_runtime.add_argument("--target-utilization", type=float)
+    run_runtime.add_argument("--allow-repair", action="store_true")
+    run_runtime.add_argument("--provider", default="shioaji")
+    run_runtime.add_argument("--expiry-count", type=int, default=2)
+    run_runtime.add_argument("--atm-window", type=int, default=20)
+    run_runtime.add_argument("--underlying-future-symbol", default="TXFR1")
+    run_runtime.add_argument("--call-put", default="both")
+    run_runtime.add_argument("--max-events", type=int)
+    run_runtime.add_argument("--batch-size", type=int, default=500)
+    run_runtime.add_argument("--idle-timeout-seconds", type=float, default=30.0)
+    run_runtime.add_argument("--simulation", action="store_true")
+    run_runtime.add_argument("--run-forever", action="store_true")
+    run_runtime.add_argument("--log-file", default="logs/run-runtime.log")
+
     preview_option_universe = subparsers.add_parser("preview-option-universe")
     preview_option_universe.add_argument("--option-root", default="TXO")
     preview_option_universe.add_argument("--expiry-count", type=int, default=2)
@@ -186,6 +236,10 @@ def main() -> None:
         _record_live_stub(args, settings)
     elif args.command == "record-live":
         _record_live(args, settings)
+    elif args.command == "record-live-registry":
+        _record_live_registry(args, settings)
+    elif args.command == "run-runtime":
+        _run_runtime(args, settings)
     elif args.command == "preview-option-universe":
         _preview_option_universe(args, settings)
     elif args.command == "resolve-contract":
@@ -228,11 +282,148 @@ def _backtest(args: argparse.Namespace, settings: Settings) -> None:
         end=datetime.fromisoformat(args.end),
     )
     bars = select_symbol_view(args.symbol, bars)
-    strategy = SmaCrossStrategy(fast_window=args.fast_window, slow_window=args.slow_window)
-    result = run_backtest(bars=bars, strategy=strategy, config=BacktestConfig())
+    strategy = _build_strategy(args)
+    context_extras_by_ts = None
+    if args.strategy == "mxf-2330-pulse":
+        reference_bars = store.list_bars(
+            timeframe="1m",
+            symbol=root_symbol_for(args.reference_symbol),
+            start=datetime.fromisoformat(args.start),
+            end=datetime.fromisoformat(args.end),
+        )
+        context_extras_by_ts = _build_reference_growth_context(reference_bars)
+    result = run_backtest(
+        bars=bars,
+        strategy=strategy,
+        config=BacktestConfig(),
+        context_extras_by_ts=context_extras_by_ts,
+    )
     report = write_html_report(result, _report_dir(args, settings), f"{args.symbol}-backtest")
     print(f"ending_cash={result.ending_cash:.2f}")
     print(f"report={report}")
+
+
+def _build_strategy(args: argparse.Namespace):
+    if args.strategy == "sma-cross":
+        return SmaCrossStrategy(fast_window=args.fast_window, slow_window=args.slow_window)
+    if args.strategy == "force-imbalance":
+        return ForceImbalanceStrategy(
+            min_force_score=args.min_force_score,
+            min_tick_bias_ratio=args.min_tick_bias_ratio,
+            allow_short=not args.long_only,
+        )
+    if args.strategy == "mxf-2330-pulse":
+        return Mxf2330PulseStrategy(
+            growth_threshold=args.growth_threshold,
+            max_position=args.max_position,
+            stop_loss_points=args.stop_loss_points,
+            force_exit_time=args.force_exit_time,
+        )
+    raise ValueError(f"Unsupported strategy: {args.strategy}")
+
+
+def _build_reference_growth_context(bars: list) -> dict[datetime, dict]:
+    five_minute = _aggregate_reference_5m(bars)
+    context: dict[datetime, dict] = {}
+    previous_ratio: float | None = None
+    for item in five_minute:
+        current_ratio = item["tick_bias_ratio_5m"]
+        growth = None
+        if previous_ratio is not None and previous_ratio > 0:
+            growth = (current_ratio - previous_ratio) / previous_ratio
+        context[item["ts"]] = {
+            "ref_symbol": item["symbol"],
+            "ref_tick_bias_ratio_5m": current_ratio,
+            "ref_prev_tick_bias_ratio_5m": previous_ratio,
+            "ref_growth_5m": growth,
+        }
+        previous_ratio = current_ratio
+    return context
+
+
+def _aggregate_reference_5m(bars: list) -> list[dict]:
+    buckets: dict[datetime, list] = {}
+    for bar in bars:
+        if bar.session != "day":
+            continue
+        bucket_start = bar.ts.replace(minute=(bar.ts.minute // 5) * 5, second=0, microsecond=0)
+        buckets.setdefault(bucket_start, []).append(bar)
+
+    aggregated: list[dict] = []
+    for bucket_start, bucket_bars in sorted(buckets.items(), key=lambda item: item[0]):
+        up_ticks = sum(bar.up_ticks or 0 for bar in bucket_bars)
+        down_ticks = sum(bar.down_ticks or 0 for bar in bucket_bars)
+        tick_total = up_ticks + down_ticks
+        tick_bias_ratio = (up_ticks - down_ticks) / tick_total if tick_total > 0 else 0.0
+        aggregated.append(
+            {
+                "ts": max(bar.ts for bar in bucket_bars),
+                "symbol": bucket_bars[-1].symbol,
+                "tick_bias_ratio_5m": tick_bias_ratio,
+            }
+        )
+    return aggregated
+
+
+def _partition_registry_live_entries(entries) -> tuple[list[str], set[str]]:
+    exact_symbols: list[str] = []
+    option_roots: set[str] = set()
+    for entry in entries:
+        if entry.instrument_type == "stock":
+            exact_symbols.append(entry.symbol)
+        elif entry.instrument_type == "future":
+            exact_symbols.append(_live_symbol_for_registry_future(entry.symbol))
+        elif entry.instrument_type == "option":
+            option_roots.add(entry.root_symbol)
+    return sorted(set(exact_symbols)), option_roots
+
+
+def _live_symbol_for_registry_future(symbol: str) -> str:
+    mapping = {
+        "MTX": "MXFR1",
+        "MXF": "MXFR1",
+        "TX": "TXFR1",
+        "TXF": "TXFR1",
+    }
+    return mapping.get(symbol, mapping.get(root_symbol_for(symbol), symbol))
+
+
+def _resolve_registry_live_universe(
+    provider: ShioajiLiveProvider,
+    exact_symbols: list[str],
+    option_roots: set[str],
+    expiry_count: int,
+    atm_window: int,
+    underlying_future_symbol: str,
+    call_put: str,
+) -> tuple[list, str, str, dict]:
+    contracts = [provider._resolve_contract(symbol) for symbol in exact_symbols]
+    reference_price: float | None = None
+    for option_root in sorted(option_roots):
+        resolved, option_reference_price = provider.resolve_option_universe(
+            option_root=option_root,
+            expiry_count=expiry_count,
+            atm_window=atm_window,
+            underlying_future_symbol=underlying_future_symbol,
+            call_put=call_put,
+        )
+        contracts.extend(resolved)
+        if reference_price is None:
+            reference_price = option_reference_price
+    unique_contracts = {}
+    for contract in contracts:
+        key = str(getattr(contract, "code", None) or getattr(contract, "symbol", None))
+        unique_contracts[key] = contract
+    contracts = list(unique_contracts.values())
+    symbols_json = json.dumps(
+        [str(getattr(contract, "symbol", "")) for contract in contracts],
+        ensure_ascii=False,
+    )
+    codes_json = json.dumps(
+        [str(getattr(contract, "code", "")) for contract in contracts],
+        ensure_ascii=False,
+    )
+    return contracts, symbols_json, codes_json, {"reference_price": reference_price}
 
 
 def _provider(settings: Settings) -> FinMindAdapter:
@@ -435,6 +626,138 @@ def _record_live(args: argparse.Namespace, settings: Settings) -> None:
     print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
 
 
+def _record_live_registry(args: argparse.Namespace, settings: Settings) -> None:
+    if args.run_forever:
+        _record_live_daemon(args, settings)
+        return
+    result = _run_live_record_cycle(args, settings)
+    print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+
+
+def _run_runtime(args: argparse.Namespace, settings: Settings) -> None:
+    registry_path = args.registry or settings.sync.registry_path
+    today = datetime.now(ZoneInfo(settings.app.timezone)).date()
+    start_date = date.fromisoformat(args.history_start_date) if args.history_start_date else today - timedelta(days=365 * 3)
+    end_date = date.fromisoformat(args.history_end_date) if args.history_end_date else today - timedelta(days=1)
+    timeframe_values = [value.strip() for value in args.timeframes.split(",") if value.strip()]
+    exceptions: Queue[BaseException] = Queue()
+    results: Queue[dict] = Queue()
+
+    def history_worker() -> None:
+        try:
+            store = build_bar_repository(_database_url(args, settings))
+            entries = load_symbol_registry(registry_path)
+            _emit_runtime_status(
+                {
+                    "status": "history_sync_started",
+                    "registry_path": registry_path,
+                    "history_start_date": start_date.isoformat(),
+                    "history_end_date": end_date.isoformat(),
+                    "timeframes": timeframe_values,
+                },
+                args.log_file,
+            )
+            sync_result = sync_registry(
+                store=store,
+                provider=_provider(settings),
+                entries=entries,
+                start_date=start_date,
+                end_date=end_date,
+                timeframes=timeframe_values,
+                requests_per_hour=args.requests_per_hour or settings.sync.requests_per_hour,
+                target_utilization=args.target_utilization or settings.sync.target_utilization,
+                session_scope=args.session_scope,
+                allow_repair=args.allow_repair,
+            )
+            payload = {
+                "status": "history_sync_completed",
+                "registry_path": registry_path,
+                "history_start_date": start_date.isoformat(),
+                "history_end_date": end_date.isoformat(),
+                "timeframes": timeframe_values,
+                "items": [item.__dict__ for item in sync_result.items],
+            }
+            _emit_runtime_status(payload, args.log_file)
+            results.put({"history": payload})
+        except BaseException as exc:  # pragma: no cover - surfaced in main thread
+            _emit_runtime_status(
+                {
+                    "status": "history_sync_error",
+                    "registry_path": registry_path,
+                    "message": str(exc),
+                },
+                args.log_file,
+            )
+            exceptions.put(exc)
+
+    def live_worker() -> None:
+        live_args = argparse.Namespace(**vars(args))
+        live_args.registry = registry_path
+        try:
+            if args.run_forever:
+                _record_live_daemon(live_args, settings)
+                return
+            result = _run_live_record_cycle(live_args, settings)
+            payload = result.to_dict()
+            _emit_runtime_status(payload, args.log_file)
+            results.put({"live": payload})
+        except BaseException as exc:  # pragma: no cover - surfaced in main thread
+            _emit_runtime_status(
+                {
+                    "status": "live_runtime_error",
+                    "registry_path": registry_path,
+                    "message": str(exc),
+                },
+                args.log_file,
+            )
+            exceptions.put(exc)
+
+    history_thread = threading.Thread(
+        target=history_worker,
+        name="history-sync-thread",
+        daemon=args.run_forever,
+    )
+    live_thread = threading.Thread(
+        target=live_worker,
+        name="live-recorder-thread",
+        daemon=False,
+    )
+    history_thread.start()
+    live_thread.start()
+
+    collected: dict[str, dict] = {}
+    while history_thread.is_alive() or live_thread.is_alive():
+        try:
+            exc = exceptions.get_nowait()
+            raise exc
+        except Empty:
+            pass
+        try:
+            payload = results.get(timeout=0.5)
+            collected.update(payload)
+        except Empty:
+            pass
+
+    history_thread.join()
+    live_thread.join()
+
+    try:
+        exc = exceptions.get_nowait()
+        raise exc
+    except Empty:
+        pass
+
+    while True:
+        try:
+            payload = results.get_nowait()
+            collected.update(payload)
+        except Empty:
+            break
+
+    if not args.run_forever:
+        print(json.dumps(collected, ensure_ascii=False, indent=2))
+
+
 def _run_live_record_cycle(args: argparse.Namespace, settings: Settings) -> LiveRecordResult:
     if args.provider != "shioaji":
         raise ValueError("Only provider=shioaji is implemented in v1.")
@@ -446,7 +769,81 @@ def _run_live_record_cycle(args: argparse.Namespace, settings: Settings) -> Live
     )
     service = LiveRecorderService(provider=provider, store=store)
     run_id = _new_live_run_id()
-    if args.symbols:
+    if getattr(args, "registry", None):
+        entries = load_symbol_registry(args.registry)
+        provider.connect()
+        _emit_runtime_status(
+            {"status": "connected", "provider": "shioaji", "simulation": args.simulation, "run_id": run_id},
+            args.log_file if hasattr(args, "log_file") else None,
+        )
+        try:
+            exact_symbols, option_roots = _partition_registry_live_entries(entries)
+            contracts, symbols_json, codes_json, extra_metadata = _resolve_registry_live_universe(
+                provider=provider,
+                exact_symbols=exact_symbols,
+                option_roots=option_roots,
+                expiry_count=args.expiry_count,
+                atm_window=args.atm_window,
+                underlying_future_symbol=args.underlying_future_symbol,
+                call_put=args.call_put,
+            )
+            metadata = LiveRunMetadata(
+                run_id=run_id,
+                provider="shioaji",
+                mode="registry_runtime",
+                started_at=datetime.now(),
+                session_scope=args.session_scope,
+                topic_count=len(contracts),
+                symbols_json=symbols_json,
+                codes_json=codes_json,
+                option_root=",".join(sorted(option_roots)) if option_roots else None,
+                underlying_future_symbol=args.underlying_future_symbol if option_roots else None,
+                expiry_count=args.expiry_count if option_roots else None,
+                atm_window=args.atm_window if option_roots else None,
+                call_put=args.call_put if option_roots else None,
+                reference_price=extra_metadata.get("reference_price"),
+                status="started",
+            )
+            store.create_live_run(metadata)
+            _emit_runtime_status(
+                {
+                    "status": "subscribed",
+                    "run_id": run_id,
+                    "topic_count": len(contracts),
+                    "exact_symbols": exact_symbols,
+                    "option_roots": sorted(option_roots),
+                },
+                args.log_file if hasattr(args, "log_file") else None,
+            )
+            usage_before = provider.usage_status()
+            result = service.persist_tick_stream(
+                provider.stream_ticks_from_contracts(contracts=contracts, max_events=args.max_events),
+                usage_before=usage_before,
+                batch_size=args.batch_size,
+                run_id=run_id,
+            )
+            usage_after = provider.usage_status()
+        except Exception:
+            if "metadata" in locals():
+                store.create_live_run(LiveRunMetadata(**{**metadata.__dict__, "status": "error"}))
+            stop_reason = provider.stop_reason()
+            provider.close()
+            raise
+        finally:
+            stop_reason = provider.stop_reason()
+            provider.close()
+        final_status = stop_reason or "completed"
+        store.create_live_run(LiveRunMetadata(**{**metadata.__dict__, "status": final_status}))
+        result = LiveRecordResult(
+            run_id=run_id,
+            ticks_appended=result.ticks_appended,
+            bars_upserted=result.bars_upserted,
+            first_tick_ts=result.first_tick_ts,
+            last_tick_ts=result.last_tick_ts,
+            stop_reason=stop_reason,
+            usage_status=(usage_after or usage_before).to_dict() if (usage_after or usage_before) else None,
+        )
+    elif args.symbols:
         symbols = [value.strip() for value in args.symbols.split(",") if value.strip()]
         provider.connect()
         _emit_runtime_status(
@@ -637,7 +1034,7 @@ def _sleep_until(target: datetime) -> None:
 
 
 def _emit_runtime_status(payload: dict, log_file: str | None) -> None:
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
     if not log_file:
         return
     path = Path(log_file)

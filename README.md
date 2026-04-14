@@ -11,12 +11,20 @@ Research-first quantitative trading platform for Taiwan index futures.
 
 ## Quick Start
 
+先講清楚：
+
+- `config/config.yaml` 目前預設 `database.url = sqlite:///local.db`
+- 所以你如果沒有額外帶 `--database-url postgresql://...`，資料會先寫進 `local.db`
+- 若你要把 `TimescaleDB` 當正式主庫，建議直接把 `config/config.yaml` 改成 PostgreSQL
+- Windows 主機若是你接下來要長時間跑 `run-runtime` / `record-live` 的正式環境，應該直接使用 PostgreSQL/TimescaleDB，不要再用 SQLite 當主庫
+
 1. Copy `config/config.yaml.example` to `config/config.yaml`
 2. Copy `config/symbols.csv.example` to `config/symbols.csv`
 3. Copy `.env.example` to `.env` and set `FINMIND_TOKEN`
 4. If you want live recording through Shioaji, also set `SH_API_KEY` and `SH_SECRET_KEY`
-4. Start TimescaleDB
-5. Run sync or backtest commands against either `sqlite:///local.db` or `postgresql://...`
+5. If this machine is your formal runtime host, change `database.url` to PostgreSQL
+6. Start TimescaleDB
+7. Run sync or backtest commands against either `sqlite:///local.db` or `postgresql://...`
 
 ```bash
 docker compose up -d
@@ -32,6 +40,14 @@ PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml do
 PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml resolve-contract --symbol MTX --date 2024-01-18
 PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml backtest --database-url postgresql://postgres:postgres@localhost:5432/trading --symbol MTX_MAIN --start 2024-01-03T08:45:00 --end 2024-01-03T13:44:00 --timeframe 1m
 ```
+
+若你要搬到 Windows 主機，請直接看 [OPERATIONS.md](/Users/quentin-tu/Documents/247_strategy/docs/OPERATIONS.md)。那份文件已補：
+
+- SQLite vs TimescaleDB 定位
+- Windows PowerShell 安裝步驟
+- `run-runtime` 正式啟動方式
+- `scripts/start-runtime.ps1` 一鍵啟動方式
+- DB 備份與還原方式
 
 ## CLI 指令說明
 
@@ -204,6 +220,44 @@ PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml re
 PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml record-live --database-url postgresql://postgres:postgres@localhost:5432/trading --option-root TXO --expiry-count 2 --atm-window 20 --underlying-future-symbol TXFR1 --batch-size 500
 
 PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml record-live --database-url postgresql://postgres:postgres@localhost:5432/trading --option-root TXO --expiry-count 2 --atm-window 20 --underlying-future-symbol TXFR1 --batch-size 500 --run-forever --session-scope day_and_night
+```
+
+### `record-live-registry`
+- 用途: 直接從 `config/symbols.csv` 展開 live 錄製 universe
+- 目前行為:
+  - `stock`:
+    - 直接訂閱該股票 tick
+  - `future`:
+    - `MTX/MXF -> MXFR1`
+    - `TX/TXF -> TXFR1`
+  - `option`:
+    - 依 root symbol 展開最近 `N` 個到期日
+    - 每個到期日取 `ATM ± window`
+- 適合情境:
+  - 你不想手動組 `--symbols`
+  - 想把 registry 內的股票、小台指、台指選一起錄進來
+- 注意:
+  - `Shioaji` 歷史回補仍依 `FinMind` 能力決定
+  - 目前 `1m` 歷史自動補齊仍只有期貨可完整走 `FinMind`
+
+```bash
+PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml record-live-registry --database-url postgresql://postgres:postgres@localhost:5432/trading --registry config/symbols.csv --expiry-count 2 --atm-window 20 --run-forever
+```
+
+### `run-runtime`
+- 用途: 單一主入口
+  - 先回補今天之前的歷史資料
+  - 再開始錄製 registry live universe
+- 歷史回補規則:
+  - 預設回補近 3 年到昨天
+  - 使用 `sync-registry`
+  - `1d/1m` 都會執行，但若資料源不支援某組合，會顯示 `skipped_unsupported`
+- 適合情境:
+  - 新環境第一次開機
+  - 每天啟動服務時先補歷史再進 live
+
+```bash
+PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml run-runtime --database-url postgresql://postgres:postgres@localhost:5432/trading --registry config/symbols.csv --run-forever --expiry-count 2 --atm-window 20
 ```
 
 ### `preview-option-universe`

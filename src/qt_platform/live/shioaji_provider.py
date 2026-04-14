@@ -17,6 +17,12 @@ from qt_platform.settings import ShioajiSettings
 
 
 ROOT_SYMBOL_PATTERN = re.compile(r"^[A-Z]+")
+LIVE_FUTURE_ALIAS = {
+    "MTX": "MXFR1",
+    "MXF": "MXFR1",
+    "TX": "TXFR1",
+    "TXF": "TXFR1",
+}
 
 
 class ShioajiLiveProvider(BaseLiveProvider):
@@ -209,6 +215,32 @@ class ShioajiLiveProvider(BaseLiveProvider):
     def _register_callbacks(self) -> None:
         assert self.api is not None
 
+        @self.api.on_tick_stk_v1()
+        def _on_stock_tick(exchange: Any, tick: Any) -> None:
+            code = getattr(tick, "code", None)
+            contract = self._contracts.get(code)
+            ts = _tick_datetime(tick)
+            symbol = str(getattr(contract, "code", None) or code or "")
+            canonical = CanonicalTick(
+                ts=ts,
+                trading_day=trading_day_for(ts),
+                symbol=symbol,
+                instrument_key=symbol,
+                contract_month="",
+                strike_price=None,
+                call_put=None,
+                session=classify_session(ts),
+                price=float(getattr(tick, "close", 0.0)),
+                size=float(getattr(tick, "volume", 0.0)),
+                tick_direction=_map_tick_direction(getattr(tick, "tick_type", None)),
+                total_volume=_float_or_none(getattr(tick, "total_volume", None)),
+                bid_side_total_vol=_float_or_none(getattr(tick, "bid_side_total_vol", None)),
+                ask_side_total_vol=_float_or_none(getattr(tick, "ask_side_total_vol", None)),
+                source="shioaji_live",
+                payload_json=json.dumps(_serialize_tick_payload(exchange, tick), ensure_ascii=False, default=str),
+            )
+            self._queue.put(canonical)
+
         @self.api.on_tick_fop_v1()
         def _on_tick(exchange: Any, tick: Any) -> None:
             code = getattr(tick, "code", None)
@@ -246,10 +278,13 @@ class ShioajiLiveProvider(BaseLiveProvider):
     def _resolve_contract(self, symbol: str) -> Any:
         assert self.api is not None
         contract = None
+        future_symbol = LIVE_FUTURE_ALIAS.get(symbol, symbol)
         try:
-            contract = self.api.Contracts.Futures[symbol]
+            contract = self.api.Contracts.Futures[future_symbol]
         except Exception:
             pass
+        if contract is None:
+            contract = self._resolve_stock_contract(symbol)
         if contract is None:
             exc: Exception | None = None
             try:
@@ -261,7 +296,7 @@ class ShioajiLiveProvider(BaseLiveProvider):
             if contract is None:
                 raise ValueError(
                     f"Unable to resolve Shioaji contract for symbol '{symbol}'. "
-                    "Pass the exact Shioaji contract code, for example TXFR1 or TXO20250418000C."
+                    "Pass the exact Shioaji contract code, for example 2330, TXFR1, or TXO20250418000C."
                 ) from exc
         code = getattr(contract, "code", symbol)
         target_code = getattr(contract, "target_code", None)
@@ -269,6 +304,24 @@ class ShioajiLiveProvider(BaseLiveProvider):
         if target_code:
             self._contracts[str(target_code)] = contract
         return contract
+
+    def _resolve_stock_contract(self, symbol: str) -> Any | None:
+        assert self.api is not None
+        try:
+            contract = self.api.Contracts.Stocks[symbol]
+            if contract is not None:
+                return contract
+        except Exception:
+            pass
+        for market in ("TSE", "OTC", "OES"):
+            try:
+                bucket = getattr(self.api.Contracts.Stocks, market)
+                contract = bucket[symbol]
+                if contract is not None:
+                    return contract
+            except Exception:
+                continue
+        return None
 
     def _resolve_option_contract_from_chain(self, symbol: str) -> Any | None:
         assert self.api is not None

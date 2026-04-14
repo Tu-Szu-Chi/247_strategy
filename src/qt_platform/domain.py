@@ -59,6 +59,8 @@ class Signal:
     side: Side
     size: int = 1
     reason: str = ""
+    execution_mode: str = "next_open"
+    target_price: float | None = None
 
 
 @dataclass(frozen=True)

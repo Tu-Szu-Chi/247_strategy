@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from collections import deque
 
-from qt_platform.domain import Bar, Side, Signal
-from qt_platform.strategies.base import BaseStrategy
+from qt_platform.domain import Side, Signal
+from qt_platform.strategies.base import BaseStrategy, StrategyContext
 
 
 class SmaCrossStrategy(BaseStrategy):
@@ -15,7 +15,8 @@ class SmaCrossStrategy(BaseStrategy):
         self._closes: deque[float] = deque(maxlen=slow_window)
         self._last_state: str | None = None
 
-    def on_bar(self, bar: Bar) -> list[Signal]:
+    def on_bar(self, context: StrategyContext) -> list[Signal]:
+        bar = context.bar
         self._closes.append(bar.close)
         if len(self._closes) < self.slow_window:
             return []
@@ -35,4 +36,3 @@ class SmaCrossStrategy(BaseStrategy):
         self._last_state = state
         side = Side.BUY if state == "above" else Side.SELL
         return [Signal(ts=bar.ts, side=side, reason=f"sma_cross_{state}")]
-

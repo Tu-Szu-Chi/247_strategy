@@ -7,6 +7,33 @@
 3. 如何把舊資料導入新 DB
 4. 如何用一個指令補全指定時間範圍的歷史資料
 
+## 0. 先講清楚 DB 定位
+
+目前專案同時支援 `SQLite` 與 `PostgreSQL/TimescaleDB`，兩者定位不同：
+
+- `SQLite`
+  - 預設值目前是 `config/config.yaml -> database.url = sqlite:///local.db`
+  - 適合本機 smoke test、單次回測、小規模驗證
+  - 很多我先前的快速測試，若沒有顯式帶 `--database-url postgresql://...`，就會落到這裡
+- `PostgreSQL/TimescaleDB`
+  - 適合正式長期資料庫
+  - 適合你接下來在 Windows 主機做的歷史補齊與長時間 `record-live`
+  - 你要把它視為正式主庫
+
+這代表：
+
+- 如果你在 `doctor`、`sync-registry`、`run-runtime` 沒明確帶 `--database-url`，而 `config/config.yaml` 仍是 `sqlite:///local.db`，資料就會寫進 SQLite，不會進 TimescaleDB
+- 目前你看到「TimescaleDB 沒資料」的主因，大概率不是同步失敗，而是指令其實打到 `local.db`
+
+正式機器建議直接把 `config/config.yaml` 改成：
+
+```yaml
+database:
+  url: "postgresql://postgres:postgres@localhost:5432/trading"
+```
+
+這樣之後大部分命令就不用每次手動加 `--database-url`
+
 ## 1. 資料庫備份
 
 ## SQLite
@@ -76,6 +103,44 @@ FINMIND_TOKEN=your_token
 ### 啟動 TimescaleDB
 ```bash
 docker compose up -d
+```
+
+## 2A. Windows 主機建議流程
+
+如果你要把 Windows 當正式 live 主機，建議：
+
+1. 安裝 `Python 3.10+`
+2. 安裝 `Docker Desktop`
+3. 專案根目錄建立 `.venv`
+4. 啟動 `TimescaleDB`
+5. 把 `config/config.yaml` 的 `database.url` 改成 PostgreSQL
+6. 用 `doctor` 確認
+7. 再跑 `run-runtime`
+
+### PowerShell 安裝範例
+```powershell
+py -3.10 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -e .
+Copy-Item config\config.yaml.example config\config.yaml
+Copy-Item config\symbols.csv.example config\symbols.csv
+Copy-Item .env.example .env
+docker compose up -d
+```
+
+### Windows 下建議的 `config/config.yaml`
+```yaml
+app:
+  timezone: "Asia/Taipei"
+  session_mode: "day_and_night"
+
+database:
+  url: "postgresql://postgres:postgres@localhost:5432/trading"
+```
+
+### Windows 下檢查指令
+```powershell
+.\.venv\Scripts\python.exe -m qt_platform.cli.main --config config/config.yaml doctor --symbol 2330 --timeframe 1m
 ```
 
 ## 3. 舊資料導入新 DB
@@ -149,6 +214,62 @@ psql postgresql://postgres:postgres@localhost:5432/trading < trading.sql
 
 但目前不建議預設打開，因為 minute-level repair semantics 還沒完全定稿。
 
+## 4A. Windows 下一個指令補歷史 + 進 live
+
+如果 Windows 主機是正式主機，建議直接用：
+
+```powershell
+.\.venv\Scripts\python.exe -m qt_platform.cli.main `
+  --config config/config.yaml `
+  run-runtime `
+  --registry config/symbols.csv `
+  --history-start-date 2023-01-01 `
+  --timeframes 1m `
+  --run-forever `
+  --expiry-count 2 `
+  --atm-window 20
+```
+
+這個指令會：
+
+1. 用一個主 CLI 同時開兩條 thread
+2. thread A: 回補今天之前的歷史資料
+   - 目前建議只補 `1m`
+   - 這樣可節省 request，不補 `future 1d` 與 `option 1d`
+3. thread B: 立即開始 live 錄製
+   - `symbols.csv` 內的股票
+   - `MTX/MXF` 對應近月 live 合約
+   - `TXO` 最近兩個到期日、ATM `±20`
+
+注意：
+
+- `TXO 1m` 歷史目前仍不由 FinMind 自動補，這部分目前是 live recorder 自建資料
+- `TWSE stock 1m` 歷史現在已支援 `FinMind TaiwanStockPriceTick -> bars_1m`
+- `run-runtime` 若不帶 `--database-url`，會採用 `config/config.yaml` 裡的 `database.url`
+
+### Windows 一鍵啟動腳本
+
+專案已提供：
+
+```powershell
+.\scripts\start-runtime.ps1
+```
+
+預設行為：
+
+- 使用 `config/config.yaml`
+- 使用 `config/symbols.csv`
+- `history-start-date = 2023-01-01`
+- 只補 `1m`
+- `run-forever`
+- `TXO` 最近兩個到期日、`ATM ±20`
+
+若要改起始日期：
+
+```powershell
+.\scripts\start-runtime.ps1 -HistoryStartDate 2024-01-01
+```
+
 ## Recommended Migration Workflow
 
 新環境最穩的啟用流程：
@@ -164,3 +285,19 @@ psql postgresql://postgres:postgres@localhost:5432/trading < trading.sql
 ```bash
 .venv/bin/python -m qt_platform.cli.main --config config/config.yaml doctor --database-url postgresql://postgres:postgres@localhost:5432/trading --symbol MTX --timeframe 1m
 ```
+
+## 補充：目前哪些資料真的可自動補
+
+- `TAIFEX future 1d`
+  - 可補
+- `TAIFEX future 1m`
+  - 可補
+- `TWSE stock 1d`
+  - 可補
+- `TWSE stock 1m`
+  - 可補，走 `FinMind TaiwanStockPriceTick -> bars_1m`
+- `TAIFEX option 1d`
+  - 可補，根 symbol 以 `TXO` 為 root，實際區分靠 `contract_date`
+- `TAIFEX option 1m`
+  - 目前不走 FinMind historical 自動補
+  - 目前策略是靠 live recorder 自建
