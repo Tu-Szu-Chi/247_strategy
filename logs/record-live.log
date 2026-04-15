@@ -2,3 +2,9 @@
 {"status": "subscribed", "run_id": "live-20260413T224434-0bfe0f4b", "topic_count": 1, "symbols": ["TXFR1"]}
 {"status": "connected", "provider": "shioaji", "simulation": false, "run_id": "live-20260415T152039-9fe670fe"}
 {"status": "subscribed", "run_id": "live-20260415T152039-9fe670fe", "topic_count": 1, "symbols": ["TXFR1"]}
+{"status": "connected", "provider": "shioaji", "simulation": false, "run_id": "live-20260415T203053-9a2bb829"}
+{"status": "subscribed", "run_id": "live-20260415T203053-9a2bb829", "topic_count": 164, "option_root": "TXO", "expiry_count": 2, "atm_window": 20, "reference_price": 37100.0}
+{"status": "connected", "provider": "shioaji", "simulation": false, "run_id": "live-20260415T203144-f3ce20c2"}
+{"status": "subscribed", "run_id": "live-20260415T203144-f3ce20c2", "topic_count": 1, "symbols": ["TXFR1"]}
+{"status": "connected", "provider": "shioaji", "simulation": false, "run_id": "live-20260415T204058-b5e679d5"}
+{"status": "subscribed", "run_id": "live-20260415T204058-b5e679d5", "topic_count": 164, "option_root": "TXO", "expiry_count": 2, "atm_window": 20, "reference_price": 37120.0}

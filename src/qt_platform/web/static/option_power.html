@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Option Power Demo</title>
+    <link rel="stylesheet" href="/option_power.css">
+  </head>
+  <body>
+    <main class="page">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Night Session Monitor</p>
+          <h1>Option Power</h1>
+          <p class="subtitle">盤別累積力道為主，1 分鐘變化為輔助。</p>
+        </div>
+        <div class="status-panel">
+          <div><span>WebSocket</span><strong id="connection-status">connecting</strong></div>
+          <div><span>Session</span><strong id="session-label">-</strong></div>
+          <div><span>Roots</span><strong id="roots-label">-</strong></div>
+          <div><span>Snapshot</span><strong id="snapshot-time">-</strong></div>
+          <div><span>Reference</span><strong id="reference-price">-</strong></div>
+        </div>
+      </section>
+
+      <section class="controls">
+        <label for="expiry-select">Expiry</label>
+        <select id="expiry-select"></select>
+      </section>
+
+      <section class="chart-card">
+        <div class="chart-header">
+          <div>Strike</div>
+          <div>Call</div>
+          <div>Put</div>
+        </div>
+        <div id="chart" class="chart"></div>
+      </section>
+    </main>
+    <script src="/option_power.js"></script>
+  </body>
+  </html>

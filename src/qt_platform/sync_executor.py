@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 from dataclasses import asdict, dataclass
 from datetime import date
 from typing import Callable
@@ -103,19 +104,29 @@ def sync_registry(
             (item.root_symbol, item.market, item.instrument_type, item.timeframe)
             for item in bulk_candidates
         }
-        for item in timeframe_items:
-            if (item.root_symbol, item.market, item.instrument_type, item.timeframe) in bulk_item_keys:
-                continue
-            results.append(
-                _execute_item(
-                    service=service,
-                    provider=provider,
-                    item=item,
-                    session_scope=session_scope,
-                    allow_repair=allow_repair,
-                    progress_callback=progress_callback,
-                )
-            )
+        
+        non_bulk_items = [
+            item for item in timeframe_items
+            if (item.root_symbol, item.market, item.instrument_type, item.timeframe) not in bulk_item_keys
+        ]
+
+        if non_bulk_items:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                futures = []
+                for item in non_bulk_items:
+                    futures.append(
+                        executor.submit(
+                            _execute_item,
+                            service=service,
+                            provider=provider,
+                            item=item,
+                            session_scope=session_scope,
+                            allow_repair=allow_repair,
+                            progress_callback=progress_callback,
+                        )
+                    )
+                for future in concurrent.futures.as_completed(futures):
+                    results.append(future.result())
 
     return SyncExecutionResult(plan=plan, items=results)
 

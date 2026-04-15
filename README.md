@@ -33,7 +33,7 @@ PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml pl
 PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml sync-registry --database-url postgresql://postgres:postgres@localhost:5432/trading --start-date 2024-01-01 --end-date 2024-01-31
 PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml backfill --database-url postgresql://postgres:postgres@localhost:5432/trading --symbol MTX --start-date 2024-01-01 --end-date 2024-01-31 --timeframe 1m
 PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml import-csv-folder --database-url postgresql://postgres:postgres@localhost:5432/trading --folder tmp --pattern '*.csv' --chunk-size 10000
-PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml preview-option-universe --option-root TXO --expiry-count 2 --atm-window 20 --underlying-future-symbol TXFR1
+PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml preview-option-universe --option-root AUTO --expiry-count 2 --atm-window 20 --underlying-future-symbol TXFR1
 PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml record-live --database-url postgresql://postgres:postgres@localhost:5432/trading --symbols TXFR1 --max-events 10
 PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml record-live-stub --database-url postgresql://postgres:postgres@localhost:5432/trading --ticks-file tmp/stub_ticks.jsonl --symbols TXO
 PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml doctor --database-url postgresql://postgres:postgres@localhost:5432/trading --symbol MTX --timeframe 1m
@@ -47,6 +47,7 @@ PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml ba
 - Windows PowerShell 安裝步驟
 - `run-runtime` 正式啟動方式
 - `scripts/start-runtime.ps1` 一鍵啟動方式
+- `scripts/sync-history.ps1` history 補齊方式
 - DB 備份與還原方式
 
 ## CLI 指令說明
@@ -187,12 +188,15 @@ PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml re
 - 注意:
   - `--symbols` 可傳 Shioaji 的精確合約代碼，例如 `TXFR1`、`TXO20250418000C`
   - 或改用高階選擇權模式:
-    - `--option-root TXO`
-    - `--expiry-count 2` 代表最近兩個到期日
-    - `--atm-window 20` 代表每個到期日取 ATM 上下各 20 個履約價
+    - `--option-root AUTO` 為預設，代表從 Shioaji contract buckets 動態挑目前可交易的最近兩檔台指選擇權 roots
+    - 例如在 `2026-04-15` 夜盤，會選到 `TXX` 與 `TX4`
+    - `--expiry-count 2` 在此模式下代表最近兩檔 roots
+    - `--atm-window 20` 代表每一檔 root 取 ATM 上下各 20 個履約價
   - 需要先安裝 `shioaji`
   - `.env` 需要 `SH_API_KEY` 與 `SH_SECRET_KEY`
-  - `TXON` 不是目前 SDK 內可直接訂閱的 contract code；`TXO` 是 option chain 群組，實際訂閱仍會展開為單一合約
+  - `TXON` 不是目前 SDK 內可直接訂閱的 contract code
+  - 若你明確傳 `--option-root TXO`，代表只看月選
+  - 若你要產品定義裡的「最近兩檔」，應使用預設 `AUTO`
   - 目前已加入 `api.usage()` 保護:
     - 每日流量上限預設 `500MB`
     - 使用率達 `99%` 會停止錄製
@@ -215,11 +219,11 @@ PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml re
 ```bash
 PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml record-live --database-url postgresql://postgres:postgres@localhost:5432/trading --symbols TXFR1 --max-events 10
 
-PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml record-live --database-url postgresql://postgres:postgres@localhost:5432/trading --option-root TXO --expiry-count 2 --atm-window 20 --underlying-future-symbol TXFR1 --max-events 200
+PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml record-live --database-url postgresql://postgres:postgres@localhost:5432/trading --option-root AUTO --expiry-count 2 --atm-window 20 --underlying-future-symbol TXFR1 --max-events 200
 
-PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml record-live --database-url postgresql://postgres:postgres@localhost:5432/trading --option-root TXO --expiry-count 2 --atm-window 20 --underlying-future-symbol TXFR1 --batch-size 500
+PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml record-live --database-url postgresql://postgres:postgres@localhost:5432/trading --option-root AUTO --expiry-count 2 --atm-window 20 --underlying-future-symbol TXFR1 --batch-size 500
 
-PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml record-live --database-url postgresql://postgres:postgres@localhost:5432/trading --option-root TXO --expiry-count 2 --atm-window 20 --underlying-future-symbol TXFR1 --batch-size 500 --run-forever --session-scope day_and_night
+PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml record-live --database-url postgresql://postgres:postgres@localhost:5432/trading --option-root AUTO --expiry-count 2 --atm-window 20 --underlying-future-symbol TXFR1 --batch-size 500 --run-forever --session-scope day_and_night
 ```
 
 ### `record-live-registry`
@@ -231,8 +235,9 @@ PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml re
     - `MTX/MXF -> MXFR1`
     - `TX/TXF -> TXFR1`
   - `option`:
-    - 依 root symbol 展開最近 `N` 個到期日
-    - 每個到期日取 `ATM ± window`
+    - 若 root 為 `TXO`，會動態展開目前可交易的最近 `N` 檔台指選擇權 roots
+    - 例如某些夜盤時段會是 `TXX + TX4`
+    - 每一檔 root 取 `ATM ± window`
 - 適合情境:
   - 你不想手動組 `--symbols`
   - 想把 registry 內的股票、小台指、台指選一起錄進來
@@ -261,14 +266,14 @@ PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml ru
 ```
 
 ### `preview-option-universe`
-- 用途: 在真正訂閱前，先預覽 `TXO` 高階 resolver 會展開成哪些單一合約
+- 用途: 在真正訂閱前，先預覽 live option resolver 會展開成哪些單一合約
 - 適合情境:
   - 想先看最近兩個到期日 + ATM 視窗到底會訂閱多少口
   - 想避免超過 200 個訂閱上限
   - 想在開錄前先確認 universe 是否合理
 
 ```bash
-PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml preview-option-universe --option-root TXO --expiry-count 2 --atm-window 20 --underlying-future-symbol TXFR1
+PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml preview-option-universe --option-root AUTO --expiry-count 2 --atm-window 20 --underlying-future-symbol TXFR1
 ```
 
 ### `option-minute-features`

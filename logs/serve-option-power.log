@@ -1,0 +1,20 @@
+{"status": "web_ready", "run_id": "live-20260415T202631-cedd30b0", "host": "127.0.0.1", "port": 8000, "url": "http://127.0.0.1:8000/"}
+{"status": "connected", "provider": "shioaji", "run_id": "live-20260415T202707-72584908"}
+{"status": "subscribed", "run_id": "live-20260415T202707-72584908", "topic_count": 164, "option_root": "TXO", "expiry_count": 2, "atm_window": 20, "reference_price": 37091.0}
+{"status": "web_ready", "run_id": "live-20260415T202707-72584908", "host": "127.0.0.1", "port": 8000, "url": "http://127.0.0.1:8000/"}
+{"status": "connected", "provider": "shioaji", "run_id": "live-20260415T203544-9ce6d2f9"}
+{"status": "subscribed", "run_id": "live-20260415T203544-9ce6d2f9", "topic_count": 164, "option_root": "TXO", "expiry_count": 2, "atm_window": 20, "reference_price": 37123.0}
+{"status": "web_ready", "run_id": "live-20260415T203544-9ce6d2f9", "host": "127.0.0.1", "port": 8000, "url": "http://127.0.0.1:8000/"}
+{"status": "connected", "provider": "shioaji", "run_id": "live-20260415T204220-1c1c0471"}
+{"status": "subscribed", "run_id": "live-20260415T204220-1c1c0471", "topic_count": 164, "option_root": "TXO", "expiry_count": 2, "atm_window": 20, "reference_price": 37126.0}
+{"status": "web_ready", "run_id": "live-20260415T204220-1c1c0471", "host": "127.0.0.1", "port": 8000, "url": "http://127.0.0.1:8000/"}
+{"status": "connected", "provider": "shioaji", "run_id": "live-20260415T205354-b1806736"}
+{"status": "subscribed", "run_id": "live-20260415T205354-b1806736", "topic_count": 164, "option_roots": ["TXX", "TX4"], "expiry_count": 2, "atm_window": 20, "reference_price": 37117.0}
+{"status": "web_ready", "run_id": "live-20260415T205354-b1806736", "host": "127.0.0.1", "port": 8000, "url": "http://127.0.0.1:8000/"}
+{"status": "connected", "provider": "shioaji", "run_id": "live-20260415T212110-8fce5ea6"}
+{"status": "subscribed", "run_id": "live-20260415T212110-8fce5ea6", "topic_count": 164, "option_roots": ["TXX", "TX4"], "expiry_count": 2, "atm_window": 20, "reference_price": 37140.0}
+{"status": "connected", "provider": "shioaji", "run_id": "live-20260415T212140-2dd2ca16"}
+{"status": "subscribed", "run_id": "live-20260415T212140-2dd2ca16", "topic_count": 164, "option_roots": ["TXX", "TX4"], "expiry_count": 2, "atm_window": 20, "reference_price": 37140.0}
+{"status": "connected", "provider": "shioaji", "run_id": "live-20260415T212235-ee5fcfa2"}
+{"status": "subscribed", "run_id": "live-20260415T212235-ee5fcfa2", "topic_count": 164, "option_roots": ["TXX", "TX4"], "expiry_count": 2, "atm_window": 20, "reference_price": 37136.0}
+{"status": "web_ready", "run_id": "live-20260415T212235-ee5fcfa2", "host": "127.0.0.1", "port": 8000, "url": "http://127.0.0.1:8000/"}

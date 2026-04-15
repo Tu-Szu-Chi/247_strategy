@@ -6,11 +6,13 @@ from unittest.mock import patch
 
 from qt_platform.live.shioaji_provider import (
     ShioajiLiveProvider,
+    _available_tx_option_roots,
     _call_put,
     _contract_month,
     _map_tick_direction,
     _nearest_expiry_dates,
     _normalize_root_symbol,
+    _select_option_contracts_from_roots,
     _select_option_contracts,
 )
 from qt_platform.domain import CanonicalTick
@@ -40,6 +42,7 @@ class DummyQuoteAPI:
 class DummyAPI:
     def __init__(self):
         self.quote = DummyQuoteAPI()
+        self.Contracts = DummyContract(Options={})
 
     def usage(self):
         return DummyContract(
@@ -110,8 +113,45 @@ class ShioajiProviderHelperTest(unittest.TestCase):
             DummyContract(delivery_date="2026/04/22"),
             DummyContract(delivery_date="2026/05/20"),
         ]
-        expiries = _nearest_expiry_dates(contracts, expiry_count=2, today=date(2026, 4, 16))
+        expiries = _nearest_expiry_dates(contracts, expiry_count=2, now=datetime(2026, 4, 16, 10, 0, 0))
         self.assertEqual(expiries, [date(2026, 4, 22), date(2026, 5, 20)])
+
+    def test_nearest_expiry_dates_excludes_today_in_night_session(self) -> None:
+        contracts = [
+            DummyContract(delivery_date="2026/04/15"),
+            DummyContract(delivery_date="2026/04/22"),
+            DummyContract(delivery_date="2026/05/20"),
+        ]
+        expiries = _nearest_expiry_dates(contracts, expiry_count=2, now=datetime(2026, 4, 15, 20, 30, 0))
+        self.assertEqual(expiries, [date(2026, 4, 22), date(2026, 5, 20)])
+
+    def test_available_tx_option_roots_filters_tx_family(self) -> None:
+        api = DummyContract(Contracts=DummyContract(Options=DummyContract(keys=lambda: ["TXO", "TXX", "TX4", "ABC", "TXFO"])))
+        self.assertEqual(_available_tx_option_roots(api), ["TX4", "TXO", "TXX"])
+
+    def test_select_option_contracts_from_roots_uses_one_expiry_per_root(self) -> None:
+        api = DummyContract(
+            Contracts=DummyContract(
+                Options={
+                    "TXX": [
+                        DummyContract(delivery_date="2026/04/17", strike_price=37100.0, option_right="C", symbol="TXX-C", code="TXXC"),
+                        DummyContract(delivery_date="2026/04/17", strike_price=37100.0, option_right="P", symbol="TXX-P", code="TXXP"),
+                    ],
+                    "TX4": [
+                        DummyContract(delivery_date="2026/04/22", strike_price=37200.0, option_right="C", symbol="TX4-C", code="TX4C"),
+                        DummyContract(delivery_date="2026/04/22", strike_price=37200.0, option_right="P", symbol="TX4-P", code="TX4P"),
+                    ],
+                }
+            )
+        )
+        selected = _select_option_contracts_from_roots(
+            api=api,
+            option_roots=["TXX", "TX4"],
+            reference_price=37150.0,
+            atm_window=1,
+            call_put="both",
+        )
+        self.assertEqual([contract.symbol for contract in selected], ["TXX-C", "TXX-P", "TX4-C", "TX4-P"])
 
     def test_select_option_contracts_picks_nearest_two_expiries_and_atm_window(self) -> None:
         contracts = []

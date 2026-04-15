@@ -67,10 +67,11 @@ class BarRepository(ABC):
     @abstractmethod
     def list_minute_force_features(
         self,
-        symbol: str,
+        symbol: str | None,
         start: datetime,
         end: datetime,
         run_id: str | None = None,
+        symbols: list[str] | None = None,
         instrument_keys: list[str] | None = None,
         contract_month: str | None = None,
         strike_price: float | None = None,

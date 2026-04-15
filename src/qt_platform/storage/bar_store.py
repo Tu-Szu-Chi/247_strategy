@@ -337,10 +337,11 @@ class SQLiteBarStore(BarRepository):
 
     def list_minute_force_features(
         self,
-        symbol: str,
+        symbol: str | None,
         start: datetime,
         end: datetime,
         run_id: str | None = None,
+        symbols: list[str] | None = None,
         instrument_keys: list[str] | None = None,
         contract_month: str | None = None,
         strike_price: float | None = None,
@@ -350,9 +351,16 @@ class SQLiteBarStore(BarRepository):
             SELECT ts, symbol, instrument_key, contract_month, strike_price, call_put, run_id, close, volume, up_ticks, down_ticks,
                    tick_total, net_tick_count, tick_bias_ratio, volume_per_tick, force_score
             FROM minute_force_features_1m
-            WHERE symbol = ? AND ts >= ? AND ts <= ?
+            WHERE ts >= ? AND ts <= ?
         """
-        params: list = [symbol, start.isoformat(), end.isoformat()]
+        params: list = [start.isoformat(), end.isoformat()]
+        if symbols:
+            placeholders = ",".join("?" for _ in symbols)
+            query += f" AND symbol IN ({placeholders})"
+            params.extend(symbols)
+        elif symbol is not None:
+            query += " AND symbol = ?"
+            params.append(symbol)
         if run_id is not None:
             query += " AND run_id = ?"
             params.append(run_id)

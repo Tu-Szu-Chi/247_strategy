@@ -239,7 +239,8 @@ psql postgresql://postgres:postgres@localhost:5432/trading < trading.sql
 3. thread B: 立即開始 live 錄製
    - `symbols.csv` 內的股票
    - `MTX/MXF` 對應近月 live 合約
-   - `TXO` 最近兩個到期日、ATM `±20`
+   - 台指選擇權最近兩檔 roots、ATM `±20`
+   - roots 會在啟動時依 Shioaji contract buckets 動態解析，不再寫死 `TXO`
 
 注意：
 
@@ -259,15 +260,16 @@ psql postgresql://postgres:postgres@localhost:5432/trading < trading.sql
 
 - 使用 `config/config.yaml`
 - 使用 `config/symbols.csv`
-- `history-start-date = 2023-01-01`
-- 只補 `1m`
+- 啟動 `serve-option-power`
+- 啟動 `record-live-registry`
 - `run-forever`
-- `TXO` 最近兩個到期日、`ATM ±20`
+- 台指選擇權最近兩檔 roots、`ATM ±20`
+- registry 內的 option 會在 live recorder 那條自動排除，避免與 option web service 重複錄製
 
-若要改起始日期：
+若要補 history，改用：
 
 ```powershell
-.\scripts\start-runtime.ps1 -HistoryStartDate 2024-01-01
+.\scripts\sync-history.ps1 -StartDate 2024-01-01
 ```
 
 ## Recommended Migration Workflow

@@ -1,0 +1,101 @@
+import unittest
+from datetime import date, datetime, timedelta
+
+from qt_platform.domain import CanonicalTick
+from qt_platform.option_power import OptionPowerAggregator
+
+
+def _tick(
+    *,
+    ts: datetime,
+    session: str,
+    direction: str | None,
+    size: float,
+    instrument_key: str = "TXO202504W218000C",
+    contract_month: str = "202504W2",
+    strike_price: float = 18000.0,
+    call_put: str = "call",
+) -> CanonicalTick:
+    return CanonicalTick(
+        ts=ts,
+        trading_day=date(2025, 4, 11),
+        symbol="TXO",
+        instrument_key=instrument_key,
+        contract_month=contract_month,
+        strike_price=strike_price,
+        call_put=call_put,
+        session=session,
+        price=12.0,
+        size=size,
+        tick_direction=direction,
+        source="stub_live",
+    )
+
+
+class OptionPowerAggregatorTest(unittest.TestCase):
+    def test_snapshot_tracks_cumulative_and_rolling_power(self) -> None:
+        aggregator = OptionPowerAggregator(option_root="TXO")
+        base_ts = datetime(2025, 4, 11, 9, 0, 0)
+        aggregator.ingest_tick(_tick(ts=base_ts, session="day", direction="up", size=10))
+        aggregator.ingest_tick(_tick(ts=base_ts + timedelta(seconds=10), session="day", direction="down", size=3))
+        aggregator.ingest_tick(_tick(ts=base_ts + timedelta(seconds=20), session="day", direction=None, size=2))
+
+        snapshot = aggregator.snapshot(
+            generated_at=base_ts + timedelta(seconds=30),
+            run_id="run-1",
+            underlying_reference_price=20000.0,
+            status="running",
+        )
+
+        self.assertEqual(snapshot.session, "day")
+        self.assertEqual(snapshot.contract_count, 1)
+        contract = snapshot.expiries[0].contracts[0]
+        self.assertEqual(contract.cumulative_buy_volume, 10)
+        self.assertEqual(contract.cumulative_sell_volume, 3)
+        self.assertEqual(contract.cumulative_power, 7)
+        self.assertEqual(contract.rolling_1m_buy_volume, 10)
+        self.assertEqual(contract.rolling_1m_sell_volume, 3)
+        self.assertEqual(contract.power_1m_delta, 7)
+        self.assertEqual(contract.unknown_volume, 2)
+
+    def test_snapshot_evicts_old_rolling_events(self) -> None:
+        aggregator = OptionPowerAggregator(option_root="TXO")
+        base_ts = datetime(2025, 4, 11, 9, 0, 0)
+        aggregator.ingest_tick(_tick(ts=base_ts, session="day", direction="up", size=10))
+        aggregator.ingest_tick(_tick(ts=base_ts + timedelta(seconds=70), session="day", direction="down", size=4))
+
+        snapshot = aggregator.snapshot(
+            generated_at=base_ts + timedelta(seconds=70),
+            run_id="run-1",
+            underlying_reference_price=None,
+            status="running",
+        )
+
+        contract = snapshot.expiries[0].contracts[0]
+        self.assertEqual(contract.cumulative_power, 6)
+        self.assertEqual(contract.rolling_1m_buy_volume, 0)
+        self.assertEqual(contract.rolling_1m_sell_volume, 4)
+        self.assertEqual(contract.power_1m_delta, -4)
+
+    def test_session_change_resets_cumulative_state(self) -> None:
+        aggregator = OptionPowerAggregator(option_root="TXO")
+        base_ts = datetime(2025, 4, 11, 13, 44, 50)
+        aggregator.ingest_tick(_tick(ts=base_ts, session="day", direction="up", size=10))
+        aggregator.ingest_tick(_tick(ts=base_ts + timedelta(minutes=80), session="night", direction="down", size=4))
+
+        snapshot = aggregator.snapshot(
+            generated_at=base_ts + timedelta(minutes=80),
+            run_id="run-1",
+            underlying_reference_price=None,
+            status="running",
+        )
+
+        self.assertEqual(snapshot.session, "night")
+        contract = snapshot.expiries[0].contracts[0]
+        self.assertEqual(contract.cumulative_buy_volume, 0)
+        self.assertEqual(contract.cumulative_sell_volume, 4)
+        self.assertEqual(contract.cumulative_power, -4)
+
+
+if __name__ == "__main__":
+    unittest.main()

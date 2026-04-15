@@ -17,6 +17,7 @@ from qt_platform.settings import ShioajiSettings
 
 
 ROOT_SYMBOL_PATTERN = re.compile(r"^[A-Z]+")
+TX_OPTION_ROOT_PATTERN = re.compile(r"^TX[A-Z0-9]$")
 LIVE_FUTURE_ALIAS = {
     "MTX": "MXFR1",
     "MXF": "MXFR1",
@@ -156,58 +157,51 @@ class ShioajiLiveProvider(BaseLiveProvider):
 
     def resolve_option_contracts(
         self,
-        option_root: str = "TXO",
+        option_root: str | None = None,
         expiry_count: int = 2,
         atm_window: int = 20,
         underlying_future_symbol: str = "TXFR1",
         call_put: str = "both",
     ) -> list[Any]:
-        if not self.connected or self.api is None:
-            raise RuntimeError("ShioajiLiveProvider must be connected before resolving option contracts.")
-        option_chain = self.api.Contracts.Options[option_root]
-        contracts = [contract for contract in option_chain if _option_delivery_date(contract) is not None]
-        if not contracts:
-            raise ValueError(f"No option contracts found for root '{option_root}'.")
-
-        expiry_dates = _nearest_expiry_dates(contracts, expiry_count=expiry_count, today=date.today())
-        reference_price = self._resolve_reference_price(underlying_future_symbol)
-        return _select_option_contracts(
-            contracts=contracts,
-            expiry_dates=expiry_dates,
-            reference_price=reference_price,
+        selected_roots, contracts, _ = self.resolve_option_universe(
+            option_root=option_root,
+            expiry_count=expiry_count,
             atm_window=atm_window,
+            underlying_future_symbol=underlying_future_symbol,
             call_put=call_put,
         )
+        return contracts
 
     def resolve_option_universe(
         self,
-        option_root: str = "TXO",
+        option_root: str | None = None,
         expiry_count: int = 2,
         atm_window: int = 20,
         underlying_future_symbol: str = "TXFR1",
         call_put: str = "both",
-    ) -> tuple[list[Any], float]:
+    ) -> tuple[list[str], list[Any], float]:
         if not self.connected or self.api is None:
             raise RuntimeError("ShioajiLiveProvider must be connected before resolving option contracts.")
-        option_chain = self.api.Contracts.Options[option_root]
-        contracts = [contract for contract in option_chain if _option_delivery_date(contract) is not None]
-        if not contracts:
-            raise ValueError(f"No option contracts found for root '{option_root}'.")
-
-        expiry_dates = _nearest_expiry_dates(contracts, expiry_count=expiry_count, today=date.today())
+        selected_roots = self.resolve_nearest_option_roots(
+            option_root=option_root,
+            root_count=expiry_count,
+            now=datetime.now(),
+        )
         reference_price = self._resolve_reference_price(underlying_future_symbol)
-        selected = _select_option_contracts(
-            contracts=contracts,
-            expiry_dates=expiry_dates,
+        contracts = _select_option_contracts_from_roots(
+            api=self.api,
+            option_roots=selected_roots,
             reference_price=reference_price,
             atm_window=atm_window,
             call_put=call_put,
         )
-        return selected, reference_price
+        if not contracts:
+            raise ValueError(f"No option contracts found for roots '{selected_roots}'.")
+        return selected_roots, contracts, reference_price
 
     def resolve_option_contract_symbols(
         self,
-        option_root: str = "TXO",
+        option_root: str | None = None,
         expiry_count: int = 2,
         atm_window: int = 20,
         underlying_future_symbol: str = "TXFR1",
@@ -221,6 +215,30 @@ class ShioajiLiveProvider(BaseLiveProvider):
             call_put=call_put,
         )
         return [str(contract.symbol) for contract in selected]
+
+    def resolve_nearest_option_roots(
+        self,
+        option_root: str | None = None,
+        root_count: int = 2,
+        now: datetime | None = None,
+    ) -> list[str]:
+        if not self.connected or self.api is None:
+            raise RuntimeError("ShioajiLiveProvider must be connected before resolving option roots.")
+        current_time = now or datetime.now()
+        if option_root and option_root.upper() not in {"AUTO", "TX", "TXO"}:
+            return [option_root.upper()]
+
+        candidates = []
+        for root in _available_tx_option_roots(self.api):
+            contracts = [contract for contract in self.api.Contracts.Options[root] if _option_delivery_date(contract) is not None]
+            if not contracts:
+                continue
+            nearest_expiry = _nearest_expiry_dates(contracts, expiry_count=1, now=current_time)
+            if not nearest_expiry:
+                continue
+            candidates.append((nearest_expiry[0], root))
+        candidates.sort(key=lambda item: (item[0], item[1]))
+        return [root for _, root in candidates[:root_count]]
 
     def _register_callbacks(self) -> None:
         assert self.api is not None
@@ -469,10 +487,15 @@ def _option_delivery_date(contract: Any) -> date | None:
     return datetime.strptime(str(raw), "%Y/%m/%d").date()
 
 
-def _nearest_expiry_dates(contracts: list[Any], expiry_count: int, today: date) -> list[date]:
+def _nearest_expiry_dates(contracts: list[Any], expiry_count: int, now: datetime) -> list[date]:
     unique_expiries = sorted({_option_delivery_date(contract) for contract in contracts if _option_delivery_date(contract) is not None})
-    future_or_today = [expiry for expiry in unique_expiries if expiry >= today]
-    pool = future_or_today or unique_expiries
+    session = classify_session(now)
+    today = now.date()
+    if session == "day":
+        pool = [expiry for expiry in unique_expiries if expiry >= today]
+    else:
+        pool = [expiry for expiry in unique_expiries if expiry > today]
+    pool = pool or unique_expiries
     return pool[:expiry_count]
 
 
@@ -516,3 +539,46 @@ def _select_option_contracts(
         )
     )
     return selected
+
+
+def _select_option_contracts_from_roots(
+    api: Any,
+    option_roots: list[str],
+    reference_price: float,
+    atm_window: int,
+    call_put: str,
+) -> list[Any]:
+    selected: list[Any] = []
+    for root in option_roots:
+        contracts = [contract for contract in api.Contracts.Options[root] if _option_delivery_date(contract) is not None]
+        if not contracts:
+            continue
+        expiry_dates = _nearest_expiry_dates(contracts, expiry_count=1, now=datetime.now())
+        if not expiry_dates:
+            continue
+        selected.extend(
+            _select_option_contracts(
+                contracts=contracts,
+                expiry_dates=expiry_dates,
+                reference_price=reference_price,
+                atm_window=atm_window,
+                call_put=call_put,
+            )
+        )
+    selected.sort(
+        key=lambda contract: (
+            _option_delivery_date(contract) or date.max,
+            float(contract.strike_price),
+            _call_put(contract) or "",
+        )
+    )
+    return selected
+
+
+def _available_tx_option_roots(api: Any) -> list[str]:
+    roots = []
+    for root in list(api.Contracts.Options.keys()):
+        normalized = str(root).upper()
+        if TX_OPTION_ROOT_PATTERN.match(normalized):
+            roots.append(normalized)
+    return sorted(set(roots))

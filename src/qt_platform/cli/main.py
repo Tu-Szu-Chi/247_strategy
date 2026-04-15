@@ -26,6 +26,7 @@ from qt_platform.features import compute_minute_force_feature_series
 from qt_platform.live.recorder import LiveRecordResult, LiveRecorderService
 from qt_platform.live.shioaji_provider import ShioajiLiveProvider
 from qt_platform.live.stub_provider import StubLiveProvider
+from qt_platform.option_power import OptionPowerRuntimeService
 from qt_platform.contracts import (
     is_continuous_symbol,
     resolve_mtx_monthly_contract,
@@ -44,6 +45,7 @@ from qt_platform.strategies.sma_cross import SmaCrossStrategy
 from qt_platform.symbol_registry import load_symbol_registry
 from qt_platform.sync_executor import sync_registry
 from qt_platform.sync_planner import plan_sync
+from qt_platform.web import build_option_power_app
 
 
 def main() -> None:
@@ -150,7 +152,7 @@ def main() -> None:
     record_live.add_argument("--database-url")
     record_live.add_argument("--provider", default="shioaji")
     record_live.add_argument("--symbols")
-    record_live.add_argument("--option-root")
+    record_live.add_argument("--option-root", default="AUTO")
     record_live.add_argument("--expiry-count", type=int, default=2)
     record_live.add_argument("--atm-window", type=int, default=20)
     record_live.add_argument("--underlying-future-symbol", default="TXFR1")
@@ -202,11 +204,29 @@ def main() -> None:
     run_runtime.add_argument("--log-file", default="logs/run-runtime.log")
 
     preview_option_universe = subparsers.add_parser("preview-option-universe")
-    preview_option_universe.add_argument("--option-root", default="TXO")
+    preview_option_universe.add_argument("--option-root", default="AUTO")
     preview_option_universe.add_argument("--expiry-count", type=int, default=2)
     preview_option_universe.add_argument("--atm-window", type=int, default=20)
     preview_option_universe.add_argument("--underlying-future-symbol", default="TXFR1")
     preview_option_universe.add_argument("--call-put", default="both")
+
+    serve_option_power = subparsers.add_parser("serve-option-power")
+    serve_option_power.add_argument("--database-url")
+    serve_option_power.add_argument("--provider", default="shioaji")
+    serve_option_power.add_argument("--option-root", default="AUTO")
+    serve_option_power.add_argument("--expiry-count", type=int, default=2)
+    serve_option_power.add_argument("--atm-window", type=int, default=20)
+    serve_option_power.add_argument("--underlying-future-symbol", default="TXFR1")
+    serve_option_power.add_argument("--call-put", default="both")
+    serve_option_power.add_argument("--batch-size", type=int, default=500)
+    serve_option_power.add_argument("--idle-timeout-seconds", type=float, default=30.0)
+    serve_option_power.add_argument("--simulation", action="store_true")
+    serve_option_power.add_argument("--session-scope", default="day_and_night")
+    serve_option_power.add_argument("--host", default="127.0.0.1")
+    serve_option_power.add_argument("--port", type=int, default=8000)
+    serve_option_power.add_argument("--snapshot-interval-seconds", type=float, default=5.0)
+    serve_option_power.add_argument("--ready-timeout-seconds", type=float, default=15.0)
+    serve_option_power.add_argument("--log-file", default="logs/serve-option-power.log")
 
     resolve_contract = subparsers.add_parser("resolve-contract")
     resolve_contract.add_argument("--symbol", default="MTX")
@@ -242,6 +262,8 @@ def main() -> None:
         _run_runtime(args, settings)
     elif args.command == "preview-option-universe":
         _preview_option_universe(args, settings)
+    elif args.command == "serve-option-power":
+        _serve_option_power(args, settings)
     elif args.command == "resolve-contract":
         _resolve_contract(args)
 
@@ -399,8 +421,9 @@ def _resolve_registry_live_universe(
 ) -> tuple[list, str, str, dict]:
     contracts = [provider._resolve_contract(symbol) for symbol in exact_symbols]
     reference_price: float | None = None
+    resolved_option_roots: list[str] = []
     for option_root in sorted(option_roots):
-        resolved, option_reference_price = provider.resolve_option_universe(
+        roots, resolved, option_reference_price = provider.resolve_option_universe(
             option_root=option_root,
             expiry_count=expiry_count,
             atm_window=atm_window,
@@ -408,6 +431,7 @@ def _resolve_registry_live_universe(
             call_put=call_put,
         )
         contracts.extend(resolved)
+        resolved_option_roots.extend(roots)
         if reference_price is None:
             reference_price = option_reference_price
     unique_contracts = {}
@@ -423,7 +447,10 @@ def _resolve_registry_live_universe(
         [str(getattr(contract, "code", "")) for contract in contracts],
         ensure_ascii=False,
     )
-    return contracts, symbols_json, codes_json, {"reference_price": reference_price}
+    metadata = {"reference_price": reference_price}
+    if resolved_option_roots:
+        metadata["resolved_option_roots"] = sorted(set(resolved_option_roots))
+    return contracts, symbols_json, codes_json, metadata
 
 
 def _provider(settings: Settings) -> FinMindAdapter:
@@ -487,12 +514,14 @@ def _option_minute_features(args: argparse.Namespace, settings: Settings) -> Non
     end = datetime.fromisoformat(args.end)
     resolver_payload = None
     allowed_instrument_keys: set[str] | None = None
+    allowed_symbols: list[str] | None = None
 
     if args.run_id:
         metadata = store.get_live_run(args.run_id)
         if metadata is None:
             raise ValueError(f"run_id '{args.run_id}' was not found.")
         allowed_instrument_keys = set(json.loads(metadata.codes_json or "[]"))
+        allowed_symbols = sorted({code[:3] for code in allowed_instrument_keys if code})
         resolver_payload = {
             "run_id": metadata.run_id,
             "provider": metadata.provider,
@@ -513,7 +542,7 @@ def _option_minute_features(args: argparse.Namespace, settings: Settings) -> Non
         provider = ShioajiLiveProvider(settings=settings.shioaji, simulation=False)
         provider.connect()
         try:
-            contracts, reference_price = provider.resolve_option_universe(
+            selected_roots, contracts, reference_price = provider.resolve_option_universe(
                 option_root=args.option_root,
                 expiry_count=args.expiry_count,
                 atm_window=args.atm_window,
@@ -524,8 +553,10 @@ def _option_minute_features(args: argparse.Namespace, settings: Settings) -> Non
         finally:
             provider.close()
         allowed_instrument_keys = {str(getattr(contract, "code", "")) for contract in contracts}
+        allowed_symbols = sorted(set(selected_roots))
         resolver_payload = {
             "option_root": args.option_root,
+            "selected_roots": selected_roots,
             "expiry_count": args.expiry_count,
             "atm_window": args.atm_window,
             "underlying_future_symbol": args.underlying_future_symbol,
@@ -537,17 +568,18 @@ def _option_minute_features(args: argparse.Namespace, settings: Settings) -> Non
         }
 
     features = store.list_minute_force_features(
-        symbol="TXO",
+        symbol=None,
         start=start,
         end=end,
         run_id=args.run_id,
+        symbols=allowed_symbols,
         instrument_keys=sorted(allowed_instrument_keys) if allowed_instrument_keys else None,
         contract_month=args.contract_month,
         strike_price=args.strike_price,
         call_put=args.call_put if args.call_put in {"call", "put"} else None,
     )
     payload = {
-        "symbol": "TXO",
+        "symbol": "AUTO_OPTION_ROOTS",
         "count": len(features),
         "items": [item.to_dict() for item in features[: args.limit]],
     }
@@ -826,7 +858,7 @@ def _run_live_record_cycle(args: argparse.Namespace, settings: Settings) -> Live
                 topic_count=len(contracts),
                 symbols_json=symbols_json,
                 codes_json=codes_json,
-                option_root=",".join(sorted(option_roots)) if option_roots else None,
+                option_root=",".join(extra_metadata.get("resolved_option_roots", sorted(option_roots))) if option_roots else None,
                 underlying_future_symbol=args.underlying_future_symbol if option_roots else None,
                 expiry_count=args.expiry_count if option_roots else None,
                 atm_window=args.atm_window if option_roots else None,
@@ -841,7 +873,7 @@ def _run_live_record_cycle(args: argparse.Namespace, settings: Settings) -> Live
                     "run_id": run_id,
                     "topic_count": len(contracts),
                     "exact_symbols": exact_symbols,
-                    "option_roots": sorted(option_roots),
+                    "option_roots": extra_metadata.get("resolved_option_roots", sorted(option_roots)),
                 },
                 args.log_file if hasattr(args, "log_file") else None,
             )
@@ -928,7 +960,7 @@ def _run_live_record_cycle(args: argparse.Namespace, settings: Settings) -> Live
             args.log_file if hasattr(args, "log_file") else None,
         )
         try:
-            contracts, reference_price = provider.resolve_option_universe(
+            selected_roots, contracts, reference_price = provider.resolve_option_universe(
                 option_root=args.option_root,
                 expiry_count=args.expiry_count,
                 atm_window=args.atm_window,
@@ -946,7 +978,7 @@ def _run_live_record_cycle(args: argparse.Namespace, settings: Settings) -> Live
                 topic_count=len(contracts),
                 symbols_json=json.dumps(symbols, ensure_ascii=False),
                 codes_json=json.dumps(codes, ensure_ascii=False),
-                option_root=args.option_root,
+                option_root=",".join(selected_roots),
                 underlying_future_symbol=args.underlying_future_symbol,
                 expiry_count=args.expiry_count,
                 atm_window=args.atm_window,
@@ -960,7 +992,7 @@ def _run_live_record_cycle(args: argparse.Namespace, settings: Settings) -> Live
                     "status": "subscribed",
                     "run_id": run_id,
                     "topic_count": len(contracts),
-                    "option_root": args.option_root,
+                    "option_roots": selected_roots,
                     "expiry_count": args.expiry_count,
                     "atm_window": args.atm_window,
                     "reference_price": reference_price,
@@ -1082,7 +1114,7 @@ def _preview_option_universe(args: argparse.Namespace, settings: Settings) -> No
     provider = ShioajiLiveProvider(settings=settings.shioaji, simulation=False)
     provider.connect()
     try:
-        contracts = provider.resolve_option_contracts(
+        selected_roots, contracts, reference_price = provider.resolve_option_universe(
             option_root=args.option_root,
             expiry_count=args.expiry_count,
             atm_window=args.atm_window,
@@ -1095,16 +1127,68 @@ def _preview_option_universe(args: argparse.Namespace, settings: Settings) -> No
 
     payload = {
         "option_root": args.option_root,
+        "selected_roots": selected_roots,
         "expiry_count": args.expiry_count,
         "atm_window": args.atm_window,
         "underlying_future_symbol": args.underlying_future_symbol,
         "call_put": args.call_put,
+        "reference_price": reference_price,
         "count": len(contracts),
         "symbols": [getattr(contract, "symbol", None) for contract in contracts],
         "codes": [getattr(contract, "code", None) for contract in contracts],
         "usage_status": usage.to_dict() if usage else None,
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def _serve_option_power(args: argparse.Namespace, settings: Settings) -> None:
+    if args.provider != "shioaji":
+        raise ValueError("Only provider=shioaji is implemented in v1.")
+    try:
+        import uvicorn
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError(
+            "uvicorn is required for serve-option-power. Install with: pip install -e .[web]"
+        ) from exc
+
+    provider = ShioajiLiveProvider(
+        settings=settings.shioaji,
+        idle_timeout_seconds=args.idle_timeout_seconds,
+        simulation=args.simulation,
+    )
+    store = build_bar_repository(_database_url(args, settings))
+    runtime = OptionPowerRuntimeService(
+        provider=provider,
+        store=store,
+        option_root=args.option_root,
+        expiry_count=args.expiry_count,
+        atm_window=args.atm_window,
+        underlying_future_symbol=args.underlying_future_symbol,
+        call_put=args.call_put,
+        session_scope=args.session_scope,
+        batch_size=args.batch_size,
+        snapshot_interval_seconds=args.snapshot_interval_seconds,
+        log_callback=lambda payload: _emit_runtime_status(payload, args.log_file),
+    )
+    run_id = _new_live_run_id()
+    runtime.start(run_id=run_id)
+    if not runtime.wait_until_ready(timeout=args.ready_timeout_seconds):
+        raise RuntimeError("Option power runtime did not become ready within timeout.")
+    if runtime.status not in {"running", "waiting_for_session"}:
+        raise RuntimeError(runtime.error_message or f"Option power runtime failed with status={runtime.status}.")
+
+    app = build_option_power_app(runtime)
+    _emit_runtime_status(
+        {
+            "status": "web_ready",
+            "run_id": run_id,
+            "host": args.host,
+            "port": args.port,
+            "url": f"http://{args.host}:{args.port}/",
+        },
+        args.log_file,
+    )
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
 
 def _resolve_contract(args: argparse.Namespace) -> None:
