@@ -1,8 +1,11 @@
 import os
+import queue
 import unittest
-from datetime import date
+from datetime import date, datetime
+from unittest.mock import patch
 
 from qt_platform.live.shioaji_provider import (
+    ShioajiLiveProvider,
     _call_put,
     _contract_month,
     _map_tick_direction,
@@ -10,6 +13,7 @@ from qt_platform.live.shioaji_provider import (
     _normalize_root_symbol,
     _select_option_contracts,
 )
+from qt_platform.domain import CanonicalTick
 from qt_platform.settings import ShioajiSettings
 
 
@@ -23,6 +27,49 @@ class DummyEnum:
     def __init__(self, value, name):
         self.value = value
         self.name = name
+
+
+class DummyQuoteAPI:
+    def subscribe(self, contract, quote_type=None, version=None):
+        return None
+
+    def unsubscribe(self, contract, quote_type=None, version=None):
+        return None
+
+
+class DummyAPI:
+    def __init__(self):
+        self.quote = DummyQuoteAPI()
+
+    def usage(self):
+        return DummyContract(
+            bytes=0,
+            limit_bytes=524_288_000,
+            remaining_bytes=524_288_000,
+            connections=1,
+        )
+
+
+class DummyShioajiModule:
+    class constant:
+        class QuoteType:
+            Tick = "tick"
+
+        class QuoteVersion:
+            v1 = "v1"
+
+
+class SequencedQueue:
+    def __init__(self, events):
+        self._events = list(events)
+
+    def get(self, timeout=None):
+        if not self._events:
+            raise RuntimeError("Queue exhausted during test.")
+        event = self._events.pop(0)
+        if isinstance(event, BaseException):
+            raise event
+        return event
 
 
 class ShioajiProviderHelperTest(unittest.TestCase):
@@ -96,6 +143,54 @@ class ShioajiProviderHelperTest(unittest.TestCase):
         self.assertEqual(len(selected), 12)
         self.assertTrue(all("2026/05/20" not in contract.symbol for contract in selected))
         self.assertTrue(all(any(strike in contract.symbol for strike in ("17000.0", "17100.0", "17200.0")) for contract in selected))
+
+    def test_stream_ticks_keeps_waiting_through_in_session_idle_gap(self) -> None:
+        provider = ShioajiLiveProvider(
+            settings=ShioajiSettings(usage_check_interval_seconds=9999.0),
+            idle_timeout_seconds=0.01,
+        )
+        provider.connected = True
+        provider.api = DummyAPI()
+        provider._sj = DummyShioajiModule()
+        contract = DummyContract(code="TXFR1")
+        tick = CanonicalTick(
+            ts=datetime(2026, 4, 15, 21, 1, 0),
+            trading_day=date(2026, 4, 15),
+            symbol="TX",
+            instrument_key="TXFR1",
+            contract_month="202604",
+            strike_price=None,
+            call_put=None,
+            session="night",
+            price=19500.0,
+            size=1.0,
+            tick_direction="up",
+            source="shioaji_live",
+        )
+        provider._queue = SequencedQueue([queue.Empty(), tick])
+
+        with patch("qt_platform.live.shioaji_provider.classify_session", return_value="night"):
+            ticks = list(provider.stream_ticks_from_contracts([contract], max_events=1))
+
+        self.assertEqual(ticks, [tick])
+        self.assertIsNone(provider.stop_reason())
+
+    def test_stream_ticks_stops_after_session_closed_idle_gap(self) -> None:
+        provider = ShioajiLiveProvider(
+            settings=ShioajiSettings(usage_check_interval_seconds=9999.0),
+            idle_timeout_seconds=0.01,
+        )
+        provider.connected = True
+        provider.api = DummyAPI()
+        provider._sj = DummyShioajiModule()
+        provider._queue = SequencedQueue([queue.Empty()])
+        contract = DummyContract(code="TXFR1")
+
+        with patch("qt_platform.live.shioaji_provider.classify_session", return_value="unknown"):
+            ticks = list(provider.stream_ticks_from_contracts([contract], max_events=1))
+
+        self.assertEqual(ticks, [])
+        self.assertEqual(provider.stop_reason(), "session_closed")
 
 
 if __name__ == "__main__":

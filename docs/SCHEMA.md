@@ -97,6 +97,7 @@
   - 現在: FinMind `tick -> 1m aggregation`
   - 現在也可: broker-exported `1m CSV -> direct import`
   - 未來: broker live ticks `-> 1m aggregation`
+  - 規劃中: `FinMind TaiwanOptionTick -> TXO 1m historical aggregation`
 - 原則:
   - 只存 1 分 K 結果，不存 raw tick
   - `1m` 與 `1d` 分表
@@ -115,6 +116,20 @@
   - 對 index-like series，`instrument_key` 應保有實際標的身份
     - 例如 `TWOTC -> index:TWOTC`
     - 不應只寫成通用值 `index`
+
+### `TXO 1m historical` 規劃邊界
+- 尚未實作
+- 已固定採用 Version A universe
+  - `option_root = TXO`
+  - 最近 `2` 個到期日
+  - 每個到期日取 `ATM ±20`
+  - `call + put`
+- 這條規則的目的不是覆蓋整條 option chain，而是：
+  - 控制 request 成本
+  - 與 live resolver universe 保持一致
+  - 讓 historical option minute data 與 live-recorded option minute data 更容易對齊
+- `contract_date` 仍需原樣保留，不能簡化成只有 `YYYYMM`
+- full-chain historical option minute backfill 明確延後
 
 ### `bars_1d`
 - 用途: 日資料研究與 bootstrap

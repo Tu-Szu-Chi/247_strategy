@@ -52,6 +52,16 @@ Scope:
   - broker-exported `1m CSV`
 - keep `up_ticks/down_ticks` as optional minute-level force inputs
 
+Planned next historical extension:
+- `TXO 1m historical` should use `FinMind TaiwanOptionTick -> bars_1m`
+- universe is intentionally constrained as Version A:
+  - option root: `TXO`
+  - recent `2` expiries only
+  - `ATM ±20`
+  - `call + put`
+- this is meant to align historical option minute data with the current live resolver universe
+- full-chain `TXO` historical backfill is explicitly deferred
+
 Deliverables:
 - completed repository schema
 - importer/sync commands

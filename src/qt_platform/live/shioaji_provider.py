@@ -107,7 +107,19 @@ class ShioajiLiveProvider(BaseLiveProvider):
                 self._stop_reason = "usage_threshold_reached"
                 return
             while max_events is None or emitted < max_events:
-                tick = self._queue.get(timeout=self.idle_timeout_seconds)
+                try:
+                    tick = self._queue.get(timeout=self.idle_timeout_seconds)
+                except queue.Empty:
+                    now = datetime.now()
+                    if classify_session(now) == "unknown":
+                        self._stop_reason = "session_closed"
+                        return
+                    if (now - last_usage_check).total_seconds() >= self.settings.usage_check_interval_seconds:
+                        if self._should_pause_for_usage():
+                            self._stop_reason = "usage_threshold_reached"
+                            return
+                        last_usage_check = now
+                    continue
                 yield tick
                 emitted += 1
                 now = datetime.now()
@@ -116,8 +128,6 @@ class ShioajiLiveProvider(BaseLiveProvider):
                         self._stop_reason = "usage_threshold_reached"
                         return
                     last_usage_check = now
-        except queue.Empty:
-            return
         finally:
             for contract in contracts:
                 try:
