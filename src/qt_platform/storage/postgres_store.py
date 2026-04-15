@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from datetime import date, datetime, timezone
 from typing import Iterable
+from zoneinfo import ZoneInfo
 
 from qt_platform.domain import Bar, CanonicalTick, LiveRunMetadata
 from qt_platform.features import MinuteForceFeatures
@@ -13,6 +14,9 @@ try:
     import psycopg
 except ImportError:  # pragma: no cover
     psycopg = None
+
+
+LOCAL_TIMEZONE = ZoneInfo("Asia/Taipei")
 
 
 class PostgresBarStore(BarRepository):
@@ -79,7 +83,7 @@ class PostgresBarStore(BarRepository):
                 row = cur.fetchone()
         if not row or row[0] is None:
             return None
-        return _as_naive_utc(row[0])
+        return _as_naive_local(row[0])
 
     def list_trading_days(
         self,
@@ -151,7 +155,7 @@ class PostgresBarStore(BarRepository):
                 row = cur.fetchone()
         if not row or row[0] is None:
             return None
-        return _as_naive_utc(row[0])
+        return _as_naive_local(row[0])
 
     def append_ticks(self, ticks: Iterable[CanonicalTick]) -> int:
         rows = [self._tick_to_row(tick) for tick in ticks]
@@ -599,7 +603,7 @@ class PostgresBarStore(BarRepository):
     @staticmethod
     def _row_to_bar(row: tuple) -> Bar:
         return Bar(
-            ts=_as_naive_utc(row[0]),
+            ts=_as_naive_local(row[0]),
             trading_day=row[1],
             symbol=row[2],
             contract_month=row[3],
@@ -622,7 +626,7 @@ class PostgresBarStore(BarRepository):
     @staticmethod
     def _row_to_tick(row: tuple) -> CanonicalTick:
         return CanonicalTick(
-            ts=_as_naive_utc(row[0]),
+            ts=_as_naive_local(row[0]),
             trading_day=row[1],
             symbol=row[2],
             instrument_key=row[3],
@@ -664,7 +668,7 @@ class PostgresBarStore(BarRepository):
     @staticmethod
     def _row_to_feature(row: tuple) -> MinuteForceFeatures:
         return MinuteForceFeatures(
-            ts=_as_naive_utc(row[0]).isoformat(),
+            ts=_as_naive_local(row[0]).isoformat(),
             symbol=row[1],
             instrument_key=row[2],
             contract_month=row[3],
@@ -688,7 +692,7 @@ class PostgresBarStore(BarRepository):
             run_id=row[0],
             provider=row[1],
             mode=row[2],
-            started_at=_as_naive_utc(row[3]),
+            started_at=_as_naive_local(row[3]),
             session_scope=row[4],
             topic_count=int(row[5]),
             symbols_json=row[6],
@@ -705,14 +709,14 @@ class PostgresBarStore(BarRepository):
 
 def _utc(value: datetime) -> datetime:
     if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
+        return value.replace(tzinfo=LOCAL_TIMEZONE).astimezone(timezone.utc)
     return value.astimezone(timezone.utc)
 
 
-def _as_naive_utc(value: datetime) -> datetime:
+def _as_naive_local(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value
-    return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value.astimezone(LOCAL_TIMEZONE).replace(tzinfo=None)
 
 
 def _table_name(timeframe: str) -> str:

@@ -646,7 +646,36 @@ def _run_runtime(args: argparse.Namespace, settings: Settings) -> None:
     def history_worker() -> None:
         try:
             store = build_bar_repository(_database_url(args, settings))
-            entries = load_symbol_registry(registry_path)
+            all_entries = load_symbol_registry(registry_path)
+            provider = _provider(settings)
+            entries = []
+            for entry in all_entries:
+                if any(
+                    provider.supports_history(
+                        market=entry.market,
+                        instrument_type=entry.instrument_type,
+                        symbol=entry.root_symbol,
+                        timeframe=timeframe,
+                    )
+                    for timeframe in timeframe_values
+                ):
+                    entries.append(entry)
+                else:
+                    _emit_runtime_status(
+                        {
+                            "status": "history_item_skipped",
+                            "symbol": entry.symbol,
+                            "root_symbol": entry.root_symbol,
+                            "market": entry.market,
+                            "instrument_type": entry.instrument_type,
+                            "timeframe": ",".join(timeframe_values),
+                            "action": "skipped_unsupported",
+                            "reason": "unsupported_for_requested_timeframes",
+                        },
+                        args.log_file,
+                    )
+            def progress_callback(payload: dict) -> None:
+                _emit_runtime_status(payload, args.log_file)
             _emit_runtime_status(
                 {
                     "status": "history_sync_started",
@@ -659,7 +688,7 @@ def _run_runtime(args: argparse.Namespace, settings: Settings) -> None:
             )
             sync_result = sync_registry(
                 store=store,
-                provider=_provider(settings),
+                provider=provider,
                 entries=entries,
                 start_date=start_date,
                 end_date=end_date,
@@ -668,6 +697,7 @@ def _run_runtime(args: argparse.Namespace, settings: Settings) -> None:
                 target_utilization=args.target_utilization or settings.sync.target_utilization,
                 session_scope=args.session_scope,
                 allow_repair=args.allow_repair,
+                progress_callback=progress_callback,
             )
             payload = {
                 "status": "history_sync_completed",
