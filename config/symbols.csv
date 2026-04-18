@@ -2,4 +2,3 @@ symbol,market,instrument_type,enabled
 MTX,TAIFEX,future,true
 2330,TWSE,stock,true
 2308,TWSE,stock,true
-TXO,TAIFEX,option,true

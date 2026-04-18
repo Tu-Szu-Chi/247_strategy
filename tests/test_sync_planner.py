@@ -72,7 +72,7 @@ class SyncPlannerTest(unittest.TestCase):
         self.assertEqual(repair_plan.items[0].mode, "repair")
         self.assertEqual([value.isoformat() for value in repair_plan.items[0].missing_dates], ["2024-01-02"])
 
-    def test_plan_sync_estimates_stock_and_option_daily_differently(self) -> None:
+    def test_plan_sync_marks_option_daily_as_unsupported(self) -> None:
         with TemporaryDirectory() as temp_dir:
             store = SQLiteBarStore(f"{temp_dir}/bars.db")
             plan = plan_sync(
@@ -91,9 +91,9 @@ class SyncPlannerTest(unittest.TestCase):
         items = {(item.symbol, item.timeframe): item for item in plan.items}
         self.assertEqual(items[("2330", "1d")].request_strategy, "per_symbol_range")
         self.assertEqual(items[("2330", "1d")].estimated_requests, 1)
-        self.assertEqual(items[("TXO", "1d")].request_strategy, "per_symbol_per_day_chain")
-        self.assertEqual(items[("TXO", "1d")].estimated_requests, 3)
-        self.assertEqual(plan.timeframe_totals["1d"]["estimated_requests"], 4)
+        self.assertEqual(items[("TXO", "1d")].request_strategy, "unsupported")
+        self.assertEqual(items[("TXO", "1d")].estimated_requests, 0)
+        self.assertEqual(plan.timeframe_totals["1d"]["estimated_requests"], 1)
 
     def test_plan_sync_to_dict_serializes_nested_dates(self) -> None:
         with TemporaryDirectory() as temp_dir:

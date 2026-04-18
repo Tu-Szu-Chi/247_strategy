@@ -125,15 +125,16 @@ def import_csv_file(
 
 
 def _row_to_bar(row: dict[str, str], source: str, build_source: str) -> Bar:
-    symbol = row["Symbol"].strip()
+    raw_symbol = row["Symbol"].strip()
+    symbol = _canonical_symbol_for(raw_symbol)
     ts = _parse_timestamp(row["Date"], row["Time"])
     session = classify_session(ts)
     return Bar(
         ts=ts,
         trading_day=trading_day_for(ts),
         symbol=symbol,
-        instrument_key=_instrument_key_for(symbol),
-        contract_month=_contract_month_for(symbol),
+        instrument_key=_instrument_key_for(raw_symbol),
+        contract_month=_contract_month_for(raw_symbol),
         session=session,
         open=float(row["Open"]),
         high=float(row["High"]),
@@ -161,7 +162,16 @@ def _instrument_key_for(symbol: str) -> str:
 def _contract_month_for(symbol: str) -> str:
     if symbol == "TWOTC" or symbol.isdigit():
         return ""
+    if _canonical_symbol_for(symbol) == "MTX":
+        return ""
     return symbol
+
+
+def _canonical_symbol_for(symbol: str) -> str:
+    normalized = symbol.strip().upper()
+    if normalized.startswith("MXF"):
+        return "MTX"
+    return normalized
 
 
 def _optional_float(raw: str | None) -> float | None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from datetime import date, datetime, timedelta
 from urllib.parse import urlencode
@@ -17,7 +18,6 @@ class FinMindAdapter(BaseProvider):
     FUTURES_TICK_DATASET = "TaiwanFuturesTick"
     STOCK_DAILY_DATASET = "TaiwanStockPrice"
     STOCK_TICK_DATASET = "TaiwanStockPriceTick"
-    OPTION_DAILY_DATASET = "TaiwanOptionDaily"
 
     def __init__(self, settings: FinMindSettings) -> None:
         self.settings = settings
@@ -28,8 +28,6 @@ class FinMindAdapter(BaseProvider):
             return timeframe in {"1d", "1m"}
         if instrument_type == "stock" and market == "TWSE":
             return timeframe in {"1d", "1m"}
-        if instrument_type == "option" and market == "TAIFEX" and symbol == "TXO":
-            return timeframe == "1d"
         return False
 
     def fetch_history(
@@ -41,8 +39,6 @@ class FinMindAdapter(BaseProvider):
         session_scope: str,
     ) -> list[Bar]:
         if timeframe == "1d":
-            if symbol == "TXO":
-                return self._fetch_option_daily(symbol, start_date, end_date, session_scope)
             if symbol.isdigit():
                 return self._fetch_stock_daily(symbol, start_date, end_date)
             return self._fetch_futures_daily(symbol, start_date, end_date, session_scope)
@@ -104,28 +100,6 @@ class FinMindAdapter(BaseProvider):
         )
         rows = payload.get("data", [])
         bars = [self._normalize_stock_row(row) for row in rows]
-        bars.sort(key=lambda item: item.ts)
-        return bars
-
-    def _fetch_option_daily(
-        self,
-        symbol: str,
-        start_date: date,
-        end_date: date,
-        session_scope: str,
-    ) -> list[Bar]:
-        day = start_date
-        bars: list[Bar] = []
-        while day <= end_date:
-            payload = self._get(
-                dataset=self.OPTION_DAILY_DATASET,
-                data_id=symbol,
-                start_date=day.isoformat(),
-                end_date=day.isoformat(),
-                timeout_seconds=max(self.settings.timeout_seconds, 120),
-            )
-            bars.extend(self._normalize_option_row(row, session_scope=session_scope) for row in payload.get("data", []))
-            day += timedelta(days=1)
         bars.sort(key=lambda item: item.ts)
         return bars
 
@@ -294,35 +268,6 @@ class FinMindAdapter(BaseProvider):
         )
 
     @staticmethod
-    def _normalize_option_row(row: dict, session_scope: str) -> Bar:
-        trading_session = row.get("trading_session", "position")
-        if session_scope == "day" and trading_session != "position":
-            raise ValueError("Received non-day-session row while session_scope=day.")
-        if session_scope == "night" and trading_session not in {"after_market", "after_hours"}:
-            raise ValueError("Received non-night-session row while session_scope=night.")
-
-        ts = datetime.fromisoformat(f"{row['date']}T00:00:00")
-        option_id = str(row["option_id"])
-        return Bar(
-            ts=ts,
-            trading_day=ts.date(),
-            symbol=option_id,
-            instrument_key=f"{option_id}:{row['contract_date']}:{row['strike_price']}:{row['call_put']}",
-            contract_month=str(row["contract_date"]),
-            strike_price=float(row["strike_price"]),
-            call_put=str(row["call_put"]),
-            session=_map_session(trading_session),
-            open=float(row["open"]),
-            high=float(row["max"]),
-            low=float(row["min"]),
-            close=float(row["close"]),
-            volume=float(row["volume"]),
-            open_interest=_optional_float(row.get("open_interest")),
-            source="finmind",
-            build_source="finmind_option_daily",
-        )
-
-    @staticmethod
     def _aggregate_ticks(rows: list[dict], session_scope: str) -> list[Bar]:
         buckets: dict[tuple[datetime, str, str, str], list[dict]] = {}
 
@@ -335,11 +280,15 @@ class FinMindAdapter(BaseProvider):
                 continue
             if session == "unknown":
                 continue
+            symbol = str(row["futures_id"])
+            contract_month = str(row["contract_date"])
+            if not _include_futures_tick_contract(symbol=symbol, contract_month=contract_month):
+                continue
 
             bucket_key = (
                 ts.replace(second=0, microsecond=0),
-                str(row["futures_id"]),
-                str(row["contract_date"]),
+                symbol,
+                contract_month,
                 session,
             )
             buckets.setdefault(bucket_key, []).append(row)
@@ -426,3 +375,12 @@ def _map_session(trading_session: str) -> str:
         "after_hours": "night",
     }
     return mapping.get(trading_session, trading_session)
+
+
+_MONTHLY_CONTRACT_PATTERN = re.compile(r"^\d{6}$")
+
+
+def _include_futures_tick_contract(symbol: str, contract_month: str) -> bool:
+    if symbol != "MTX":
+        return True
+    return bool(_MONTHLY_CONTRACT_PATTERN.fullmatch(contract_month))

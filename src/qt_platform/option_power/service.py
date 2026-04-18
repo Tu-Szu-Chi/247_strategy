@@ -12,8 +12,18 @@ from qt_platform.features import compute_minute_force_feature_series
 from qt_platform.live.recorder import aggregate_ticks_to_bars
 from qt_platform.live.shioaji_provider import ShioajiLiveProvider
 from qt_platform.option_power.aggregator import OptionPowerAggregator
-from qt_platform.session import classify_session, is_in_session_scope, next_session_start
+from qt_platform.session import (
+    classify_session,
+    is_in_activation_scope,
+    is_in_session_scope,
+    next_activation_start,
+    next_session_start,
+)
 from qt_platform.storage.base import BarRepository
+
+
+LIVE_SUBSCRIBE_LEAD_SECONDS = 20.0
+OPTION_ROOT_RETRY_SECONDS = 5.0
 
 
 class OptionPowerRuntimeService:
@@ -88,8 +98,9 @@ class OptionPowerRuntimeService:
         try:
             while True:
                 now = datetime.now()
-                if not is_in_session_scope(now, self.session_scope):
-                    wake_at = next_session_start(now, self.session_scope)
+                if not is_in_activation_scope(now, self.session_scope, lead_seconds=LIVE_SUBSCRIBE_LEAD_SECONDS):
+                    wake_at = next_activation_start(now, self.session_scope, lead_seconds=LIVE_SUBSCRIBE_LEAD_SECONDS)
+                    session_wake_at = next_session_start(now, self.session_scope)
                     self.status = "waiting_for_session"
                     self.stop_reason = None
                     self.log_callback(
@@ -98,6 +109,8 @@ class OptionPowerRuntimeService:
                             "run_id": self.run_id,
                             "now": now.isoformat(),
                             "wake_at": wake_at.isoformat(),
+                            "session_wake_at": session_wake_at.isoformat(),
+                            "subscribe_lead_seconds": LIVE_SUBSCRIBE_LEAD_SECONDS,
                             "session_scope": self.session_scope,
                         }
                     )
@@ -113,6 +126,8 @@ class OptionPowerRuntimeService:
                     ready_emitted = True
 
                 if self.stop_reason == "session_closed":
+                    continue
+                if self.status == "waiting_for_option_roots":
                     continue
                 if self.stop_reason == "usage_threshold_reached":
                     self.status = "paused_for_usage_limit"
@@ -140,6 +155,7 @@ class OptionPowerRuntimeService:
     def _run_cycle(self) -> None:
         batch: list = []
         try:
+            self.warning = None
             self.status = "connecting"
             self.provider.connect()
             self.log_callback(
@@ -150,13 +166,33 @@ class OptionPowerRuntimeService:
                 }
             )
             self.status = "resolving_universe"
-            selected_roots, contracts, reference_price = self.provider.resolve_option_universe(
-                option_root=self.option_root,
-                expiry_count=self.expiry_count,
-                atm_window=self.atm_window,
-                underlying_future_symbol=self.underlying_future_symbol,
-                call_put=self.call_put,
-            )
+            try:
+                selected_roots, contracts, reference_price = self.provider.resolve_option_universe(
+                    option_root=self.option_root,
+                    expiry_count=self.expiry_count,
+                    atm_window=self.atm_window,
+                    underlying_future_symbol=self.underlying_future_symbol,
+                    call_put=self.call_put,
+                )
+            except ValueError as exc:
+                if "No option contracts found for roots" not in str(exc):
+                    raise
+                diagnostics = self.provider.option_root_diagnostics(now=datetime.now())
+                self.warning = str(exc)
+                self.status = "waiting_for_option_roots"
+                self.stop_reason = None
+                self.log_callback(
+                    {
+                        "status": "waiting_for_option_roots",
+                        "run_id": self.run_id,
+                        "message": str(exc),
+                        "retry_in_seconds": OPTION_ROOT_RETRY_SECONDS,
+                        "available_option_roots": diagnostics["available_roots"],
+                        "root_diagnostics": diagnostics["roots"],
+                    }
+                )
+                time.sleep(OPTION_ROOT_RETRY_SECONDS)
+                return
             for contract in contracts:
                 code = str(getattr(contract, "code", "") or "")
                 target_code = str(getattr(contract, "target_code", "") or "")
@@ -164,6 +200,7 @@ class OptionPowerRuntimeService:
                     self.provider._contracts[code] = contract
                 if target_code:
                     self.provider._contracts[target_code] = contract
+            self.aggregator.set_option_root(",".join(selected_roots))
             self.reference_price = reference_price
             symbols = [str(getattr(contract, "symbol", "")) for contract in contracts]
             codes = [str(getattr(contract, "code", "")) for contract in contracts]

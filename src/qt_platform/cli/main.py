@@ -36,16 +36,23 @@ from qt_platform.contracts import (
 from qt_platform.maintenance.service import MaintenanceService
 from qt_platform.providers.finmind import FinMindAdapter
 from qt_platform.reporting.performance import write_html_report
-from qt_platform.session import is_in_session_scope, next_session_start
+from qt_platform.session import (
+    is_in_activation_scope,
+    is_in_session_scope,
+    next_activation_start,
+    next_session_start,
+)
 from qt_platform.settings import Settings, load_settings
 from qt_platform.storage.factory import build_bar_repository
-from qt_platform.strategies.force_imbalance import ForceImbalanceStrategy
 from qt_platform.strategies.mxf_2330_pulse import Mxf2330PulseStrategy
 from qt_platform.strategies.sma_cross import SmaCrossStrategy
 from qt_platform.symbol_registry import load_symbol_registry
 from qt_platform.sync_executor import sync_registry
 from qt_platform.sync_planner import plan_sync
 from qt_platform.web import build_option_power_app
+
+
+LIVE_SUBSCRIBE_LEAD_SECONDS = 20.0
 
 
 def main() -> None:
@@ -328,19 +335,6 @@ def _backtest(args: argparse.Namespace, settings: Settings) -> None:
 def _build_strategy(args: argparse.Namespace):
     if args.strategy == "sma-cross":
         return SmaCrossStrategy(fast_window=args.fast_window, slow_window=args.slow_window)
-    if args.strategy == "force-imbalance":
-        return ForceImbalanceStrategy(
-            min_force_score=args.min_force_score,
-            min_tick_bias_ratio=args.min_tick_bias_ratio,
-            allow_short=not args.long_only,
-        )
-    if args.strategy == "mxf-2330-pulse":
-        return Mxf2330PulseStrategy(
-            growth_threshold=args.growth_threshold,
-            max_position=args.max_position,
-            stop_loss_points=args.stop_loss_points,
-            force_exit_time=args.force_exit_time,
-        )
     raise ValueError(f"Unsupported strategy: {args.strategy}")
 
 
@@ -1036,13 +1030,21 @@ def _record_live_daemon(args: argparse.Namespace, settings: Settings) -> None:
     timezone = ZoneInfo(settings.app.timezone)
     while True:
         now = datetime.now(timezone)
-        if not is_in_session_scope(now.replace(tzinfo=None), args.session_scope):
-            wake_at = next_session_start(now.replace(tzinfo=None), args.session_scope).replace(tzinfo=timezone)
+        local_now = now.replace(tzinfo=None)
+        if not is_in_activation_scope(local_now, args.session_scope, lead_seconds=LIVE_SUBSCRIBE_LEAD_SECONDS):
+            wake_at = next_activation_start(
+                local_now,
+                args.session_scope,
+                lead_seconds=LIVE_SUBSCRIBE_LEAD_SECONDS,
+            ).replace(tzinfo=timezone)
+            session_wake_at = next_session_start(local_now, args.session_scope).replace(tzinfo=timezone)
             _emit_runtime_status(
                 {
                     "status": "waiting_for_session",
                     "now": now.isoformat(),
                     "wake_at": wake_at.isoformat(),
+                    "session_wake_at": session_wake_at.isoformat(),
+                    "subscribe_lead_seconds": LIVE_SUBSCRIBE_LEAD_SECONDS,
                     "session_scope": args.session_scope,
                 },
                 args.log_file,
@@ -1188,7 +1190,7 @@ def _serve_option_power(args: argparse.Namespace, settings: Settings) -> None:
         },
         args.log_file,
     )
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info", access_log=False)
 
 
 def _resolve_contract(args: argparse.Namespace) -> None:

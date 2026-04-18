@@ -12,6 +12,8 @@ build/
 *.pyo
 *.pyd
 *.db
+*.log
+**/*.log
 reports/
 .env
 Sinopac.pfx

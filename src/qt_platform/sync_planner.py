@@ -174,15 +174,13 @@ def _request_strategy(entry: SymbolRegistryEntry, timeframe: str) -> str:
         return "bulk_daily_all_symbols"
     if entry.market == "TWSE" and entry.instrument_type == "stock":
         return "per_symbol_range"
-    if entry.market == "TAIFEX" and entry.instrument_type == "option":
-        return "per_symbol_per_day_chain"
     return "unsupported"
 
 
 def _estimated_requests(strategy: str, missing_dates: list[date]) -> int:
     if not missing_dates:
         return 0
-    if strategy == "bulk_daily_all_symbols":
+    if strategy in {"bulk_daily_all_symbols", "unsupported"}:
         return 0
     if strategy == "per_symbol_range":
         return 1

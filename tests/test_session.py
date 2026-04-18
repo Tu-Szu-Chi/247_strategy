@@ -1,7 +1,13 @@
 import unittest
 from datetime import datetime, timedelta
 
-from qt_platform.session import iter_expected_bar_timestamps, next_session_start, trading_day_for
+from qt_platform.session import (
+    is_in_activation_scope,
+    iter_expected_bar_timestamps,
+    next_activation_start,
+    next_session_start,
+    trading_day_for,
+)
 
 
 class SessionTest(unittest.TestCase):
@@ -27,6 +33,16 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(
             next_session_start(datetime(2024, 1, 2, 5, 1), "day_and_night"),
             datetime(2024, 1, 2, 8, 45),
+        )
+
+    def test_is_in_activation_scope_includes_pre_open_buffer(self) -> None:
+        self.assertTrue(is_in_activation_scope(datetime(2024, 1, 2, 8, 44, 40), "day_and_night", lead_seconds=20.0))
+        self.assertFalse(is_in_activation_scope(datetime(2024, 1, 2, 8, 44, 39), "day_and_night", lead_seconds=20.0))
+
+    def test_next_activation_start_returns_pre_open_time(self) -> None:
+        self.assertEqual(
+            next_activation_start(datetime(2024, 1, 2, 8, 35), "day_and_night", lead_seconds=20.0),
+            datetime(2024, 1, 2, 8, 44, 40),
         )
 
 

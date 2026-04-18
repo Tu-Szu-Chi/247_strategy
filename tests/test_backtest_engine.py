@@ -3,9 +3,24 @@ from datetime import datetime, timedelta
 
 from qt_platform.backtest.engine import BacktestConfig, run_backtest
 from qt_platform.domain import Bar, Side, Signal
-from qt_platform.strategies.base import BaseStrategy, StrategyContext
+from qt_platform.strategies.base import (
+    BarCloseEvent,
+    BaseIndicator,
+    BaseSignalLogic,
+    BaseStrategy,
+    BaseStrategyDefinition,
+    FixedSizeExecutionPolicy,
+    IndicatorValue,
+    PortfolioState,
+    SignalAction,
+    SignalDecisionContext,
+    SignalIntent,
+    StrategyUniverse,
+    StrategyContext,
+)
 from qt_platform.strategies.force_imbalance import ForceImbalanceStrategy
 from qt_platform.strategies.mxf_2330_pulse import Mxf2330PulseStrategy
+from qt_platform.strategies.sma_cross import SmaCrossStrategy
 
 
 class OneShotStrategy(BaseStrategy):
@@ -32,6 +47,126 @@ class BacktestEngineTest(unittest.TestCase):
         self.assertEqual(len(result.fills), 1)
         self.assertEqual(result.fills[0].ts, start + timedelta(minutes=1))
         self.assertEqual(result.fills[0].price, 105)
+
+    def test_strategy_definition_runs_indicator_signal_and_execution_layers(self) -> None:
+        class ThresholdIndicator(BaseIndicator):
+            def __init__(self) -> None:
+                self.last_close = None
+
+            def on_bar(self, event: BarCloseEvent) -> None:
+                self.last_close = event.bar.close
+
+            def snapshot(self) -> IndicatorValue:
+                return IndicatorValue(value=self.last_close, ready=self.last_close is not None)
+
+        class ThresholdSignalLogic(BaseSignalLogic):
+            def evaluate(self, context: SignalDecisionContext, indicator_values: dict[str, IndicatorValue]):
+                close_value = indicator_values["close"]
+                if not close_value.ready or close_value.value < 105:
+                    return []
+                return [
+                    SignalIntent(
+                        ts=context.event.bar.ts,
+                        symbol=context.event.bar.symbol,
+                        action=SignalAction.BUY,
+                        strength=0.8,
+                        reason="close_ge_105",
+                    )
+                ]
+
+        class ThresholdStrategy(BaseStrategyDefinition):
+            def __init__(self) -> None:
+                self._indicators = {"close": ThresholdIndicator()}
+                self._signal_logic = ThresholdSignalLogic()
+                self._execution_policy = FixedSizeExecutionPolicy(trade_size=1, max_position=1)
+
+            def indicators(self):
+                return self._indicators
+
+            def signal_logic(self):
+                return self._signal_logic
+
+            def execution_policy(self):
+                return self._execution_policy
+
+        start = datetime(2024, 1, 1, 8, 45)
+        bars = [
+            Bar(start, start.date(), "TX", "202401", "day", 100, 101, 99, 100, 10, None, "test"),
+            Bar(start + timedelta(minutes=1), start.date(), "TX", "202401", "day", 106, 107, 105, 106, 10, None, "test"),
+            Bar(start + timedelta(minutes=2), start.date(), "TX", "202401", "day", 107, 108, 106, 107, 10, None, "test"),
+        ]
+
+        result = run_backtest(bars=bars, strategy=ThresholdStrategy(), config=BacktestConfig(starting_cash=1000))
+
+        self.assertEqual(len(result.fills), 1)
+        self.assertEqual(result.fills[0].ts, start + timedelta(minutes=2))
+        self.assertEqual(result.fills[0].price, 107)
+
+    def test_fixed_execution_policy_respects_max_position(self) -> None:
+        policy = FixedSizeExecutionPolicy(trade_size=1, max_position=1)
+        context = SignalDecisionContext(
+            event=BarCloseEvent(
+                bar=Bar(
+                    datetime(2024, 1, 1, 8, 45),
+                    datetime(2024, 1, 1).date(),
+                    "TX",
+                    "202401",
+                    "day",
+                    100,
+                    101,
+                    99,
+                    100,
+                    10,
+                    None,
+                    "test",
+                )
+            ),
+            portfolio=PortfolioState(cash=1000.0, position_size=1, average_entry_price=100.0),
+            universe=StrategyUniverse(primary_symbol="TX"),
+        )
+        decisions = policy.decide(
+            [
+                SignalIntent(
+                    ts=datetime(2024, 1, 1, 8, 45),
+                    symbol="TX",
+                    action=SignalAction.BUY,
+                    reason="duplicate_buy",
+                )
+            ],
+            context,
+        )
+        self.assertEqual(decisions, [])
+
+    def test_sma_cross_strategy_uses_new_strategy_definition_path(self) -> None:
+        start = datetime(2024, 1, 1, 8, 45)
+        closes = [10, 10, 10, 10, 10, 20, 20, 20]
+        bars = [
+            Bar(
+                start + timedelta(minutes=index),
+                start.date(),
+                "TX",
+                "202401",
+                "day",
+                close,
+                close,
+                close,
+                close,
+                10,
+                None,
+                "test",
+            )
+            for index, close in enumerate(closes)
+        ]
+
+        result = run_backtest(
+            bars=bars,
+            strategy=SmaCrossStrategy(fast_window=3, slow_window=5),
+            config=BacktestConfig(starting_cash=1000),
+        )
+
+        self.assertEqual(len(result.fills), 1)
+        self.assertEqual(result.fills[0].side, Side.BUY)
+        self.assertEqual(result.fills[0].ts, start + timedelta(minutes=6))
 
     def test_force_imbalance_strategy_uses_minute_features(self) -> None:
         start = datetime(2024, 1, 1, 8, 45)

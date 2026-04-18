@@ -3,7 +3,7 @@ app:
   session_mode: "day_and_night"
 
 database:
-  url: "sqlite:///local.db"
+  url: "postgresql://postgres:postgres@localhost:5432/trading"
 
 finmind:
   base_url: "https://api.finmindtrade.com/api/v4"

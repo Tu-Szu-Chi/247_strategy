@@ -5,7 +5,14 @@ from typing import Any
 
 from qt_platform.domain import BacktestResult, Bar, Fill, Side, Signal, Trade
 from qt_platform.features import compute_minute_force_features
-from qt_platform.strategies.base import BaseStrategy, StrategyContext
+from qt_platform.strategies.base import (
+    BarCloseEvent,
+    BaseStrategy,
+    BaseStrategyDefinition,
+    PortfolioState,
+    StrategyContext,
+    StrategyRuntime,
+)
 
 
 @dataclass(frozen=True)
@@ -16,7 +23,7 @@ class BacktestConfig:
 
 def run_backtest(
     bars: list[Bar],
-    strategy: BaseStrategy,
+    strategy: BaseStrategy | BaseStrategyDefinition,
     config: BacktestConfig,
     context_extras_by_ts: dict[Any, dict[str, Any]] | None = None,
 ) -> BacktestResult:
@@ -26,6 +33,7 @@ def run_backtest(
     trades: list[Trade] = []
     equity_curve: list[tuple] = []
     open_fills: list[Fill] = []
+    runtime = StrategyRuntime(strategy) if isinstance(strategy, BaseStrategyDefinition) else None
 
     for index, bar in enumerate(bars):
         if pending_signals:
@@ -40,17 +48,36 @@ def run_backtest(
                 cash = _apply_fill(fill, open_fills, trades, cash)
             pending_signals = still_pending
 
+        position_size = _position_size(open_fills)
+        average_entry_price = _average_entry_price(open_fills)
+        extras = (context_extras_by_ts or {}).get(bar.ts, {})
         context = StrategyContext(
             bar=bar,
             minute_features=compute_minute_force_features(bar),
             open_fill=open_fills[-1] if open_fills else None,
-            position_size=_position_size(open_fills),
-            average_entry_price=_average_entry_price(open_fills),
+            position_size=position_size,
+            average_entry_price=average_entry_price,
             bar_index=index,
             total_bars=len(bars),
-            extras=(context_extras_by_ts or {}).get(bar.ts, {}),
+            extras=extras,
         )
-        emitted_signals = strategy.on_bar(context)
+        if runtime is not None:
+            emitted_signals = runtime.on_bar(
+                BarCloseEvent(
+                    bar=bar,
+                    minute_features=context.minute_features,
+                    bar_index=index,
+                    total_bars=len(bars),
+                    extras=extras,
+                ),
+                PortfolioState(
+                    cash=cash,
+                    position_size=position_size,
+                    average_entry_price=average_entry_price,
+                ),
+            )
+        else:
+            emitted_signals = strategy.on_bar(context)
         immediate_signals = [signal for signal in emitted_signals if signal.execution_mode == "same_bar"]
         pending_signals.extend(signal for signal in emitted_signals if signal.execution_mode != "same_bar")
 

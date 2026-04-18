@@ -5,9 +5,9 @@
 
 ## Requirement
 UI上可選擇要看哪一個週期的選擇權, 以我們目前架構而言只會有兩個選項, 預設選最近的
-透過websocket每五秒發送一次統計過後的option-power給前端
+v1 前端先用 polling，每五秒抓一次最新的 option-power snapshot；暫不強制 websocket
 UI應該長得像T-Shape Bar Chart, Y軸label是各履約價, X軸是“力道"
-紅色代表多方力道較強, 綠色則是空方力道, 數值範圍就是整數(會有負數); 當某一履約價的紅柱遠大於綠柱，代表該價位多頭氣勢強；反之則空頭強
+紅色代表多方力道較強, 綠色則是空方力道, 數值範圍就是整數(會有負數); 對 put 而言，顏色可依產品語意反轉解讀，不必拘泥於 raw power 正負顏色一致
 
 ## Math
 有鑒於目前live record拿到的tick除了price/vol之外, 還有up/down tick來告訴我們方向, 間接讓我們推算出內外盤比
@@ -27,7 +27,7 @@ UI應該長得像T-Shape Bar Chart, Y軸label是各履約價, X軸是“力道"
 
 ### Engineering Direction
 - power 計算必須以目前 live tick 可直接推得的買賣方向為基礎
-- websocket 每 5 秒推送一次完整 snapshot 給前端
+- v1 前端以 polling 為主，每 5 秒抓一次完整 snapshot
 - 前端週期 selector 目前只需支援最近兩個到期日，預設最近到期
 - 後端資料模型必須同時保留:
   - session cumulative power
@@ -119,6 +119,7 @@ UI應該長得像T-Shape Bar Chart, Y軸label是各履約價, X軸是“力道"
   - expiry list
   - contract_count
   - underlying reference price if available
+- expiry label 應轉成較易讀格式，不直接顯示原始 `contract_month`
 
 #### 4. Web Service
 - v1 建議新增輕量 ASGI service
@@ -128,7 +129,8 @@ UI應該長得像T-Shape Bar Chart, Y軸label是各履約價, X軸是“力道"
 - 提供兩類 endpoint:
   - `GET /api/option-power/snapshot`
   - `GET /ws/option-power`
-- websocket 連線建立後先送一次當前 snapshot，再每 5 秒持續推送
+- v1 前端主路徑先使用 `GET /api/option-power/snapshot` 輪詢
+- `GET /ws/option-power` 可保留作後續擴充，不列為 v1 必要交付
 
 #### 5. Runtime Wiring
 - 新增 CLI 入口，例如:
@@ -201,21 +203,20 @@ UI應該長得像T-Shape Bar Chart, Y軸label是各履約價, X軸是“力道"
 - 頁首顯示:
   - 當前 session
   - snapshot time
-  - websocket connection status
+  - 資料連線狀態
   - underlying reference price
 - 主區塊提供 expiry selector
 - 預設選最近到期日
 - 內容區為 T-shape / diverging bar chart
 
 #### Row Semantics
-- 一列代表一個 option contract，不做 call/put 合併
-- `Y-axis label = strike + call_put`
-  - 例如 `19800C`, `19800P`
+- UI 以相同 strike-price 為一列，call / put 同列左右對照顯示
+- `Y-axis label = strike_price`
 - `X-axis = cumulative power`
-- 紅色表示正 power
-- 綠色表示負 power
+- call 與 put 各自保有自己的 cumulative power，不做數值合併
+- 色彩語意以產品判讀為主；put 可採反向解讀，以符合使用者對多空力道的直觀判斷
 - 每列右側額外顯示 `1m delta`
-- 若 `unknown_volume > 0`，需有低調提示，不可完全隱藏
+- `unknown_volume` 先保留在 payload，v1 UI 可不顯示
 
 #### Sorting
 - v1 預設以 `strike_price` 由小到大排列
@@ -243,11 +244,11 @@ UI應該長得像T-Shape Bar Chart, Y軸label是各履約價, X軸是“力道"
 - 建立 HTTP + websocket service
 - 建立 snapshot endpoint
 - 建立 background live ingestion loop
-- 補 websocket payload smoke test
+- websocket payload smoke test 非 v1 必要項
 
 #### Phase 3: UI
 - 完成單頁監控介面
-- 接 websocket 並渲染 diverging bar chart
+- 先以 polling 接 snapshot 並渲染 diverging bar chart
 - 補空狀態 / 斷線狀態 / 無資料狀態
 
 #### Phase 4: Hardening

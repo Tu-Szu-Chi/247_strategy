@@ -80,11 +80,16 @@ class CsvImportTest(unittest.TestCase):
             store = SQLiteBarStore(f"{temp_dir}/bars.db")
 
             result = import_csv_folder(store=store, folder=folder)
+            mtx_rows = store.list_bars("1m", "MTX", datetime(2026, 4, 1, 0, 1), datetime(2026, 4, 1, 0, 1))
 
         payload = result.to_dict()
         self.assertEqual(payload["files_seen"], 2)
         self.assertEqual(payload["upserted_bars"], 2)
-        self.assertEqual({item["symbol"] for item in payload["items"]}, {"2330", "MXF1"})
+        self.assertEqual({item["symbol"] for item in payload["items"]}, {"2330", "MTX"})
+        self.assertEqual(len(mtx_rows), 1)
+        self.assertEqual(mtx_rows[0].symbol, "MTX")
+        self.assertEqual(mtx_rows[0].instrument_key, "MXF1")
+        self.assertEqual(mtx_rows[0].contract_month, "")
 
 
 if __name__ == "__main__":

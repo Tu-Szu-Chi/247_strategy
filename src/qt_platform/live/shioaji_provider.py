@@ -17,6 +17,7 @@ from qt_platform.settings import ShioajiSettings
 
 
 ROOT_SYMBOL_PATTERN = re.compile(r"^[A-Z]+")
+TX_OPTION_SYMBOL_PATTERN = re.compile(r"^(TXO|TX[1-5UVXYZ])", re.IGNORECASE)
 TX_OPTION_ROOT_PATTERN = re.compile(r"^TX[A-Z0-9]$")
 LIVE_FUTURE_ALIAS = {
     "MTX": "MXFR1",
@@ -240,6 +241,29 @@ class ShioajiLiveProvider(BaseLiveProvider):
         candidates.sort(key=lambda item: (item[0], item[1]))
         return [root for _, root in candidates[:root_count]]
 
+    def option_root_diagnostics(self, now: datetime | None = None) -> dict[str, Any]:
+        if not self.connected or self.api is None:
+            raise RuntimeError("ShioajiLiveProvider must be connected before inspecting option roots.")
+        current_time = now or datetime.now()
+        available_roots = _available_tx_option_roots(self.api)
+        roots: list[dict[str, Any]] = []
+        for root in available_roots:
+            contracts = list(self.api.Contracts.Options[root])
+            dated_contracts = [contract for contract in contracts if _option_delivery_date(contract) is not None]
+            nearest_expiry = _nearest_expiry_dates(dated_contracts, expiry_count=1, now=current_time) if dated_contracts else []
+            roots.append(
+                {
+                    "root": root,
+                    "contracts": len(contracts),
+                    "dated_contracts": len(dated_contracts),
+                    "nearest_expiry": nearest_expiry[0].isoformat() if nearest_expiry else None,
+                }
+            )
+        return {
+            "available_roots": available_roots,
+            "roots": roots,
+        }
+
     def _register_callbacks(self) -> None:
         assert self.api is not None
 
@@ -398,6 +422,9 @@ def _tick_datetime(tick: Any) -> datetime:
 
 
 def _root_symbol_for_tick(code: str | None, contract: Any) -> str:
+    option_root = _option_root_symbol(code, contract)
+    if option_root is not None:
+        return option_root
     candidate = (
         getattr(contract, "category", None)
         or getattr(contract, "underlying_code", None)
@@ -411,8 +438,40 @@ def _root_symbol_for_tick(code: str | None, contract: Any) -> str:
 def _normalize_root_symbol(value: str) -> str:
     if not value:
         return value
+    option_root = _extract_tx_option_root(value)
+    if option_root is not None:
+        return option_root
     match = ROOT_SYMBOL_PATTERN.match(value.upper())
-    return match.group(0) if match else value.upper()
+    normalized = match.group(0) if match else value.upper()
+    if normalized.startswith("MXF"):
+        return "MTX"
+    if normalized.startswith("TXF"):
+        return "TX"
+    return normalized
+
+
+def _option_root_symbol(code: str | None, contract: Any) -> str | None:
+    candidates = (
+        code,
+        getattr(contract, "code", None),
+        getattr(contract, "symbol", None),
+        getattr(contract, "underlying_code", None),
+        getattr(contract, "category", None),
+    )
+    for candidate in candidates:
+        option_root = _extract_tx_option_root(candidate)
+        if option_root is not None:
+            return option_root
+    return None
+
+
+def _extract_tx_option_root(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    match = TX_OPTION_SYMBOL_PATTERN.match(str(value).strip().upper())
+    if not match:
+        return None
+    return match.group(1)
 
 
 def _contract_month(contract: Any) -> str:

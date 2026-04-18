@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+import re
 from threading import Lock
 
 from qt_platform.domain import CanonicalTick
@@ -11,6 +12,10 @@ from qt_platform.option_power.domain import (
     OptionExpirySnapshot,
     OptionPowerSnapshot,
 )
+
+
+MONTH_CONTRACT_PATTERN = re.compile(r"^(?P<year>\d{4})(?P<month>\d{2})$")
+WEEKLY_CONTRACT_PATTERN = re.compile(r"^(?P<year>\d{4})(?P<month>\d{2})W(?P<week>\d+)$")
 
 
 @dataclass
@@ -47,6 +52,10 @@ class OptionPowerAggregator:
         self._lock = Lock()
         self._session = "unknown"
         self._states: dict[str, _ContractState] = {}
+
+    def set_option_root(self, option_root: str) -> None:
+        with self._lock:
+            self.option_root = option_root
 
     def ingest_tick(self, tick: CanonicalTick) -> None:
         if tick.strike_price is None or tick.call_put is None:
@@ -158,7 +167,7 @@ class OptionPowerAggregator:
             expiry_snapshots = [
                 OptionExpirySnapshot(
                     contract_month=contract_month,
-                    label=contract_month,
+                    label=_format_expiry_label(contract_month),
                     contracts=sorted(
                         contracts,
                         key=lambda item: (
@@ -198,3 +207,20 @@ class OptionPowerAggregator:
         cutoff = now - self.rolling_window
         while state.events and state.events[0].ts < cutoff:
             state.events.popleft()
+
+
+def _format_expiry_label(contract_month: str) -> str:
+    weekly_match = WEEKLY_CONTRACT_PATTERN.match(contract_month)
+    if weekly_match:
+        year = weekly_match.group("year")
+        month = weekly_match.group("month")
+        week = weekly_match.group("week")
+        return f"{year}-{month} W{week}"
+
+    month_match = MONTH_CONTRACT_PATTERN.match(contract_month)
+    if month_match:
+        year = month_match.group("year")
+        month = month_match.group("month")
+        return f"{year}-{month}"
+
+    return contract_month

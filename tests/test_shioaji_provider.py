@@ -9,9 +9,11 @@ from qt_platform.live.shioaji_provider import (
     _available_tx_option_roots,
     _call_put,
     _contract_month,
+    _extract_tx_option_root,
     _map_tick_direction,
     _nearest_expiry_dates,
     _normalize_root_symbol,
+    _root_symbol_for_tick,
     _select_option_contracts_from_roots,
     _select_option_contracts,
 )
@@ -78,6 +80,33 @@ class SequencedQueue:
 class ShioajiProviderHelperTest(unittest.TestCase):
     def test_normalize_root_symbol_extracts_prefix(self) -> None:
         self.assertEqual(_normalize_root_symbol("TXO20250418000C"), "TXO")
+        self.assertEqual(_normalize_root_symbol("TX438000D6"), "TX4")
+        self.assertEqual(_normalize_root_symbol("TXU17800R6"), "TXU")
+        self.assertEqual(_normalize_root_symbol("TXY17800R6"), "TXY")
+        self.assertEqual(_normalize_root_symbol("MXFD6"), "MTX")
+
+    def test_extract_tx_option_root_preserves_weekly_and_monthly_roots(self) -> None:
+        self.assertEqual(_extract_tx_option_root("TXO17800A6"), "TXO")
+        self.assertEqual(_extract_tx_option_root("TX138000D6"), "TX1")
+        self.assertEqual(_extract_tx_option_root("TX438000D6"), "TX4")
+        self.assertEqual(_extract_tx_option_root("TXU17800R6"), "TXU")
+        self.assertEqual(_extract_tx_option_root("TXV17800R6"), "TXV")
+        self.assertEqual(_extract_tx_option_root("TXX17800R6"), "TXX")
+        self.assertEqual(_extract_tx_option_root("TXY17800R6"), "TXY")
+        self.assertEqual(_extract_tx_option_root("TXZ17800R6"), "TXZ")
+        self.assertIsNone(_extract_tx_option_root("TXFR1"))
+
+    def test_root_symbol_for_tick_keeps_option_weekly_root(self) -> None:
+        contract = DummyContract(code="TX438000D6", symbol="TX4", strike_price=38000.0, option_right="C")
+        self.assertEqual(_root_symbol_for_tick("TX438000D6", contract), "TX4")
+
+    def test_root_symbol_for_tick_keeps_friday_weekly_root(self) -> None:
+        contract = DummyContract(code="TXU17800R6", symbol="TXU", strike_price=17800.0, option_right="P")
+        self.assertEqual(_root_symbol_for_tick("TXU17800R6", contract), "TXU")
+
+    def test_root_symbol_for_tick_keeps_future_root(self) -> None:
+        contract = DummyContract(code="TXFR1", symbol="TXFR1")
+        self.assertEqual(_root_symbol_for_tick("TXFR1", contract), "TX")
 
     def test_contract_month_prefers_delivery_fields(self) -> None:
         contract = DummyContract(delivery_month="202504")

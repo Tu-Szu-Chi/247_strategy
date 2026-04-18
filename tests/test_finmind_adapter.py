@@ -22,7 +22,7 @@ class FinMindAdapterTest(unittest.TestCase):
         self.assertTrue(adapter.supports_history(market="TAIFEX", instrument_type="future", symbol="MTX", timeframe="1m"))
         self.assertTrue(adapter.supports_history(market="TWSE", instrument_type="stock", symbol="2330", timeframe="1d"))
         self.assertTrue(adapter.supports_history(market="TWSE", instrument_type="stock", symbol="2330", timeframe="1m"))
-        self.assertTrue(adapter.supports_history(market="TAIFEX", instrument_type="option", symbol="TXO", timeframe="1d"))
+        self.assertFalse(adapter.supports_history(market="TAIFEX", instrument_type="option", symbol="TXO", timeframe="1d"))
         self.assertFalse(adapter.supports_history(market="TAIFEX", instrument_type="option", symbol="TXO", timeframe="1m"))
 
     def test_normalize_futures_row_maps_fields(self) -> None:
@@ -71,31 +71,6 @@ class FinMindAdapterTest(unittest.TestCase):
         self.assertEqual(bar.volume, 123456.0)
         self.assertEqual(bar.build_source, "finmind_stock_daily")
 
-    def test_normalize_option_row_maps_fields(self) -> None:
-        row = {
-            "date": "2024-04-08",
-            "option_id": "TXO",
-            "contract_date": "202404W1",
-            "strike_price": 20000,
-            "call_put": "call",
-            "trading_session": "position",
-            "open": 100,
-            "max": 110,
-            "min": 95,
-            "close": 105,
-            "volume": 321,
-            "open_interest": 999,
-        }
-
-        bar = FinMindAdapter._normalize_option_row(row, session_scope="day_and_night")
-
-        self.assertEqual(bar.symbol, "TXO")
-        self.assertEqual(bar.contract_month, "202404W1")
-        self.assertEqual(bar.strike_price, 20000.0)
-        self.assertEqual(bar.call_put, "call")
-        self.assertEqual(bar.open_interest, 999.0)
-        self.assertEqual(bar.build_source, "finmind_option_daily")
-
     def test_aggregate_ticks_to_minute_bars(self) -> None:
         rows = [
             {
@@ -134,6 +109,43 @@ class FinMindAdapterTest(unittest.TestCase):
         self.assertEqual(bars[0].session, "day")
         self.assertEqual(bars[0].instrument_key, "TX")
         self.assertEqual(bars[0].build_source, "finmind_tick_agg")
+
+    def test_aggregate_ticks_filters_mtx_weekly_and_spread_contracts(self) -> None:
+        rows = [
+            {
+                "contract_date": "202604",
+                "date": "2026-04-13 08:45:01",
+                "futures_id": "MTX",
+                "price": 20000,
+                "volume": 1,
+            },
+            {
+                "contract_date": "202604W4",
+                "date": "2026-04-13 08:45:10",
+                "futures_id": "MTX",
+                "price": 199,
+                "volume": 1,
+            },
+            {
+                "contract_date": "202604/202605",
+                "date": "2026-04-13 08:45:20",
+                "futures_id": "MTX",
+                "price": 210,
+                "volume": 1,
+            },
+            {
+                "contract_date": "202605",
+                "date": "2026-04-13 08:45:30",
+                "futures_id": "MTX",
+                "price": 20010,
+                "volume": 2,
+            },
+        ]
+
+        bars = FinMindAdapter._aggregate_ticks(rows, session_scope="day_and_night")
+
+        self.assertEqual([bar.contract_month for bar in bars], ["202604", "202605"])
+        self.assertTrue(all(bar.symbol == "MTX" for bar in bars))
 
     def test_fetch_daily_batch_calls_one_request_per_day(self) -> None:
         class StubFinMindAdapter(FinMindAdapter):
@@ -179,42 +191,6 @@ class FinMindAdapterTest(unittest.TestCase):
 
         self.assertEqual(len(adapter.calls), 3)
         self.assertEqual(len(grouped["MTX"]), 3)
-
-    def test_fetch_option_daily_uses_v4_single_day_windows(self) -> None:
-        class StubFinMindAdapter(FinMindAdapter):
-            def __init__(self):
-                super().__init__(
-                    FinMindSettings(
-                        base_url="https://api.finmindtrade.com/api/v4",
-                        token_env="FINMIND_TOKEN",
-                        rps_limit=1,
-                        retry_limit=1,
-                        backoff_factor=2.0,
-                        timeout_seconds=30,
-                    )
-                )
-                self.calls = []
-
-            def _get(self, api_version: str = "v4", **params: str) -> dict:
-                self.calls.append((api_version, params))
-                return {"data": []}
-
-        adapter = StubFinMindAdapter()
-        adapter._fetch_option_daily(
-            symbol="TXO",
-            start_date=datetime(2024, 1, 1).date(),
-            end_date=datetime(2024, 1, 3).date(),
-            session_scope="day_and_night",
-        )
-
-        self.assertEqual(
-            adapter.calls,
-            [
-                ("v4", {"dataset": "TaiwanOptionDaily", "data_id": "TXO", "start_date": "2024-01-01", "end_date": "2024-01-01", "timeout_seconds": 120}),
-                ("v4", {"dataset": "TaiwanOptionDaily", "data_id": "TXO", "start_date": "2024-01-02", "end_date": "2024-01-02", "timeout_seconds": 120}),
-                ("v4", {"dataset": "TaiwanOptionDaily", "data_id": "TXO", "start_date": "2024-01-03", "end_date": "2024-01-03", "timeout_seconds": 120}),
-            ],
-        )
 
     def test_aggregate_stock_ticks_to_minute_bars(self) -> None:
         rows = [

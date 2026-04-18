@@ -96,6 +96,53 @@ class OptionPowerAggregatorTest(unittest.TestCase):
         self.assertEqual(contract.cumulative_sell_volume, 4)
         self.assertEqual(contract.cumulative_power, -4)
 
+    def test_snapshot_formats_expiry_labels_for_weekly_and_monthly_contracts(self) -> None:
+        aggregator = OptionPowerAggregator(option_root="TXO")
+        base_ts = datetime(2025, 4, 11, 9, 0, 0)
+        aggregator.ingest_tick(
+            _tick(
+                ts=base_ts,
+                session="day",
+                direction="up",
+                size=10,
+                instrument_key="TXO202504W218000C",
+                contract_month="202504W2",
+            )
+        )
+        aggregator.ingest_tick(
+            _tick(
+                ts=base_ts + timedelta(seconds=1),
+                session="day",
+                direction="up",
+                size=5,
+                instrument_key="TXO20250518000C",
+                contract_month="202505",
+            )
+        )
+
+        snapshot = aggregator.snapshot(
+            generated_at=base_ts + timedelta(seconds=5),
+            run_id="run-1",
+            underlying_reference_price=None,
+            status="running",
+        )
+
+        self.assertEqual([expiry.contract_month for expiry in snapshot.expiries], ["202504W2", "202505"])
+        self.assertEqual([expiry.label for expiry in snapshot.expiries], ["2025-04 W2", "2025-05"])
+
+    def test_snapshot_uses_updated_option_roots_metadata(self) -> None:
+        aggregator = OptionPowerAggregator(option_root="AUTO")
+        aggregator.set_option_root("TXX,TX4")
+
+        snapshot = aggregator.snapshot(
+            generated_at=datetime(2025, 4, 11, 9, 0, 0),
+            run_id="run-1",
+            underlying_reference_price=None,
+            status="running",
+        )
+
+        self.assertEqual(snapshot.option_root, "TXX,TX4")
+
 
 if __name__ == "__main__":
     unittest.main()
