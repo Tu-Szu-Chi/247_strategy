@@ -4,11 +4,9 @@ import argparse
 import json
 import os
 import sqlite3
-import threading
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from queue import Empty, Queue
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from uuid import uuid4
@@ -23,9 +21,9 @@ from qt_platform.backtest.engine import BacktestConfig, run_backtest
 from qt_platform.csv_import import import_csv_folder
 from qt_platform.domain import LiveRunMetadata
 from qt_platform.features import compute_minute_force_feature_series
+from qt_platform.history_sync import build_history_entries, sync_history_days
 from qt_platform.live.recorder import LiveRecordResult, LiveRecorderService
 from qt_platform.live.shioaji_provider import ShioajiLiveProvider
-from qt_platform.live.stub_provider import StubLiveProvider
 from qt_platform.option_power import OptionPowerRuntimeService
 from qt_platform.contracts import (
     is_continuous_symbol,
@@ -47,8 +45,6 @@ from qt_platform.storage.factory import build_bar_repository
 from qt_platform.strategies.mxf_2330_pulse import Mxf2330PulseStrategy
 from qt_platform.strategies.sma_cross import SmaCrossStrategy
 from qt_platform.symbol_registry import load_symbol_registry
-from qt_platform.sync_executor import sync_registry
-from qt_platform.sync_planner import plan_sync
 from qt_platform.web import build_option_power_app
 
 
@@ -67,14 +63,6 @@ def main() -> None:
     scan.add_argument("--end", required=True)
     scan.add_argument("--step-minutes", type=int, default=1)
     scan.add_argument("--session-scope", default="day_and_night")
-
-    backfill = subparsers.add_parser("backfill")
-    backfill.add_argument("--database-url")
-    backfill.add_argument("--symbol", required=True)
-    backfill.add_argument("--start-date", required=True)
-    backfill.add_argument("--end-date", required=True)
-    backfill.add_argument("--session-scope", default="day_and_night")
-    backfill.add_argument("--timeframe", default="1d")
 
     backtest = subparsers.add_parser("backtest")
     backtest.add_argument("--database-url")
@@ -121,26 +109,6 @@ def main() -> None:
     option_minute_features.add_argument("--limit", type=int, default=20)
     option_minute_features.add_argument("--run-id")
 
-    plan_sync_parser = subparsers.add_parser("plan-sync")
-    plan_sync_parser.add_argument("--database-url")
-    plan_sync_parser.add_argument("--registry")
-    plan_sync_parser.add_argument("--start-date", required=True)
-    plan_sync_parser.add_argument("--end-date", required=True)
-    plan_sync_parser.add_argument("--timeframes", default="1d,1m")
-    plan_sync_parser.add_argument("--requests-per-hour", type=int)
-    plan_sync_parser.add_argument("--target-utilization", type=float)
-
-    sync_registry_parser = subparsers.add_parser("sync-registry")
-    sync_registry_parser.add_argument("--database-url")
-    sync_registry_parser.add_argument("--registry")
-    sync_registry_parser.add_argument("--start-date", required=True)
-    sync_registry_parser.add_argument("--end-date", required=True)
-    sync_registry_parser.add_argument("--timeframes", default="1d,1m")
-    sync_registry_parser.add_argument("--session-scope", default="day_and_night")
-    sync_registry_parser.add_argument("--requests-per-hour", type=int)
-    sync_registry_parser.add_argument("--target-utilization", type=float)
-    sync_registry_parser.add_argument("--allow-repair", action="store_true")
-
     import_csv_parser = subparsers.add_parser("import-csv-folder")
     import_csv_parser.add_argument("--database-url")
     import_csv_parser.add_argument("--folder", required=True)
@@ -149,73 +117,28 @@ def main() -> None:
     import_csv_parser.add_argument("--build-source", default="csv_1m_import")
     import_csv_parser.add_argument("--chunk-size", type=int, default=5000)
 
-    record_live_stub = subparsers.add_parser("record-live-stub")
-    record_live_stub.add_argument("--database-url")
-    record_live_stub.add_argument("--ticks-file", required=True)
-    record_live_stub.add_argument("--symbols", required=True)
-    record_live_stub.add_argument("--max-events", type=int)
+    runtime = subparsers.add_parser("runtime")
+    runtime.add_argument("--database-url")
+    runtime.add_argument("--registry")
+    runtime.add_argument("--expiry-count", type=int, default=2)
+    runtime.add_argument("--atm-window", type=int, default=20)
+    runtime.add_argument("--underlying-future-symbol", default="TXFR1")
+    runtime.add_argument("--call-put", default="both")
+    runtime.add_argument("--max-events", type=int)
+    runtime.add_argument("--batch-size", type=int, default=500)
+    runtime.add_argument("--idle-timeout-seconds", type=float, default=30.0)
+    runtime.add_argument("--simulation", action="store_true")
+    runtime.add_argument("--session-scope", default="day_and_night")
+    runtime.add_argument("--log-file", default="logs/runtime.log")
 
-    record_live = subparsers.add_parser("record-live")
-    record_live.add_argument("--database-url")
-    record_live.add_argument("--provider", default="shioaji")
-    record_live.add_argument("--symbols")
-    record_live.add_argument("--option-root", default="AUTO")
-    record_live.add_argument("--expiry-count", type=int, default=2)
-    record_live.add_argument("--atm-window", type=int, default=20)
-    record_live.add_argument("--underlying-future-symbol", default="TXFR1")
-    record_live.add_argument("--call-put", default="both")
-    record_live.add_argument("--max-events", type=int)
-    record_live.add_argument("--batch-size", type=int, default=500)
-    record_live.add_argument("--idle-timeout-seconds", type=float, default=30.0)
-    record_live.add_argument("--simulation", action="store_true")
-    record_live.add_argument("--session-scope", default="day_and_night")
-    record_live.add_argument("--run-forever", action="store_true")
-    record_live.add_argument("--log-file", default="logs/record-live.log")
-
-    record_live_registry = subparsers.add_parser("record-live-registry")
-    record_live_registry.add_argument("--database-url")
-    record_live_registry.add_argument("--provider", default="shioaji")
-    record_live_registry.add_argument("--registry")
-    record_live_registry.add_argument("--expiry-count", type=int, default=2)
-    record_live_registry.add_argument("--atm-window", type=int, default=20)
-    record_live_registry.add_argument("--underlying-future-symbol", default="TXFR1")
-    record_live_registry.add_argument("--call-put", default="both")
-    record_live_registry.add_argument("--max-events", type=int)
-    record_live_registry.add_argument("--batch-size", type=int, default=500)
-    record_live_registry.add_argument("--idle-timeout-seconds", type=float, default=30.0)
-    record_live_registry.add_argument("--simulation", action="store_true")
-    record_live_registry.add_argument("--session-scope", default="day_and_night")
-    record_live_registry.add_argument("--run-forever", action="store_true")
-    record_live_registry.add_argument("--log-file", default="logs/record-live-registry.log")
-
-    run_runtime = subparsers.add_parser("run-runtime")
-    run_runtime.add_argument("--database-url")
-    run_runtime.add_argument("--registry")
-    run_runtime.add_argument("--history-start-date")
-    run_runtime.add_argument("--history-end-date")
-    run_runtime.add_argument("--timeframes", default="1d,1m")
-    run_runtime.add_argument("--session-scope", default="day_and_night")
-    run_runtime.add_argument("--requests-per-hour", type=int)
-    run_runtime.add_argument("--target-utilization", type=float)
-    run_runtime.add_argument("--allow-repair", action="store_true")
-    run_runtime.add_argument("--provider", default="shioaji")
-    run_runtime.add_argument("--expiry-count", type=int, default=2)
-    run_runtime.add_argument("--atm-window", type=int, default=20)
-    run_runtime.add_argument("--underlying-future-symbol", default="TXFR1")
-    run_runtime.add_argument("--call-put", default="both")
-    run_runtime.add_argument("--max-events", type=int)
-    run_runtime.add_argument("--batch-size", type=int, default=500)
-    run_runtime.add_argument("--idle-timeout-seconds", type=float, default=30.0)
-    run_runtime.add_argument("--simulation", action="store_true")
-    run_runtime.add_argument("--run-forever", action="store_true")
-    run_runtime.add_argument("--log-file", default="logs/run-runtime.log")
-
-    preview_option_universe = subparsers.add_parser("preview-option-universe")
-    preview_option_universe.add_argument("--option-root", default="AUTO")
-    preview_option_universe.add_argument("--expiry-count", type=int, default=2)
-    preview_option_universe.add_argument("--atm-window", type=int, default=20)
-    preview_option_universe.add_argument("--underlying-future-symbol", default="TXFR1")
-    preview_option_universe.add_argument("--call-put", default="both")
+    history_sync = subparsers.add_parser("history-sync")
+    history_sync.add_argument("--database-url")
+    history_sync.add_argument("--registry")
+    history_sync.add_argument("--start-date", required=True)
+    history_sync.add_argument("--sync-time", default="15:05")
+    history_sync.add_argument("--session-scope", default="day_and_night")
+    history_sync.add_argument("--run-forever", action="store_true")
+    history_sync.add_argument("--log-file", default="logs/history-sync.log")
 
     serve_option_power = subparsers.add_parser("serve-option-power")
     serve_option_power.add_argument("--database-url")
@@ -243,8 +166,6 @@ def main() -> None:
     settings = load_settings(args.config)
     if args.command == "scan-gaps":
         _scan_gaps(args, settings)
-    elif args.command == "backfill":
-        _backfill(args, settings)
     elif args.command == "backtest":
         _backtest(args, settings)
     elif args.command == "doctor":
@@ -253,22 +174,12 @@ def main() -> None:
         _minute_features(args, settings)
     elif args.command == "option-minute-features":
         _option_minute_features(args, settings)
-    elif args.command == "plan-sync":
-        _plan_sync(args, settings)
-    elif args.command == "sync-registry":
-        _sync_registry(args, settings)
     elif args.command == "import-csv-folder":
         _import_csv_folder(args, settings)
-    elif args.command == "record-live-stub":
-        _record_live_stub(args, settings)
-    elif args.command == "record-live":
-        _record_live(args, settings)
-    elif args.command == "record-live-registry":
-        _record_live_registry(args, settings)
-    elif args.command == "run-runtime":
-        _run_runtime(args, settings)
-    elif args.command == "preview-option-universe":
-        _preview_option_universe(args, settings)
+    elif args.command == "runtime":
+        _runtime(args, settings)
+    elif args.command == "history-sync":
+        _history_sync(args, settings)
     elif args.command == "serve-option-power":
         _serve_option_power(args, settings)
     elif args.command == "resolve-contract":
@@ -287,19 +198,6 @@ def _scan_gaps(args: argparse.Namespace, settings: Settings) -> None:
     )
     for gap in gaps:
         print(f"{gap.start.isoformat()} -> {gap.end.isoformat()}")
-
-
-def _backfill(args: argparse.Namespace, settings: Settings) -> None:
-    store = build_bar_repository(_database_url(args, settings))
-    service = MaintenanceService(provider=_provider(settings), store=store)
-    inserted = service.backfill(
-        symbol=root_symbol_for(args.symbol),
-        start_date=date.fromisoformat(args.start_date),
-        end_date=date.fromisoformat(args.end_date),
-        timeframe=args.timeframe,
-        session_scope=args.session_scope,
-    )
-    print(f"upserted_bars={inserted}")
 
 
 def _backtest(args: argparse.Namespace, settings: Settings) -> None:
@@ -381,17 +279,17 @@ def _aggregate_reference_5m(bars: list) -> list[dict]:
     return aggregated
 
 
-def _partition_registry_live_entries(entries) -> tuple[list[str], set[str]]:
-    exact_symbols: list[str] = []
-    option_roots: set[str] = set()
-    for entry in entries:
-        if entry.instrument_type == "stock":
-            exact_symbols.append(entry.symbol)
-        elif entry.instrument_type == "future":
-            exact_symbols.append(_live_symbol_for_registry_future(entry.symbol))
-        elif entry.instrument_type == "option":
-            option_roots.add(entry.root_symbol)
-    return sorted(set(exact_symbols)), option_roots
+def _runtime_universe_from_registry(registry_path: str) -> tuple[list[str], set[str]]:
+    registry_entries = load_symbol_registry(registry_path)
+    stock_symbols = sorted(
+        {
+            entry.symbol
+            for entry in registry_entries
+            if entry.instrument_type == "stock"
+        }
+    )
+    exact_symbols = sorted({_live_symbol_for_registry_future("MTX"), *stock_symbols})
+    return exact_symbols, {"TXO"}
 
 
 def _live_symbol_for_registry_future(symbol: str) -> str:
@@ -582,46 +480,6 @@ def _option_minute_features(args: argparse.Namespace, settings: Settings) -> Non
     print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
-def _plan_sync(args: argparse.Namespace, settings: Settings) -> None:
-    store = build_bar_repository(_database_url(args, settings))
-    registry_path = args.registry or settings.sync.registry_path
-    entries = load_symbol_registry(registry_path)
-    timeframe_values = [value.strip() for value in args.timeframes.split(",") if value.strip()]
-    plan = plan_sync(
-        store=store,
-        entries=entries,
-        start_date=date.fromisoformat(args.start_date),
-        end_date=date.fromisoformat(args.end_date),
-        timeframes=timeframe_values,
-        requests_per_hour=args.requests_per_hour or settings.sync.requests_per_hour,
-        target_utilization=args.target_utilization or settings.sync.target_utilization,
-    )
-    payload = plan.to_dict()
-    payload["registry_path"] = registry_path
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
-
-
-def _sync_registry(args: argparse.Namespace, settings: Settings) -> None:
-    store = build_bar_repository(_database_url(args, settings))
-    entries = load_symbol_registry(args.registry or settings.sync.registry_path)
-    timeframe_values = [value.strip() for value in args.timeframes.split(",") if value.strip()]
-    result = sync_registry(
-        store=store,
-        provider=_provider(settings),
-        entries=entries,
-        start_date=date.fromisoformat(args.start_date),
-        end_date=date.fromisoformat(args.end_date),
-        timeframes=timeframe_values,
-        requests_per_hour=args.requests_per_hour or settings.sync.requests_per_hour,
-        target_utilization=args.target_utilization or settings.sync.target_utilization,
-        session_scope=args.session_scope,
-        allow_repair=args.allow_repair,
-    )
-    payload = result.to_dict()
-    payload["registry_path"] = args.registry or settings.sync.registry_path
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
-
-
 def _import_csv_folder(args: argparse.Namespace, settings: Settings) -> None:
     store = build_bar_repository(_database_url(args, settings))
     result = import_csv_folder(
@@ -635,398 +493,37 @@ def _import_csv_folder(args: argparse.Namespace, settings: Settings) -> None:
     print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
 
 
-def _record_live_stub(args: argparse.Namespace, settings: Settings) -> None:
-    store = build_bar_repository(_database_url(args, settings))
-    provider = StubLiveProvider(args.ticks_file)
-    service = LiveRecorderService(provider=provider, store=store)
-    symbols = [value.strip() for value in args.symbols.split(",") if value.strip()]
-    result = service.record(symbols=symbols, max_events=args.max_events)
-    print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+def _runtime(args: argparse.Namespace, settings: Settings) -> None:
+    _runtime_daemon(args, settings) if args.max_events is None else print(
+        json.dumps(_run_runtime_cycle(args, settings).to_dict(), ensure_ascii=False, indent=2)
+    )
 
 
-def _record_live(args: argparse.Namespace, settings: Settings) -> None:
+def _history_sync(args: argparse.Namespace, settings: Settings) -> None:
     if args.run_forever:
-        _record_live_daemon(args, settings)
+        _history_sync_daemon(args, settings)
         return
-    result = _run_live_record_cycle(args, settings)
+    start_date = date.fromisoformat(args.start_date)
+    end_date = _history_sync_end_date(settings)
+    if end_date < start_date:
+        print(
+            json.dumps(
+                {
+                    "status": "noop",
+                    "start_date": start_date.isoformat(),
+                    "end_date": end_date.isoformat(),
+                    "message": "No historical trading days are available yet for sync.",
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return
+    result = _run_history_sync_once(args, settings, start_date, end_date)
     print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
 
 
-def _record_live_registry(args: argparse.Namespace, settings: Settings) -> None:
-    if args.run_forever:
-        _record_live_daemon(args, settings)
-        return
-    result = _run_live_record_cycle(args, settings)
-    print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
-
-
-def _run_runtime(args: argparse.Namespace, settings: Settings) -> None:
-    registry_path = args.registry or settings.sync.registry_path
-    today = datetime.now(ZoneInfo(settings.app.timezone)).date()
-    start_date = date.fromisoformat(args.history_start_date) if args.history_start_date else today - timedelta(days=365 * 3)
-    end_date = date.fromisoformat(args.history_end_date) if args.history_end_date else today - timedelta(days=1)
-    timeframe_values = [value.strip() for value in args.timeframes.split(",") if value.strip()]
-    exceptions: Queue[BaseException] = Queue()
-    results: Queue[dict] = Queue()
-
-    def history_worker() -> None:
-        try:
-            store = build_bar_repository(_database_url(args, settings))
-            all_entries = load_symbol_registry(registry_path)
-            provider = _provider(settings)
-            entries = []
-            for entry in all_entries:
-                if any(
-                    provider.supports_history(
-                        market=entry.market,
-                        instrument_type=entry.instrument_type,
-                        symbol=entry.root_symbol,
-                        timeframe=timeframe,
-                    )
-                    for timeframe in timeframe_values
-                ):
-                    entries.append(entry)
-                else:
-                    _emit_runtime_status(
-                        {
-                            "status": "history_item_skipped",
-                            "symbol": entry.symbol,
-                            "root_symbol": entry.root_symbol,
-                            "market": entry.market,
-                            "instrument_type": entry.instrument_type,
-                            "timeframe": ",".join(timeframe_values),
-                            "action": "skipped_unsupported",
-                            "reason": "unsupported_for_requested_timeframes",
-                        },
-                        args.log_file,
-                    )
-            def progress_callback(payload: dict) -> None:
-                _emit_runtime_status(payload, args.log_file)
-            _emit_runtime_status(
-                {
-                    "status": "history_sync_started",
-                    "registry_path": registry_path,
-                    "history_start_date": start_date.isoformat(),
-                    "history_end_date": end_date.isoformat(),
-                    "timeframes": timeframe_values,
-                },
-                args.log_file,
-            )
-            sync_result = sync_registry(
-                store=store,
-                provider=provider,
-                entries=entries,
-                start_date=start_date,
-                end_date=end_date,
-                timeframes=timeframe_values,
-                requests_per_hour=args.requests_per_hour or settings.sync.requests_per_hour,
-                target_utilization=args.target_utilization or settings.sync.target_utilization,
-                session_scope=args.session_scope,
-                allow_repair=args.allow_repair,
-                progress_callback=progress_callback,
-            )
-            payload = {
-                "status": "history_sync_completed",
-                "registry_path": registry_path,
-                "history_start_date": start_date.isoformat(),
-                "history_end_date": end_date.isoformat(),
-                "timeframes": timeframe_values,
-                "items": [item.__dict__ for item in sync_result.items],
-            }
-            _emit_runtime_status(payload, args.log_file)
-            results.put({"history": payload})
-        except BaseException as exc:  # pragma: no cover - surfaced in main thread
-            _emit_runtime_status(
-                {
-                    "status": "history_sync_error",
-                    "registry_path": registry_path,
-                    "message": str(exc),
-                },
-                args.log_file,
-            )
-            exceptions.put(exc)
-
-    def live_worker() -> None:
-        live_args = argparse.Namespace(**vars(args))
-        live_args.registry = registry_path
-        try:
-            if args.run_forever:
-                _record_live_daemon(live_args, settings)
-                return
-            result = _run_live_record_cycle(live_args, settings)
-            payload = result.to_dict()
-            _emit_runtime_status(payload, args.log_file)
-            results.put({"live": payload})
-        except BaseException as exc:  # pragma: no cover - surfaced in main thread
-            _emit_runtime_status(
-                {
-                    "status": "live_runtime_error",
-                    "registry_path": registry_path,
-                    "message": str(exc),
-                },
-                args.log_file,
-            )
-            exceptions.put(exc)
-
-    history_thread = threading.Thread(
-        target=history_worker,
-        name="history-sync-thread",
-        daemon=args.run_forever,
-    )
-    live_thread = threading.Thread(
-        target=live_worker,
-        name="live-recorder-thread",
-        daemon=False,
-    )
-    history_thread.start()
-    live_thread.start()
-
-    collected: dict[str, dict] = {}
-    while history_thread.is_alive() or live_thread.is_alive():
-        try:
-            exc = exceptions.get_nowait()
-            raise exc
-        except Empty:
-            pass
-        try:
-            payload = results.get(timeout=0.5)
-            collected.update(payload)
-        except Empty:
-            pass
-
-    history_thread.join()
-    live_thread.join()
-
-    try:
-        exc = exceptions.get_nowait()
-        raise exc
-    except Empty:
-        pass
-
-    while True:
-        try:
-            payload = results.get_nowait()
-            collected.update(payload)
-        except Empty:
-            break
-
-    if not args.run_forever:
-        print(json.dumps(collected, ensure_ascii=False, indent=2))
-
-
-def _run_live_record_cycle(args: argparse.Namespace, settings: Settings) -> LiveRecordResult:
-    if args.provider != "shioaji":
-        raise ValueError("Only provider=shioaji is implemented in v1.")
-    store = build_bar_repository(_database_url(args, settings))
-    provider = ShioajiLiveProvider(
-        settings=settings.shioaji,
-        idle_timeout_seconds=args.idle_timeout_seconds,
-        simulation=args.simulation,
-    )
-    service = LiveRecorderService(provider=provider, store=store)
-    run_id = _new_live_run_id()
-    if getattr(args, "registry", None):
-        entries = load_symbol_registry(args.registry)
-        provider.connect()
-        _emit_runtime_status(
-            {"status": "connected", "provider": "shioaji", "simulation": args.simulation, "run_id": run_id},
-            args.log_file if hasattr(args, "log_file") else None,
-        )
-        try:
-            exact_symbols, option_roots = _partition_registry_live_entries(entries)
-            contracts, symbols_json, codes_json, extra_metadata = _resolve_registry_live_universe(
-                provider=provider,
-                exact_symbols=exact_symbols,
-                option_roots=option_roots,
-                expiry_count=args.expiry_count,
-                atm_window=args.atm_window,
-                underlying_future_symbol=args.underlying_future_symbol,
-                call_put=args.call_put,
-            )
-            metadata = LiveRunMetadata(
-                run_id=run_id,
-                provider="shioaji",
-                mode="registry_runtime",
-                started_at=datetime.now(),
-                session_scope=args.session_scope,
-                topic_count=len(contracts),
-                symbols_json=symbols_json,
-                codes_json=codes_json,
-                option_root=",".join(extra_metadata.get("resolved_option_roots", sorted(option_roots))) if option_roots else None,
-                underlying_future_symbol=args.underlying_future_symbol if option_roots else None,
-                expiry_count=args.expiry_count if option_roots else None,
-                atm_window=args.atm_window if option_roots else None,
-                call_put=args.call_put if option_roots else None,
-                reference_price=extra_metadata.get("reference_price"),
-                status="started",
-            )
-            store.create_live_run(metadata)
-            _emit_runtime_status(
-                {
-                    "status": "subscribed",
-                    "run_id": run_id,
-                    "topic_count": len(contracts),
-                    "exact_symbols": exact_symbols,
-                    "option_roots": extra_metadata.get("resolved_option_roots", sorted(option_roots)),
-                },
-                args.log_file if hasattr(args, "log_file") else None,
-            )
-            usage_before = provider.usage_status()
-            result = service.persist_tick_stream(
-                provider.stream_ticks_from_contracts(contracts=contracts, max_events=args.max_events),
-                usage_before=usage_before,
-                batch_size=args.batch_size,
-                run_id=run_id,
-            )
-            usage_after = provider.usage_status()
-        except Exception:
-            if "metadata" in locals():
-                store.create_live_run(LiveRunMetadata(**{**metadata.__dict__, "status": "error"}))
-            stop_reason = provider.stop_reason()
-            provider.close()
-            raise
-        finally:
-            stop_reason = provider.stop_reason()
-            provider.close()
-        final_status = stop_reason or "completed"
-        store.create_live_run(LiveRunMetadata(**{**metadata.__dict__, "status": final_status}))
-        result = LiveRecordResult(
-            run_id=run_id,
-            ticks_appended=result.ticks_appended,
-            bars_upserted=result.bars_upserted,
-            first_tick_ts=result.first_tick_ts,
-            last_tick_ts=result.last_tick_ts,
-            stop_reason=stop_reason,
-            usage_status=(usage_after or usage_before).to_dict() if (usage_after or usage_before) else None,
-        )
-    elif args.symbols:
-        symbols = [value.strip() for value in args.symbols.split(",") if value.strip()]
-        provider.connect()
-        _emit_runtime_status(
-            {"status": "connected", "provider": "shioaji", "simulation": args.simulation, "run_id": run_id},
-            args.log_file if hasattr(args, "log_file") else None,
-        )
-        metadata = LiveRunMetadata(
-            run_id=run_id,
-            provider="shioaji",
-            mode="exact_symbols",
-            started_at=datetime.now(),
-            session_scope=args.session_scope,
-            topic_count=len(symbols),
-            symbols_json=json.dumps(symbols, ensure_ascii=False),
-            status="started",
-        )
-        store.create_live_run(metadata)
-        _emit_runtime_status(
-            {"status": "subscribed", "run_id": run_id, "topic_count": len(symbols), "symbols": symbols},
-            args.log_file if hasattr(args, "log_file") else None,
-        )
-        try:
-            usage_before = provider.usage_status()
-            result = service.persist_tick_stream(
-                provider.stream_ticks(symbols=symbols, max_events=args.max_events),
-                usage_before=usage_before,
-                batch_size=args.batch_size,
-                run_id=run_id,
-            )
-            usage_after = provider.usage_status()
-            stop_reason = provider.stop_reason()
-        except Exception:
-            store.create_live_run(LiveRunMetadata(**{**metadata.__dict__, "status": "error"}))
-            provider.close()
-            raise
-        provider.close()
-        final_status = stop_reason or "completed"
-        store.create_live_run(LiveRunMetadata(**{**metadata.__dict__, "status": final_status}))
-        result = LiveRecordResult(
-            run_id=run_id,
-            ticks_appended=result.ticks_appended,
-            bars_upserted=result.bars_upserted,
-            first_tick_ts=result.first_tick_ts,
-            last_tick_ts=result.last_tick_ts,
-            stop_reason=stop_reason,
-            usage_status=(usage_after or usage_before).to_dict() if (usage_after or usage_before) else None,
-        )
-    elif args.option_root:
-        provider.connect()
-        _emit_runtime_status(
-            {"status": "connected", "provider": "shioaji", "simulation": args.simulation, "run_id": run_id},
-            args.log_file if hasattr(args, "log_file") else None,
-        )
-        try:
-            selected_roots, contracts, reference_price = provider.resolve_option_universe(
-                option_root=args.option_root,
-                expiry_count=args.expiry_count,
-                atm_window=args.atm_window,
-                underlying_future_symbol=args.underlying_future_symbol,
-                call_put=args.call_put,
-            )
-            symbols = [str(getattr(contract, "symbol", "")) for contract in contracts]
-            codes = [str(getattr(contract, "code", "")) for contract in contracts]
-            metadata = LiveRunMetadata(
-                run_id=run_id,
-                provider="shioaji",
-                mode="option_resolver",
-                started_at=datetime.now(),
-                session_scope=args.session_scope,
-                topic_count=len(contracts),
-                symbols_json=json.dumps(symbols, ensure_ascii=False),
-                codes_json=json.dumps(codes, ensure_ascii=False),
-                option_root=",".join(selected_roots),
-                underlying_future_symbol=args.underlying_future_symbol,
-                expiry_count=args.expiry_count,
-                atm_window=args.atm_window,
-                call_put=args.call_put,
-                reference_price=reference_price,
-                status="started",
-            )
-            store.create_live_run(metadata)
-            _emit_runtime_status(
-                {
-                    "status": "subscribed",
-                    "run_id": run_id,
-                    "topic_count": len(contracts),
-                    "option_roots": selected_roots,
-                    "expiry_count": args.expiry_count,
-                    "atm_window": args.atm_window,
-                    "reference_price": reference_price,
-                },
-                args.log_file if hasattr(args, "log_file") else None,
-            )
-            usage_before = provider.usage_status()
-            result = service.persist_tick_stream(
-                provider.stream_ticks_from_contracts(contracts=contracts, max_events=args.max_events),
-                usage_before=usage_before,
-                batch_size=args.batch_size,
-                run_id=run_id,
-            )
-            usage_after = provider.usage_status()
-        except Exception:
-            if 'metadata' in locals():
-                store.create_live_run(LiveRunMetadata(**{**metadata.__dict__, "status": "error"}))
-            stop_reason = provider.stop_reason()
-            provider.close()
-            raise
-        finally:
-            stop_reason = provider.stop_reason()
-            provider.close()
-        final_status = stop_reason or "completed"
-        store.create_live_run(LiveRunMetadata(**{**metadata.__dict__, "status": final_status}))
-        result = LiveRecordResult(
-            run_id=run_id,
-            ticks_appended=result.ticks_appended,
-            bars_upserted=result.bars_upserted,
-            first_tick_ts=result.first_tick_ts,
-            last_tick_ts=result.last_tick_ts,
-            stop_reason=stop_reason,
-            usage_status=(usage_after or usage_before).to_dict() if (usage_after or usage_before) else None,
-        )
-    else:
-        raise ValueError("Either --symbols or --option-root must be provided.")
-    return result
-
-
-def _record_live_daemon(args: argparse.Namespace, settings: Settings) -> None:
+def _runtime_daemon(args: argparse.Namespace, settings: Settings) -> None:
     timezone = ZoneInfo(settings.app.timezone)
     while True:
         now = datetime.now(timezone)
@@ -1052,7 +549,7 @@ def _record_live_daemon(args: argparse.Namespace, settings: Settings) -> None:
             _sleep_until(wake_at)
             continue
 
-        result = _run_live_record_cycle(args, settings)
+        result = _run_runtime_cycle(args, settings)
         _emit_runtime_status(result.to_dict(), args.log_file)
 
         if result.stop_reason == "usage_threshold_reached":
@@ -1068,9 +565,187 @@ def _record_live_daemon(args: argparse.Namespace, settings: Settings) -> None:
             _sleep_until(wake_at)
             continue
 
-        if result.ticks_appended == 0:
-            idle_seconds = max(args.idle_timeout_seconds, 5.0)
-            time.sleep(idle_seconds)
+        idle_seconds = max(args.idle_timeout_seconds, 5.0)
+        time.sleep(idle_seconds)
+
+
+def _run_runtime_cycle(args: argparse.Namespace, settings: Settings) -> LiveRecordResult:
+    store = build_bar_repository(_database_url(args, settings))
+    provider = ShioajiLiveProvider(
+        settings=settings.shioaji,
+        idle_timeout_seconds=args.idle_timeout_seconds,
+        simulation=args.simulation,
+    )
+    service = LiveRecorderService(provider=provider, store=store)
+    run_id = _new_live_run_id()
+    registry_path = args.registry or settings.sync.registry_path
+    exact_symbols, option_roots = _runtime_universe_from_registry(registry_path)
+    provider.connect()
+    _emit_runtime_status(
+        {"status": "connected", "provider": "shioaji", "simulation": args.simulation, "run_id": run_id},
+        args.log_file,
+    )
+    try:
+        contracts, symbols_json, codes_json, extra_metadata = _resolve_registry_live_universe(
+            provider=provider,
+            exact_symbols=exact_symbols,
+            option_roots=option_roots,
+            expiry_count=args.expiry_count,
+            atm_window=args.atm_window,
+            underlying_future_symbol=args.underlying_future_symbol,
+            call_put=args.call_put,
+        )
+        metadata = LiveRunMetadata(
+            run_id=run_id,
+            provider="shioaji",
+            mode="runtime",
+            started_at=datetime.now(),
+            session_scope=args.session_scope,
+            topic_count=len(contracts),
+            symbols_json=symbols_json,
+            codes_json=codes_json,
+            option_root=",".join(extra_metadata.get("resolved_option_roots", sorted(option_roots))),
+            underlying_future_symbol=args.underlying_future_symbol,
+            expiry_count=args.expiry_count,
+            atm_window=args.atm_window,
+            call_put=args.call_put,
+            reference_price=extra_metadata.get("reference_price"),
+            status="started",
+        )
+        store.create_live_run(metadata)
+        _emit_runtime_status(
+            {
+                "status": "subscribed",
+                "run_id": run_id,
+                "topic_count": len(contracts),
+                "exact_symbols": exact_symbols,
+                "option_roots": extra_metadata.get("resolved_option_roots", sorted(option_roots)),
+            },
+            args.log_file,
+        )
+        usage_before = provider.usage_status()
+        result = service.persist_tick_stream(
+            provider.stream_ticks_from_contracts(contracts=contracts, max_events=args.max_events),
+            usage_before=usage_before,
+            batch_size=args.batch_size,
+            run_id=run_id,
+        )
+        usage_after = provider.usage_status()
+    except Exception:
+        if "metadata" in locals():
+            store.create_live_run(LiveRunMetadata(**{**metadata.__dict__, "status": "error"}))
+        provider.close()
+        raise
+    finally:
+        stop_reason = provider.stop_reason()
+        provider.close()
+
+    final_status = stop_reason or "completed"
+    store.create_live_run(LiveRunMetadata(**{**metadata.__dict__, "status": final_status}))
+    return LiveRecordResult(
+        run_id=run_id,
+        ticks_appended=result.ticks_appended,
+        bars_upserted=result.bars_upserted,
+        first_tick_ts=result.first_tick_ts,
+        last_tick_ts=result.last_tick_ts,
+        stop_reason=stop_reason,
+        usage_status=(usage_after or usage_before).to_dict() if (usage_after or usage_before) else None,
+    )
+
+
+def _history_sync_daemon(args: argparse.Namespace, settings: Settings) -> None:
+    sync_time = _parse_sync_time(args.sync_time)
+    current_start = date.fromisoformat(args.start_date)
+    while True:
+        end_date = _history_sync_end_date(settings)
+        if end_date >= current_start:
+            result = _run_history_sync_once(args, settings, current_start, end_date)
+            _emit_runtime_status(result.to_dict(), args.log_file)
+            current_start = end_date + timedelta(days=1)
+        wake_at = _next_history_sync_at(datetime.now(ZoneInfo(settings.app.timezone)), args.sync_time, settings)
+        _emit_runtime_status(
+            {
+                "status": "waiting_for_history_sync",
+                "sync_time": sync_time.strftime("%H:%M"),
+                "wake_at": wake_at.isoformat(),
+            },
+            args.log_file,
+        )
+        _sleep_until(wake_at)
+
+
+def _run_history_sync_once(
+    args: argparse.Namespace,
+    settings: Settings,
+    start_date: date,
+    end_date: date,
+):
+    store = build_bar_repository(_database_url(args, settings))
+    provider = _provider(settings)
+    registry_path = args.registry or settings.sync.registry_path
+    entries = build_history_entries(load_symbol_registry(registry_path))
+
+    def progress_callback(payload: dict) -> None:
+        _emit_runtime_status(payload, args.log_file)
+
+    _emit_runtime_status(
+        {
+            "status": "history_sync_started",
+            "registry_path": registry_path,
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "timeframes": ["1d", "1m"],
+        },
+        args.log_file,
+    )
+    result = sync_history_days(
+        store=store,
+        provider=provider,
+        entries=entries,
+        start_date=start_date,
+        end_date=end_date,
+        timeframes=["1d", "1m"],
+        session_scope=args.session_scope,
+        progress_callback=progress_callback,
+    )
+    _emit_runtime_status(
+        {
+            "status": "history_sync_completed",
+            "registry_path": registry_path,
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "processed": result.processed,
+            "synced": result.synced,
+            "skipped": result.skipped,
+            "failed": result.failed,
+        },
+        args.log_file,
+    )
+    return result
+
+
+def _history_sync_end_date(settings: Settings) -> date:
+    today = datetime.now(ZoneInfo(settings.app.timezone)).date()
+    return today - timedelta(days=1)
+
+
+def _next_history_sync_at(now: datetime, sync_time: str, settings: Settings) -> datetime:
+    timezone = ZoneInfo(settings.app.timezone)
+    local_now = now.astimezone(timezone)
+    parsed_time = _parse_sync_time(sync_time)
+    candidate = local_now.replace(
+        hour=parsed_time.hour,
+        minute=parsed_time.minute,
+        second=0,
+        microsecond=0,
+    )
+    if candidate <= local_now:
+        candidate += timedelta(days=1)
+    return candidate
+
+
+def _parse_sync_time(value: str):
+    return datetime.strptime(value, "%H:%M").time()
 
 
 def _next_usage_reset_at(now: datetime, settings: Settings) -> datetime:
@@ -1110,37 +785,6 @@ def _emit_runtime_status(payload: dict, log_file: str | None) -> None:
 
 def _new_live_run_id() -> str:
     return f"live-{datetime.now().strftime('%Y%m%dT%H%M%S')}-{uuid4().hex[:8]}"
-
-
-def _preview_option_universe(args: argparse.Namespace, settings: Settings) -> None:
-    provider = ShioajiLiveProvider(settings=settings.shioaji, simulation=False)
-    provider.connect()
-    try:
-        selected_roots, contracts, reference_price = provider.resolve_option_universe(
-            option_root=args.option_root,
-            expiry_count=args.expiry_count,
-            atm_window=args.atm_window,
-            underlying_future_symbol=args.underlying_future_symbol,
-            call_put=args.call_put,
-        )
-        usage = provider.usage_status()
-    finally:
-        provider.close()
-
-    payload = {
-        "option_root": args.option_root,
-        "selected_roots": selected_roots,
-        "expiry_count": args.expiry_count,
-        "atm_window": args.atm_window,
-        "underlying_future_symbol": args.underlying_future_symbol,
-        "call_put": args.call_put,
-        "reference_price": reference_price,
-        "count": len(contracts),
-        "symbols": [getattr(contract, "symbol", None) for contract in contracts],
-        "codes": [getattr(contract, "code", None) for contract in contracts],
-        "usage_status": usage.to_dict() if usage else None,
-    }
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
 def _serve_option_power(args: argparse.Namespace, settings: Settings) -> None:

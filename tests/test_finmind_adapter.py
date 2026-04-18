@@ -22,6 +22,8 @@ class FinMindAdapterTest(unittest.TestCase):
         self.assertTrue(adapter.supports_history(market="TAIFEX", instrument_type="future", symbol="MTX", timeframe="1m"))
         self.assertTrue(adapter.supports_history(market="TWSE", instrument_type="stock", symbol="2330", timeframe="1d"))
         self.assertTrue(adapter.supports_history(market="TWSE", instrument_type="stock", symbol="2330", timeframe="1m"))
+        self.assertTrue(adapter.supports_history(market="TWSE", instrument_type="index", symbol="TWOTC", timeframe="1d"))
+        self.assertTrue(adapter.supports_history(market="TWSE", instrument_type="index", symbol="TWII", timeframe="1m"))
         self.assertFalse(adapter.supports_history(market="TAIFEX", instrument_type="option", symbol="TXO", timeframe="1d"))
         self.assertFalse(adapter.supports_history(market="TAIFEX", instrument_type="option", symbol="TXO", timeframe="1m"))
 
@@ -70,6 +72,22 @@ class FinMindAdapterTest(unittest.TestCase):
         self.assertEqual(bar.session, "day")
         self.assertEqual(bar.volume, 123456.0)
         self.assertEqual(bar.build_source, "finmind_stock_daily")
+
+    def test_normalize_index_row_uses_prefixed_instrument_key(self) -> None:
+        row = {
+            "date": "2024-04-08",
+            "stock_id": "TWOTC",
+            "open": 200,
+            "max": 210,
+            "min": 198,
+            "close": 205,
+            "Trading_Volume": 123,
+        }
+
+        bar = FinMindAdapter._normalize_stock_row(row)
+
+        self.assertEqual(bar.symbol, "TWOTC")
+        self.assertEqual(bar.instrument_key, "index:TWOTC")
 
     def test_aggregate_ticks_to_minute_bars(self) -> None:
         rows = [

@@ -7,7 +7,7 @@ Research-first quantitative trading platform for Taiwan index futures.
 - Historical data ingestion from FinMind
 - Session-aware storage and gap scanning
 - Event-driven backtesting on 1-minute bars
-- CLI-driven workflow and HTML report generation
+- Two operational programs: `runtime` and `history-sync`
 
 ## Quick Start
 
@@ -16,7 +16,7 @@ Research-first quantitative trading platform for Taiwan index futures.
 - `config/config.yaml` 目前預設 `database.url = sqlite:///local.db`
 - 所以你如果沒有額外帶 `--database-url postgresql://...`，資料會先寫進 `local.db`
 - 若你要把 `TimescaleDB` 當正式主庫，建議直接把 `config/config.yaml` 改成 PostgreSQL
-- Windows 主機若是你接下來要長時間跑 `run-runtime` / `record-live` 的正式環境，應該直接使用 PostgreSQL/TimescaleDB，不要再用 SQLite 當主庫
+- Windows 主機若是你接下來要長時間跑正式流程，應該直接使用 PostgreSQL/TimescaleDB，不要再用 SQLite 當主庫
 
 1. Copy `config/config.yaml.example` to `config/config.yaml`
 2. Copy `config/symbols.csv.example` to `config/symbols.csv`
@@ -24,18 +24,16 @@ Research-first quantitative trading platform for Taiwan index futures.
 4. If you want live recording through Shioaji, also set `SH_API_KEY` and `SH_SECRET_KEY`
 5. If this machine is your formal runtime host, change `database.url` to PostgreSQL
 6. Start TimescaleDB
-7. Run sync or backtest commands against either `sqlite:///local.db` or `postgresql://...`
+7. Run `history-sync`, `runtime`, or backtest commands against either `sqlite:///local.db` or `postgresql://...`
 
 ```bash
 docker compose up -d
 PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml scan-gaps --symbol MTX --start 2024-01-01T08:45:00 --end 2024-01-02T13:45:00 --session-scope day_and_night
-PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml plan-sync --database-url postgresql://postgres:postgres@localhost:5432/trading --start-date 2024-01-01 --end-date 2024-01-31
-PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml sync-registry --database-url postgresql://postgres:postgres@localhost:5432/trading --start-date 2024-01-01 --end-date 2024-01-31
-PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml backfill --database-url postgresql://postgres:postgres@localhost:5432/trading --symbol MTX --start-date 2024-01-01 --end-date 2024-01-31 --timeframe 1m
+PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml history-sync --database-url postgresql://postgres:postgres@localhost:5432/trading --start-date 2024-01-01
+PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml history-sync --database-url postgresql://postgres:postgres@localhost:5432/trading --start-date 2024-01-01 --run-forever --sync-time 15:05
+PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml runtime --database-url postgresql://postgres:postgres@localhost:5432/trading --registry config/symbols.csv
+PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml runtime --database-url postgresql://postgres:postgres@localhost:5432/trading --registry config/symbols.csv --max-events 200
 PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml import-csv-folder --database-url postgresql://postgres:postgres@localhost:5432/trading --folder tmp --pattern '*.csv' --chunk-size 10000
-PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml preview-option-universe --option-root AUTO --expiry-count 2 --atm-window 20 --underlying-future-symbol TXFR1
-PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml record-live --database-url postgresql://postgres:postgres@localhost:5432/trading --symbols TXFR1 --max-events 10
-PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml record-live-stub --database-url postgresql://postgres:postgres@localhost:5432/trading --ticks-file tmp/stub_ticks.jsonl --symbols TXO
 PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml doctor --database-url postgresql://postgres:postgres@localhost:5432/trading --symbol MTX --timeframe 1m
 PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml resolve-contract --symbol MTX --date 2024-01-18
 PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml backtest --database-url postgresql://postgres:postgres@localhost:5432/trading --symbol MTX_MAIN --start 2024-01-03T08:45:00 --end 2024-01-03T13:44:00 --timeframe 1m
@@ -45,9 +43,8 @@ PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml ba
 
 - SQLite vs TimescaleDB 定位
 - Windows PowerShell 安裝步驟
-- `run-runtime` 正式啟動方式
-- `scripts/start-runtime.ps1` 一鍵啟動方式
-- `scripts/sync-history.ps1` history 補齊方式
+- `runtime` 正式啟動方式
+- `history-sync` history 補齊方式
 - DB 備份與還原方式
 
 ## CLI 指令說明
@@ -71,44 +68,22 @@ PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml ba
 PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml doctor --database-url postgresql://postgres:postgres@localhost:5432/trading --symbol MTX --timeframe 1m
 ```
 
-### `plan-sync`
-- 用途: 在真正補資料前先估算 request 成本
-- 適合情境:
-  - 想知道某段歷史資料要花多少 FinMind request
-  - 想確認目前是 `bootstrap`、`catch_up` 還是 `repair`
-  - 想先看 registry 內哪些 symbol 會被同步
-- 會輸出:
-  - 總 request 預估
-  - 每個 timeframe 的 request 拆分
-  - 每個 symbol 的同步模式與缺失日期
-
-```bash
-PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml plan-sync --database-url postgresql://postgres:postgres@localhost:5432/trading --start-date 2024-01-01 --end-date 2024-01-31
-```
-
-### `sync-registry`
-- 用途: 依照 `config/symbols.csv` 批次補齊歷史資料
+### `history-sync`
+- 用途: 補 `MTX`、`TWII`、`TWOTC`、以及 `symbols.csv` 內 `stock` 的 `1d/1m`
+- 規則:
+  - 預設只補到昨天
+  - 逐個檢查 `timeframe + symbol + trading_day`
+  - 已存在就 skip，不重抓
+  - 每個 `symbol + trading_day` 都會輸出進度 log
 - 適合情境:
   - 初次建庫
-  - 新環境匯入舊 DB 後補齊缺的日期
-  - 想固定用同一份 registry 管理要追蹤的 universe
-- 目前行為:
-  - 執行 `bootstrap` / `catch_up`
-  - `repair` 預設跳過，除非明確加 `--allow-repair`
+  - 每日固定時間補前一日
+  - 避免與 live `runtime` 重複抓當日資料
 
 ```bash
-PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml sync-registry --database-url postgresql://postgres:postgres@localhost:5432/trading --start-date 2024-01-01 --end-date 2024-01-31
-```
+PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml history-sync --database-url postgresql://postgres:postgres@localhost:5432/trading --start-date 2024-01-01
 
-### `backfill`
-- 用途: 手動補某個 symbol 的特定時間範圍
-- 適合情境:
-  - 臨時補某一段 `MTX 1m`
-  - 單獨補某支股票日線
-  - 針對 `TXO` 先測一天或幾天的 option chain
-
-```bash
-PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml backfill --database-url postgresql://postgres:postgres@localhost:5432/trading --symbol MTX --start-date 2024-01-01 --end-date 2024-01-31 --timeframe 1m
+PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml history-sync --database-url postgresql://postgres:postgres@localhost:5432/trading --start-date 2024-01-01 --run-forever --sync-time 15:05
 ```
 
 ### `scan-gaps`
@@ -163,117 +138,22 @@ PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml re
 PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml import-csv-folder --database-url postgresql://postgres:postgres@localhost:5432/trading --folder tmp --pattern '*.csv' --chunk-size 10000
 ```
 
-### `record-live-stub`
-- 用途: 用 stub tick 檔驗證 live recorder 路徑
-- 適合情境:
-  - 還沒接真實券商 websocket 前，先測資料契約
-  - 驗證 `raw_ticks -> bars_1m` 聚合是否正確
-- 目前行為:
-  - 讀一個 JSON Lines 檔
-  - 轉成 `CanonicalTick`
-  - 落到 `raw_ticks`
-  - 同步聚合一批 `bars_1m`
+### `runtime`
+- 用途: 長時間常駐的 live 錄製程式
+- 固定 universe:
+  - `MTX` live tick
+  - 最近兩檔台指選擇權 roots 的 live tick
+  - `symbols.csv` 內 `stock`
+- 行為:
+  - 寫入 `raw_ticks`
+  - 從 live tick 聚合出 `bars_1m`
+  - 保持原本開盤/收盤等待與重啟邏輯
+  - 不碰 `1d`
 
 ```bash
-PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml record-live-stub --database-url postgresql://postgres:postgres@localhost:5432/trading --ticks-file tmp/stub_ticks.jsonl --symbols TXO
-```
+PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml runtime --database-url postgresql://postgres:postgres@localhost:5432/trading --registry config/symbols.csv
 
-### `record-live`
-- 用途: 透過真實 live provider 將即時 tick 落到 `raw_ticks`，並同步聚合成 `bars_1m`
-- 目前支援:
-  - `provider=shioaji`
-- 適合情境:
-  - 開盤中先開始累積自建歷史 tick 資料
-  - 驗證 `raw_ticks -> bars_1m` 的真實 live 路徑
-- 注意:
-  - `--symbols` 可傳 Shioaji 的精確合約代碼，例如 `TXFR1`、`TXO20250418000C`
-  - 或改用高階選擇權模式:
-    - `--option-root AUTO` 為預設，代表從 Shioaji contract buckets 動態挑目前可交易的最近兩檔台指選擇權 roots
-    - 例如在 `2026-04-15` 夜盤，會選到 `TXX` 與 `TX4`
-    - `--expiry-count 2` 在此模式下代表最近兩檔 roots
-    - `--atm-window 20` 代表每一檔 root 取 ATM 上下各 20 個履約價
-  - 需要先安裝 `shioaji`
-  - `.env` 需要 `SH_API_KEY` 與 `SH_SECRET_KEY`
-  - `TXON` 不是目前 SDK 內可直接訂閱的 contract code
-  - 若你明確傳 `--option-root TXO`，代表只看月選
-  - 若你要產品定義裡的「最近兩檔」，應使用預設 `AUTO`
-  - 目前已加入 `api.usage()` 保護:
-    - 每日流量上限預設 `500MB`
-    - 使用率達 `99%` 會停止錄製
-    - 上限與比例可在 `config/config.yaml` 的 `shioaji` 區塊調整
-  - `record-live` 已改成 batch 落庫，適合長時間錄製，不會把所有 ticks 累積在記憶體裡
-  - 啟動時只會輸出摘要 log:
-    - `connected`
-    - `subscribed`
-    - 最後的錄製結果或錯誤
-    - 不會再逐條輸出 `Subscribe ok`
-  - 每次錄製都會產生 `run_id`
-    - 寫入 `live_run_metadata`
-    - 同步寫入 `minute_force_features_1m.run_id`
-    - 後續可用來對齊同一次錄製的 option universe
-  - 若加上 `--run-forever`:
-    - 非交易時段會等到下一次 session 開始
-    - 流量達門檻會等到下一次每日重置時間再自動恢復
-    - 每日重置時間預設視為 `Asia/Taipei 00:00 + 60 秒`
-
-```bash
-PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml record-live --database-url postgresql://postgres:postgres@localhost:5432/trading --symbols TXFR1 --max-events 10
-
-PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml record-live --database-url postgresql://postgres:postgres@localhost:5432/trading --option-root AUTO --expiry-count 2 --atm-window 20 --underlying-future-symbol TXFR1 --max-events 200
-
-PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml record-live --database-url postgresql://postgres:postgres@localhost:5432/trading --option-root AUTO --expiry-count 2 --atm-window 20 --underlying-future-symbol TXFR1 --batch-size 500
-
-PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml record-live --database-url postgresql://postgres:postgres@localhost:5432/trading --option-root AUTO --expiry-count 2 --atm-window 20 --underlying-future-symbol TXFR1 --batch-size 500 --run-forever --session-scope day_and_night
-```
-
-### `record-live-registry`
-- 用途: 直接從 `config/symbols.csv` 展開 live 錄製 universe
-- 目前行為:
-  - `stock`:
-    - 直接訂閱該股票 tick
-  - `future`:
-    - `MTX/MXF -> MXFR1`
-    - `TX/TXF -> TXFR1`
-  - `option`:
-    - 若 root 為 `TXO`，會動態展開目前可交易的最近 `N` 檔台指選擇權 roots
-    - 例如某些夜盤時段會是 `TXX + TX4`
-    - 每一檔 root 取 `ATM ± window`
-- 適合情境:
-  - 你不想手動組 `--symbols`
-  - 想把 registry 內的股票、小台指、台指選一起錄進來
-- 注意:
-  - `Shioaji` 歷史回補仍依 `FinMind` 能力決定
-  - 目前 `1m` 歷史自動補齊仍只有期貨可完整走 `FinMind`
-
-```bash
-PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml record-live-registry --database-url postgresql://postgres:postgres@localhost:5432/trading --registry config/symbols.csv --expiry-count 2 --atm-window 20 --run-forever
-```
-
-### `run-runtime`
-- 用途: 單一主入口
-  - 先回補今天之前的歷史資料
-  - 再開始錄製 registry live universe
-- 歷史回補規則:
-  - 預設回補近 3 年到昨天
-  - 使用 `sync-registry`
-  - `1d/1m` 都會執行，但若資料源不支援某組合，會顯示 `skipped_unsupported`
-- 適合情境:
-  - 新環境第一次開機
-  - 每天啟動服務時先補歷史再進 live
-
-```bash
-PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml run-runtime --database-url postgresql://postgres:postgres@localhost:5432/trading --registry config/symbols.csv --run-forever --expiry-count 2 --atm-window 20
-```
-
-### `preview-option-universe`
-- 用途: 在真正訂閱前，先預覽 live option resolver 會展開成哪些單一合約
-- 適合情境:
-  - 想先看最近兩個到期日 + ATM 視窗到底會訂閱多少口
-  - 想避免超過 200 個訂閱上限
-  - 想在開錄前先確認 universe 是否合理
-
-```bash
-PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml preview-option-universe --option-root AUTO --expiry-count 2 --atm-window 20 --underlying-future-symbol TXFR1
+PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml runtime --database-url postgresql://postgres:postgres@localhost:5432/trading --registry config/symbols.csv --max-events 200
 ```
 
 ### `option-minute-features`
@@ -289,11 +169,11 @@ PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml pr
     - `--atm-window 20`
     - `--underlying-future-symbol TXFR1`
   - run 對齊模式:
-    - `--run-id <record-live 輸出的 run_id>`
+    - `--run-id <runtime 輸出的 run_id>`
 - 適合情境:
   - 直接看最近兩個到期日、ATM 附近台指選的力道 proxy
   - 不想手動輸入每個履約價與月份
-  - 想精準重現某次 `record-live` 當下實際訂閱的那一批合約
+  - 想精準重現某次 `runtime` 當下實際訂閱的那一批合約
 
 ```bash
 PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml option-minute-features --database-url postgresql://postgres:postgres@localhost:5432/trading --start 2026-04-13T08:45:00 --end 2026-04-13T13:45:00 --contract-month 202604 --call-put call --limit 20
@@ -335,20 +215,15 @@ PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml mi
 - FinMind minute ingestion is implemented by aggregating `TaiwanFuturesTick` into 1-minute bars.
 - The working primary symbol for current examples and smoke tests is `MTX`.
 - `MTX_MAIN` is supported as a continuous monthly-contract view for read-side workflows such as backtest and doctor.
-- `plan-sync` reads `config/symbols.csv` and estimates request cost before running any actual sync.
-- `sync-registry` executes historical sync from `config/symbols.csv`. In the current phase it runs `bootstrap` and `catch_up`, while `repair` is intentionally skipped unless `--allow-repair` is passed.
-- `1d` planning assumes FinMind bulk-daily requests can fetch all futures symbols for one date in one request.
-- `1m` planning assumes one request per `symbol + date`, and currently checks `trading_day` presence only rather than minute-level completeness.
-- `sync-registry` currently supports `TAIFEX futures 1d/1m`, `TWSE stocks 1d`, and `TAIFEX TXO 1d` through FinMind.
+- `history-sync` uses `timeframe + symbol + trading_day` existence checks before requesting data.
+- `history-sync` only syncs through yesterday, so it does not compete with `runtime` for same-day writes.
+- `history-sync` currently covers `MTX`, `TWII`, `TWOTC`, and `symbols.csv` entries with `instrument_type=stock`.
 - `import-csv-folder` can import broker-exported 1-minute OHLCV CSV files directly into the repository layer.
 - The current CSV importer expects columns `Symbol,Date,Time,Open,High,Low,Close,TotalVolume`, while optional `UpTicks/DownTicks` are supported when present.
 - Broker CSV import stores optional `UpTicks/DownTicks` into `bars_1m.up_ticks` / `bars_1m.down_ticks`.
 - `raw_ticks` is now a first-class table for future live recording. The current stub recorder can already persist canonical ticks and aggregate them into `bars_1m`.
 - `TWOTC` is stored as an index-like series with `instrument_key=index:TWOTC`. A bare `instrument_key=index` would be too ambiguous once more indices are imported.
-- `config/symbols.csv` now supports `instrument_type`, so futures / options / stocks can coexist in the registry without forcing the current provider to sync unsupported products.
-- For Taiwan index options, `TXO` is the only FinMind `TaiwanOptionDaily` id currently kept in the active registry. Other TAIFEX option product codes should be re-added only after provider behavior is verified.
-- `TaiwanOptionDaily` should use `v4` single-day windows. The older `v3 + date` path was observed to hang on real requests.
-- Option daily storage must key on `instrument_key` instead of bare `symbol`, or one trading day of `TXO` chain data will overwrite itself.
+- `config/symbols.csv` is now used operationally only for registry stocks in `runtime` and `history-sync`.
 - `TaiwanFuturesTick` requires a Sponsor-capable FinMind account. With a free-level token, `1m` backfill will fail upstream even though the pipeline is implemented.
 - Important data structures are documented in `docs/SCHEMA.md`.
 - Data-source boundaries and pipeline design are documented in `docs/DATA_PIPELINE.md`.

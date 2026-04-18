@@ -17,12 +17,12 @@
   - 很多我先前的快速測試，若沒有顯式帶 `--database-url postgresql://...`，就會落到這裡
 - `PostgreSQL/TimescaleDB`
   - 適合正式長期資料庫
-  - 適合你接下來在 Windows 主機做的歷史補齊與長時間 `record-live`
+  - 適合你接下來在 Windows 主機做的歷史補齊與長時間 `runtime`
   - 你要把它視為正式主庫
 
 這代表：
 
-- 如果你在 `doctor`、`sync-registry`、`run-runtime` 沒明確帶 `--database-url`，而 `config/config.yaml` 仍是 `sqlite:///local.db`，資料就會寫進 SQLite，不會進 TimescaleDB
+- 如果你在 `doctor`、`history-sync`、`runtime` 沒明確帶 `--database-url`，而 `config/config.yaml` 仍是 `sqlite:///local.db`，資料就會寫進 SQLite，不會進 TimescaleDB
 - 目前你看到「TimescaleDB 沒資料」的主因，大概率不是同步失敗，而是指令其實打到 `local.db`
 
 正式機器建議直接把 `config/config.yaml` 改成：
@@ -115,7 +115,7 @@ docker compose up -d
 4. 啟動 `TimescaleDB`
 5. 把 `config/config.yaml` 的 `database.url` 改成 PostgreSQL
 6. 用 `doctor` 確認
-7. 再跑 `run-runtime`
+7. 再跑 `runtime` 或 `history-sync`
 
 ### PowerShell 安裝範例
 ```powershell
@@ -170,7 +170,7 @@ psql postgresql://postgres:postgres@localhost:5432/trading < trading.sql
 短期建議：
 
 1. 保留舊 SQLite 作 archive
-2. 在新 PostgreSQL 環境重新跑 `sync-registry`
+2. 在新 PostgreSQL 環境重新跑 `history-sync`
 
 理由：
 - schema 正在演進
@@ -185,68 +185,48 @@ psql postgresql://postgres:postgres@localhost:5432/trading < trading.sql
 ```bash
 .venv/bin/python -m qt_platform.cli.main \
   --config config/config.yaml \
-  sync-registry \
+  history-sync \
   --database-url postgresql://postgres:postgres@localhost:5432/trading \
-  --start-date 2023-01-01 \
-  --end-date 2026-04-10
+  --start-date 2023-01-01
 ```
 
 這個指令會：
-- 讀 `config/symbols.csv`
-- 先規劃 sync
-- 再執行 historical bootstrap / catch-up
+- 補 `MTX`
+- 補 `TWII` / `TWOTC`
+- 補 `config/symbols.csv` 裡屬於 `stock` 的 symbol
+- 補 `1d` 與 `1m`
+- 預設只補到昨天
+- 每個 `timeframe + symbol + trading_day` 都會檢查是否已存在
+- 已存在就 skip，不重抓
 
-目前行為：
-- `bootstrap`：會執行
-- `catch_up`：會執行
-- `repair`：預設跳過
-
-如果之後你明確要讓 repair 也跑：
-```bash
-.venv/bin/python -m qt_platform.cli.main \
-  --config config/config.yaml \
-  sync-registry \
-  --database-url postgresql://postgres:postgres@localhost:5432/trading \
-  --start-date 2023-01-01 \
-  --end-date 2026-04-10 \
-  --allow-repair
-```
-
-但目前不建議預設打開，因為 minute-level repair semantics 還沒完全定稿。
-
-## 4A. Windows 下一個指令補歷史 + 進 live
+## 4A. Windows 長期常駐流程
 
 如果 Windows 主機是正式主機，建議直接用：
 
 ```powershell
 .\.venv\Scripts\python.exe -m qt_platform.cli.main `
   --config config/config.yaml `
-  run-runtime `
+  runtime `
   --registry config/symbols.csv `
-  --history-start-date 2023-01-01 `
-  --timeframes 1m `
-  --run-forever `
   --expiry-count 2 `
   --atm-window 20
 ```
 
 這個指令會：
 
-1. 用一個主 CLI 同時開兩條 thread
-2. thread A: 回補今天之前的歷史資料
-   - 目前建議只補 `1m`
-   - 這樣可節省 request，不補 `future 1d` 與 `option 1d`
-3. thread B: 立即開始 live 錄製
+1. 立即開始 live 錄製
+2. 自動包含：
    - `symbols.csv` 內的股票
-   - `MTX/MXF` 對應近月 live 合約
+   - `MTX` 對應近月 live 合約
    - 台指選擇權最近兩檔 roots、ATM `±20`
-   - roots 會在啟動時依 Shioaji contract buckets 動態解析，不再寫死 `TXO`
+3. 寫入 `raw_ticks`
+4. 同步聚合 live `bars_1m`
 
 注意：
 
-- `TXO 1m` 歷史目前仍不由 FinMind 自動補，這部分目前是 live recorder 自建資料
-- `TWSE stock 1m` 歷史現在已支援 `FinMind TaiwanStockPriceTick -> bars_1m`
-- `run-runtime` 若不帶 `--database-url`，會採用 `config/config.yaml` 裡的 `database.url`
+- `runtime` 不處理 `1d`
+- `runtime` 不做歷史回補
+- 若不帶 `--database-url`，會採用 `config/config.yaml` 裡的 `database.url`
 
 ### Windows 一鍵啟動腳本
 
@@ -260,11 +240,8 @@ psql postgresql://postgres:postgres@localhost:5432/trading < trading.sql
 
 - 使用 `config/config.yaml`
 - 使用 `config/symbols.csv`
-- 啟動 `serve-option-power`
-- 啟動 `record-live-registry`
-- `run-forever`
-- 台指選擇權最近兩檔 roots、`ATM ±20`
-- registry 內的 option 會在 live recorder 那條自動排除，避免與 option web service 重複錄製
+- 啟動 `runtime`
+- `MTX` + 最近兩檔台指選 roots + registry 內股票
 
 若要補 history，改用：
 
@@ -281,7 +258,7 @@ psql postgresql://postgres:postgres@localhost:5432/trading < trading.sql
 3. 啟動 PostgreSQL / TimescaleDB
 4. 如果有舊 DB，先還原備份
 5. 跑 `doctor`
-6. 跑 `sync-registry` 補齊指定時間範圍
+6. 跑 `history-sync` 補齊指定時間範圍
 
 ### 檢查指令
 ```bash
@@ -294,12 +271,16 @@ psql postgresql://postgres:postgres@localhost:5432/trading < trading.sql
   - 可補
 - `TAIFEX future 1m`
   - 可補
+- `TWSE/TPEX index 1d`
+  - 可補，目前內建 `TWII` / `TWOTC`
+- `TWSE/TPEX index 1m`
+  - 可補，目前內建 `TWII` / `TWOTC`
 - `TWSE stock 1d`
   - 可補
 - `TWSE stock 1m`
   - 可補，走 `FinMind TaiwanStockPriceTick -> bars_1m`
 - `TAIFEX option 1d`
-  - 可補，根 symbol 以 `TXO` 為 root，實際區分靠 `contract_date`
+  - 不補
 - `TAIFEX option 1m`
-  - 目前不走 FinMind historical 自動補
-  - 目前策略是靠 live recorder 自建
+  - 不走 historical 自動補
+  - 目前策略是靠 `runtime` live recorder 自建

@@ -28,6 +28,8 @@ class FinMindAdapter(BaseProvider):
             return timeframe in {"1d", "1m"}
         if instrument_type == "stock" and market == "TWSE":
             return timeframe in {"1d", "1m"}
+        if instrument_type == "index" and market == "TWSE" and _is_index_symbol(symbol):
+            return timeframe in {"1d", "1m"}
         return False
 
     def fetch_history(
@@ -39,11 +41,11 @@ class FinMindAdapter(BaseProvider):
         session_scope: str,
     ) -> list[Bar]:
         if timeframe == "1d":
-            if symbol.isdigit():
+            if symbol.isdigit() or _is_index_symbol(symbol):
                 return self._fetch_stock_daily(symbol, start_date, end_date)
             return self._fetch_futures_daily(symbol, start_date, end_date, session_scope)
         if timeframe == "1m":
-            if symbol.isdigit():
+            if symbol.isdigit() or _is_index_symbol(symbol):
                 return self._fetch_stock_minute_from_ticks(symbol, start_date, end_date, session_scope)
             return self._fetch_minute_from_ticks(symbol, start_date, end_date, session_scope)
         raise ValueError(f"Unsupported timeframe: {timeframe}")
@@ -250,11 +252,12 @@ class FinMindAdapter(BaseProvider):
     @staticmethod
     def _normalize_stock_row(row: dict) -> Bar:
         ts = datetime.fromisoformat(f"{row['date']}T00:00:00")
+        symbol = str(row["stock_id"])
         return Bar(
             ts=ts,
             trading_day=ts.date(),
-            symbol=str(row["stock_id"]),
-            instrument_key=str(row["stock_id"]),
+            symbol=symbol,
+            instrument_key=_equity_instrument_key(symbol),
             contract_month="",
             session="day",
             open=float(row["open"]),
@@ -344,7 +347,7 @@ class FinMindAdapter(BaseProvider):
                     ts=minute_ts,
                     trading_day=minute_ts.date(),
                     symbol=symbol,
-                    instrument_key=symbol,
+                    instrument_key=_equity_instrument_key(symbol),
                     contract_month="",
                     session=session,
                     open=prices[0],
@@ -366,6 +369,17 @@ def _optional_float(value: object) -> float | None:
     if value in (None, ""):
         return None
     return float(value)
+
+
+def _equity_instrument_key(symbol: str) -> str:
+    normalized = str(symbol).upper()
+    if _is_index_symbol(normalized):
+        return f"index:{normalized}"
+    return normalized
+
+
+def _is_index_symbol(symbol: str) -> bool:
+    return str(symbol).upper() in {"TWII", "TWOTC"}
 
 
 def _map_session(trading_session: str) -> str:
