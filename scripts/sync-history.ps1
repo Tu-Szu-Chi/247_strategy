@@ -1,8 +1,8 @@
 param(
     [string]$ConfigPath = "config/config.yaml",
     [string]$RegistryPath = "config/symbols.csv",
-    [string]$StartDate = "2023-01-01",
-    [string]$SyncTime = "15:05",
+    [string]$StartDate = "2026-04-14",
+    [string]$SyncTime = "00:01",
     [string]$SessionScope = "day_and_night",
     [string]$LogFile = "logs/history-sync.log",
     [string]$DatabaseUrl = "",

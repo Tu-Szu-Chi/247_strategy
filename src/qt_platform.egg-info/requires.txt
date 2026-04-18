@@ -4,5 +4,12 @@ psycopg[binary]<4.0,>=3.2
 [dev]
 pytest<9.0,>=8.0
 
+[live]
+shioaji<2.0,>=1.2
+
 [reports]
 quantstats<0.1,>=0.0.62
+
+[web]
+fastapi<1.0,>=0.115
+uvicorn<1.0,>=0.30

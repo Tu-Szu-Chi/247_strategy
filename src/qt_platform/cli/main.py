@@ -42,7 +42,6 @@ from qt_platform.session import (
 )
 from qt_platform.settings import Settings, load_settings
 from qt_platform.storage.factory import build_bar_repository
-from qt_platform.strategies.mxf_2330_pulse import Mxf2330PulseStrategy
 from qt_platform.strategies.sma_cross import SmaCrossStrategy
 from qt_platform.symbol_registry import load_symbol_registry
 from qt_platform.web import build_option_power_app
@@ -78,10 +77,6 @@ def main() -> None:
     backtest.add_argument("--min-tick-bias-ratio", type=float, default=0.1)
     backtest.add_argument("--long-only", action="store_true")
     backtest.add_argument("--reference-symbol", default="2330")
-    backtest.add_argument("--growth-threshold", type=float, default=0.3)
-    backtest.add_argument("--max-position", type=int, default=2)
-    backtest.add_argument("--stop-loss-points", type=float, default=100.0)
-    backtest.add_argument("--force-exit-time", default="13:30")
 
     doctor = subparsers.add_parser("doctor")
     doctor.add_argument("--database-url")
@@ -210,20 +205,10 @@ def _backtest(args: argparse.Namespace, settings: Settings) -> None:
     )
     bars = select_symbol_view(args.symbol, bars)
     strategy = _build_strategy(args)
-    context_extras_by_ts = None
-    if args.strategy == "mxf-2330-pulse":
-        reference_bars = store.list_bars(
-            timeframe="1m",
-            symbol=root_symbol_for(args.reference_symbol),
-            start=datetime.fromisoformat(args.start),
-            end=datetime.fromisoformat(args.end),
-        )
-        context_extras_by_ts = _build_reference_growth_context(reference_bars)
     result = run_backtest(
         bars=bars,
         strategy=strategy,
         config=BacktestConfig(),
-        context_extras_by_ts=context_extras_by_ts,
     )
     report = write_html_report(result, _report_dir(args, settings), f"{args.symbol}-backtest")
     print(f"ending_cash={result.ending_cash:.2f}")

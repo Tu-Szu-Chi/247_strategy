@@ -4,11 +4,6 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-sys.modules.setdefault(
-    "qt_platform.strategies.mxf_2330_pulse",
-    types.SimpleNamespace(Mxf2330PulseStrategy=object),
-)
-
 from qt_platform.cli.main import _serve_option_power
 
 
