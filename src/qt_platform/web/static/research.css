@@ -1,10 +1,10 @@
 :root {
-  --bg: #09111f;
-  --bg-soft: #101c31;
-  --panel: rgba(12, 24, 43, 0.88);
-  --panel-border: rgba(184, 202, 255, 0.16);
-  --text: #edf3ff;
-  --muted: #90a2c5;
+  --bg: #08111d;
+  --bg-soft: #111d2e;
+  --panel: rgba(9, 20, 35, 0.88);
+  --panel-border: rgba(171, 197, 245, 0.16);
+  --text: #eef4ff;
+  --muted: #8ea3c8;
   --bull: #ff6a5a;
   --bear: #41b883;
   --accent: #ffd166;
@@ -19,23 +19,23 @@ body {
   font-family: "IBM Plex Sans", "Noto Sans TC", sans-serif;
   color: var(--text);
   background:
-    radial-gradient(circle at top right, rgba(255, 106, 90, 0.18), transparent 28%),
-    radial-gradient(circle at left center, rgba(65, 184, 131, 0.14), transparent 24%),
-    linear-gradient(160deg, #07101d, #101c31 54%, #0a1423);
+    radial-gradient(circle at top right, rgba(255, 106, 90, 0.16), transparent 28%),
+    radial-gradient(circle at left center, rgba(65, 184, 131, 0.12), transparent 25%),
+    linear-gradient(160deg, #06101b, #0f1d31 54%, #091420);
 }
 
 .page {
-  max-width: 1200px;
+  max-width: 1520px;
   margin: 0 auto;
-  padding: 18px 20px;
+  padding: 18px 20px 24px;
 }
 
 .hero {
   display: flex;
   justify-content: space-between;
   gap: 24px;
-  align-items: end;
-  margin-bottom: 16px;
+  margin-bottom: 14px;
+  align-items: flex-end;
 }
 
 .eyebrow {
@@ -48,20 +48,20 @@ body {
 
 h1 {
   margin: 0;
-  font-size: clamp(36px, 6vw, 72px);
-  line-height: 0.95;
+  font-size: clamp(34px, 5vw, 64px);
+  line-height: 0.98;
 }
 
 .subtitle {
-  color: var(--muted);
   margin: 8px 0 0;
+  color: var(--muted);
 }
 
-.status-panel,
+.meta-card,
+.toolbar,
+.chart-card,
 .pressure-card,
-.replay-panel,
-.controls,
-.chart-card {
+.controls {
   background: var(--panel);
   border: 1px solid var(--panel-border);
   border-radius: 18px;
@@ -69,93 +69,101 @@ h1 {
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.24);
 }
 
-.status-panel {
+.meta-card {
   display: grid;
-  grid-template-columns: repeat(2, minmax(110px, 1fr));
-  gap: 8px 14px;
+  grid-template-columns: repeat(2, minmax(130px, 1fr));
+  gap: 10px 16px;
+  min-width: 360px;
   padding: 12px 14px;
-  min-width: 320px;
 }
 
-.status-panel span,
+.meta-card span,
+.toolbar label,
+.chart-title,
+.chart-header,
 .controls label,
-.chart-header {
+.pressure-card span {
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12px;
 }
 
-.status-panel strong {
+.meta-card strong {
   display: block;
   margin-top: 4px;
 }
 
-.controls {
-  padding: 10px 14px;
-  margin-bottom: 12px;
-}
-
-.replay-panel {
-  padding: 12px 14px;
-  margin-bottom: 12px;
-}
-
-.replay-form,
-.replay-toolbar {
+.toolbar {
   display: flex;
   align-items: center;
-  gap: 10px;
   flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
 }
 
-.replay-toolbar {
-  margin-top: 10px;
-}
-
-.replay-panel input,
-.replay-panel select,
-.replay-panel button {
-  background: #0d1730;
+.toolbar input,
+.toolbar select,
+.toolbar button,
+.controls select {
+  background: #0c1630;
   color: var(--text);
   border: 1px solid var(--panel-border);
   border-radius: 10px;
   padding: 8px 10px;
 }
 
-.replay-panel button {
+.toolbar button {
   cursor: pointer;
 }
 
-#replay-slider {
-  width: 100%;
-  margin-top: 12px;
-  padding: 0;
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(340px, 420px);
+  gap: 10px;
+  align-items: start;
 }
 
-.hidden {
-  display: none;
+.charts-column {
+  display: grid;
+  gap: 8px;
+}
+
+.chart-card {
+  padding: 10px 12px 12px;
+}
+
+.chart-title {
+  margin-bottom: 6px;
+}
+
+.chart-box {
+  height: 460px;
+}
+
+.chart-box.small {
+  height: 170px;
+}
+
+.detail-column {
+  display: grid;
+  gap: 12px;
+  align-content: start;
 }
 
 .pressure-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
-  margin-bottom: 12px;
 }
 
 .pressure-card {
   padding: 12px 14px;
 }
 
-.pressure-card span {
-  display: block;
-  color: var(--muted);
-  font-size: 12px;
-}
-
 .pressure-card strong {
   display: block;
   margin-top: 8px;
-  font-size: clamp(24px, 3vw, 34px);
+  font-size: clamp(22px, 2vw, 30px);
   line-height: 1;
   font-variant-numeric: tabular-nums;
 }
@@ -168,27 +176,22 @@ h1 {
   color: var(--bear);
 }
 
-.controls select {
-  margin-left: 10px;
-  background: #0d1730;
-  color: var(--text);
-  border: 1px solid var(--panel-border);
-  border-radius: 10px;
-  padding: 8px 10px;
+.controls {
+  padding: 10px 14px;
 }
 
-.chart-card {
-  padding: 12px 14px 14px;
+.controls select {
+  margin-left: 10px;
 }
 
 .chart-header {
   display: grid;
   grid-template-columns: 92px 1fr 1fr;
-  margin-bottom: 10px;
   gap: 14px;
+  margin-bottom: 10px;
 }
 
-.chart {
+.chart-grid {
   display: grid;
   gap: 6px;
 }
@@ -246,7 +249,7 @@ h1 {
   transform: translate(-50%, -50%);
   padding: 0 4px;
   border-radius: 999px;
-  background: rgba(9, 17, 31, 0.78);
+  background: rgba(8, 17, 29, 0.8);
   color: #dfe7f7;
   font-size: 10px;
   line-height: 1.2;
@@ -278,7 +281,6 @@ h1 {
   font-size: 10px;
   color: #fff;
   mix-blend-mode: screen;
-  line-height: 1;
 }
 
 .delta.positive {
@@ -295,27 +297,31 @@ h1 {
   text-align: center;
 }
 
+@media (max-width: 1180px) {
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .detail-column {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 860px) {
   .hero {
     flex-direction: column;
     align-items: stretch;
   }
 
-  .status-panel {
+  .meta-card {
     min-width: 0;
   }
 
-  .pressure-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .chart-box {
+    height: 320px;
   }
 
-  .row {
-    grid-template-columns: 72px 1fr 1fr;
-    gap: 10px;
-  }
-
-  .mid-price {
-    font-size: 9px;
-    padding: 0 3px;
+  .chart-box.small {
+    height: 150px;
   }
 }

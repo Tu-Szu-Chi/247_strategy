@@ -44,6 +44,7 @@ UI應該長得像T-Shape Bar Chart, Y軸label是各履約價, X軸是“力道"
 - 補前一盤或可取得的 open interest 作為 confidence weighting
 - 研究 FinMind / Shioaji 是否能穩定取得選擇權未平倉量
 - 加入 replay / run_id 回放能力
+- 若後續能穩定取得 Greeks / IV / OI，可再升級為 delta-adjusted / gamma-aware / dealer-positioning 類指標
 
 ### Risks To Remember
 - 不可直接使用跨盤別累積總量去乘上重置後的內外盤比
@@ -66,6 +67,7 @@ UI應該長得像T-Shape Bar Chart, Y軸label是各履約價, X軸是“力道"
 - 後端每 5 秒推送一次 option-power snapshot
 - 每個 option contract 都有自己的 cumulative power 與 1m delta power
 - 第一版不依賴 OI 即可運作
+- 第一版額外提供一個整體整數型壓力指標，將 ATM±N 檔選擇權彙總成單一值
 
 ### Proposed Architecture
 - 保留現有 `record-live` 作為 tick ingestion 與落庫入口
@@ -120,6 +122,11 @@ UI應該長得像T-Shape Bar Chart, Y軸label是各履約價, X軸是“力道"
   - contract_count
   - underlying reference price if available
 - expiry label 應轉成較易讀格式，不直接顯示原始 `contract_month`
+- 除了 per-contract 資料外，snapshot 也應提供 aggregated pressure 指標:
+  - `raw_pressure`
+  - `pressure_index`
+  - `raw_pressure_1m`
+  - `pressure_index_1m`
 
 #### 4. Web Service
 - v1 建議新增輕量 ASGI service
@@ -156,6 +163,79 @@ UI應該長得像T-Shape Bar Chart, Y軸label是各履約價, X軸是“力道"
 - `cumulative_power = cumulative_buy_volume - cumulative_sell_volume`
 - `power_1m_delta = rolling_1m_buy_volume - rolling_1m_sell_volume`
 
+### Aggregated Pressure Indicator
+
+#### Goal
+- 在保留原始 `option-power` T-bar 視圖之外，再提供一個可盤中快速判讀的整數型總指標
+- 該指標代表目前監控範圍內，經過方向映射、ATM 權重、到期月權重後的整體多空壓力
+- 這是 product-specific signal，不宣稱為標準金融工程公式
+
+#### Naming
+- 建議欄位名稱:
+  - `raw_pressure`
+  - `pressure_index`
+  - `raw_pressure_1m`
+  - `pressure_index_1m`
+
+#### Direction Mapping
+- 需先把單一合約的買賣量轉成「對標的方向」的 flow
+- 對 `call`:
+  - `dir_i = a_buy * buy_i - a_sell * sell_i`
+- 對 `put`:
+  - `dir_i = a_sell * sell_i - a_buy * buy_i`
+- v1 預設參數:
+  - `a_buy = 1.0`
+  - `a_sell = 1.1`
+
+#### ATM Weight
+- 越靠近 ATM 的履約價，權重越高
+- 先以 strike distance 近似 gamma / moneyness 權重，不依賴即時 Greeks
+- 定義:
+  - `d_i = abs(strike_i - underlying_reference_price) / strike_step`
+  - `w_i = exp(-(d_i^2) / (2 * sigma^2))`
+- v1 預設參數:
+  - `sigma = 2.0`
+- `strike_step` 代表相鄰履約價的基本間距
+
+#### Expiry Weight
+- 最近到期日權重高於次近到期日
+- v1 預設:
+  - 最近到期 `e_i = 1.0`
+  - 次近到期 `e_i = 0.75`
+
+#### Per-Contract Score
+- 每一個 option contract 的聚合分數:
+  - `score_i = e_i * w_i * dir_i`
+
+#### Session Cumulative Indicator
+- 累積型整數壓力值:
+  - `raw_pressure = round(sum(score_i))`
+- 為了避免成交量大小讓數值尺度漂移過大，需再提供標準化版本:
+  - `abs_base_i = e_i * w_i * (a_buy * buy_i + a_sell * sell_i)`
+  - `pressure_index = round(100 * sum(score_i) / sum(abs_base_i))`
+- 若分母為 0，`pressure_index = 0`
+
+#### 1-Minute Indicator
+- 同一套公式需再套用到最近 1 分鐘流量
+- 把 `buy_i` / `sell_i` 換成 `rolling_1m_buy_volume` / `rolling_1m_sell_volume`
+- 得到:
+  - `raw_pressure_1m`
+  - `pressure_index_1m`
+
+#### Interpretation
+- `raw_pressure` 保留量感，適合觀察今天這一波累積力道有多大
+- `pressure_index` 用於快速盤中判讀，建議範圍視為約 `-100 ~ +100`
+- 初步解讀門檻:
+  - `pressure_index >= 20` 代表明顯偏多
+  - `pressure_index <= -20` 代表明顯偏空
+  - `-10 ~ +10` 可視為中性或雜訊區
+- `pressure_index_1m` 用來觀察短線節奏，不取代 session cumulative 指標
+
+#### Why This Version
+- v1 只有 tick direction 與成交量，沒有穩定可用的 OI / Greeks / IV
+- 因此先做 `signed flow + moneyness proxy weighting + mild sell-side prior + normalization`
+- 若未來取得穩定 Greeks，可把 `w_i` 升級為 delta / gamma-aware 權重
+
 #### Session Boundary
 - 日盤與夜盤各自獨立累積
 - 一旦 session 切換:
@@ -173,6 +253,10 @@ UI應該長得像T-Shape Bar Chart, Y軸label是各履約價, X軸是“力道"
   "session": "day",
   "option_root": "TXO",
   "underlying_reference_price": 19876.0,
+  "raw_pressure": 148,
+  "pressure_index": 27,
+  "raw_pressure_1m": 18,
+  "pressure_index_1m": 14,
   "expiries": [
     {
       "contract_month": "202604W3",
@@ -205,6 +289,7 @@ UI應該長得像T-Shape Bar Chart, Y軸label是各履約價, X軸是“力道"
   - snapshot time
   - 資料連線狀態
   - underlying reference price
+- 頁首或摘要區額外顯示 aggregated pressure 指標
 - 主區塊提供 expiry selector
 - 預設選最近到期日
 - 內容區為 T-shape / diverging bar chart
@@ -239,6 +324,7 @@ UI應該長得像T-Shape Bar Chart, Y軸label是各履約價, X軸是“力道"
 - 建立 in-memory aggregator
 - 補 aggregator 單元測試
 - 驗證 session reset 與 rolling 1m 計算
+- 實作 aggregated pressure indicator 計算
 
 #### Phase 2: Web Service
 - 建立 HTTP + websocket service
@@ -249,6 +335,7 @@ UI應該長得像T-Shape Bar Chart, Y軸label是各履約價, X軸是“力道"
 #### Phase 3: UI
 - 完成單頁監控介面
 - 先以 polling 接 snapshot 並渲染 diverging bar chart
+- 顯示 aggregated pressure 摘要值
 - 補空狀態 / 斷線狀態 / 無資料狀態
 
 #### Phase 4: Hardening

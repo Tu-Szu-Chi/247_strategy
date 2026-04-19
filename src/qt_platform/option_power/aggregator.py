@@ -16,6 +16,13 @@ from qt_platform.option_power.domain import (
 
 MONTH_CONTRACT_PATTERN = re.compile(r"^(?P<year>\d{4})(?P<month>\d{2})$")
 WEEKLY_CONTRACT_PATTERN = re.compile(r"^(?P<year>\d{4})(?P<month>\d{2})W(?P<week>\d+)$")
+RAW_PRESSURE_BUY_WEIGHT = 1.0
+RAW_PRESSURE_SELL_WEIGHT = 1.1
+INDEX_PRESSURE_BUY_WEIGHT = 1.0
+INDEX_PRESSURE_SELL_WEIGHT = 1.0
+PRESSURE_SIGMA = 2.0
+SECOND_EXPIRY_WEIGHT = 0.75
+FIVE_MINUTE_WINDOW_SECONDS = 300
 
 
 @dataclass
@@ -141,6 +148,11 @@ class OptionPowerAggregator:
         warning: str | None = None,
     ) -> OptionPowerSnapshot:
         with self._lock:
+            pressure_metrics = _compute_pressure_metrics(
+                states=list(self._states.values()),
+                underlying_reference_price=underlying_reference_price,
+                now=generated_at,
+            )
             expiries: dict[str, list[OptionContractSnapshot]] = {}
             contract_count = 0
             for state in self._states.values():
@@ -187,6 +199,11 @@ class OptionPowerAggregator:
                 session=self._session,
                 option_root=self.option_root,
                 underlying_reference_price=underlying_reference_price,
+                raw_pressure=pressure_metrics["raw_pressure"],
+                pressure_index=pressure_metrics["pressure_index"],
+                raw_pressure_1m=pressure_metrics["raw_pressure_1m"],
+                pressure_index_1m=pressure_metrics["pressure_index_1m"],
+                pressure_index_5m=pressure_metrics["pressure_index_5m"],
                 expiries=expiry_snapshots,
                 contract_count=contract_count,
                 status=status,
@@ -224,3 +241,178 @@ def _format_expiry_label(contract_month: str) -> str:
         return f"{year}-{month}"
 
     return contract_month
+
+
+def _compute_pressure_metrics(
+    *,
+    states: list[_ContractState],
+    underlying_reference_price: float | None,
+    now: datetime,
+) -> dict[str, int]:
+    if not states or underlying_reference_price is None:
+        return {
+            "raw_pressure": 0,
+            "pressure_index": 0,
+            "raw_pressure_1m": 0,
+            "pressure_index_1m": 0,
+            "pressure_index_5m": 0,
+        }
+
+    weighted_components: list[tuple[_ContractState, float]] = []
+    strike_step = _infer_strike_step(states)
+    expiry_weights = _expiry_weights(states)
+
+    for state in states:
+        distance = abs(state.strike_price - underlying_reference_price) / strike_step
+        atm_weight = _gaussian_weight(distance)
+        expiry_weight = expiry_weights.get(state.contract_month, SECOND_EXPIRY_WEIGHT)
+        contract_weight = expiry_weight * atm_weight
+        weighted_components.append((state, contract_weight))
+
+    cumulative_raw_score_sum = _weighted_score_sum(
+        weighted_components,
+        lambda state: (state.cumulative_buy_volume, state.cumulative_sell_volume),
+        buy_weight=RAW_PRESSURE_BUY_WEIGHT,
+        sell_weight=RAW_PRESSURE_SELL_WEIGHT,
+    )
+    rolling_1m_raw_score_sum = _weighted_score_sum(
+        weighted_components,
+        lambda state: _rolling_totals_at(state, now, window_seconds=60),
+        buy_weight=RAW_PRESSURE_BUY_WEIGHT,
+        sell_weight=RAW_PRESSURE_SELL_WEIGHT,
+    )
+    cumulative_index_score_sum = _weighted_score_sum(
+        weighted_components,
+        lambda state: (state.cumulative_buy_volume, state.cumulative_sell_volume),
+        buy_weight=INDEX_PRESSURE_BUY_WEIGHT,
+        sell_weight=INDEX_PRESSURE_SELL_WEIGHT,
+    )
+    cumulative_index_abs_sum = _weighted_abs_sum(
+        weighted_components,
+        lambda state: (state.cumulative_buy_volume, state.cumulative_sell_volume),
+        buy_weight=INDEX_PRESSURE_BUY_WEIGHT,
+        sell_weight=INDEX_PRESSURE_SELL_WEIGHT,
+    )
+    rolling_1m_index_score_sum = _weighted_score_sum(
+        weighted_components,
+        lambda state: _rolling_totals_at(state, now, window_seconds=60),
+        buy_weight=INDEX_PRESSURE_BUY_WEIGHT,
+        sell_weight=INDEX_PRESSURE_SELL_WEIGHT,
+    )
+    rolling_1m_index_abs_sum = _weighted_abs_sum(
+        weighted_components,
+        lambda state: _rolling_totals_at(state, now, window_seconds=60),
+        buy_weight=INDEX_PRESSURE_BUY_WEIGHT,
+        sell_weight=INDEX_PRESSURE_SELL_WEIGHT,
+    )
+    rolling_5m_index_score_sum = _weighted_score_sum(
+        weighted_components,
+        lambda state: _rolling_totals_at(state, now, window_seconds=FIVE_MINUTE_WINDOW_SECONDS),
+        buy_weight=INDEX_PRESSURE_BUY_WEIGHT,
+        sell_weight=INDEX_PRESSURE_SELL_WEIGHT,
+    )
+    rolling_5m_index_abs_sum = _weighted_abs_sum(
+        weighted_components,
+        lambda state: _rolling_totals_at(state, now, window_seconds=FIVE_MINUTE_WINDOW_SECONDS),
+        buy_weight=INDEX_PRESSURE_BUY_WEIGHT,
+        sell_weight=INDEX_PRESSURE_SELL_WEIGHT,
+    )
+
+    return {
+        "raw_pressure": round(cumulative_raw_score_sum),
+        "pressure_index": _normalized_pressure(cumulative_index_score_sum, cumulative_index_abs_sum),
+        "raw_pressure_1m": round(rolling_1m_raw_score_sum),
+        "pressure_index_1m": _normalized_pressure(rolling_1m_index_score_sum, rolling_1m_index_abs_sum),
+        "pressure_index_5m": _normalized_pressure(rolling_5m_index_score_sum, rolling_5m_index_abs_sum),
+    }
+
+
+def _infer_strike_step(states: list[_ContractState]) -> float:
+    strikes = sorted({state.strike_price for state in states})
+    if len(strikes) < 2:
+        return 1.0
+
+    positive_diffs = [curr - prev for prev, curr in zip(strikes, strikes[1:]) if curr > prev]
+    if not positive_diffs:
+        return 1.0
+    return min(positive_diffs)
+
+
+def _expiry_weights(states: list[_ContractState]) -> dict[str, float]:
+    ordered_contract_months = sorted({state.contract_month for state in states})
+    if not ordered_contract_months:
+        return {}
+    weights = {ordered_contract_months[0]: 1.0}
+    for contract_month in ordered_contract_months[1:]:
+        weights[contract_month] = SECOND_EXPIRY_WEIGHT
+    return weights
+
+
+def _gaussian_weight(distance: float) -> float:
+    return pow(2.718281828459045, -((distance * distance) / (2 * PRESSURE_SIGMA * PRESSURE_SIGMA)))
+
+
+def _directional_flow(
+    *,
+    call_put: str,
+    buy_volume: float,
+    sell_volume: float,
+    buy_weight: float,
+    sell_weight: float,
+) -> float:
+    normalized = (call_put or "").strip().lower()
+    if normalized == "put":
+        return sell_weight * sell_volume - buy_weight * buy_volume
+    return buy_weight * buy_volume - sell_weight * sell_volume
+
+
+def _normalized_pressure(score_sum: float, abs_sum: float) -> int:
+    if abs_sum <= 0:
+        return 0
+    return round(100 * score_sum / abs_sum)
+
+
+def _rolling_totals_at(state: _ContractState, now: datetime, *, window_seconds: int) -> tuple[float, float]:
+    cutoff = now - timedelta(seconds=window_seconds)
+    buy_volume = 0.0
+    sell_volume = 0.0
+    for event in state.events:
+        if event.ts < cutoff:
+            continue
+        buy_volume += event.buy_volume
+        sell_volume += event.sell_volume
+    return buy_volume, sell_volume
+
+
+def _weighted_score_sum(
+    weighted_components: list[tuple[_ContractState, float]],
+    volume_getter,
+    *,
+    buy_weight: float,
+    sell_weight: float,
+) -> float:
+    score_sum = 0.0
+    for state, contract_weight in weighted_components:
+        buy_volume, sell_volume = volume_getter(state)
+        score_sum += contract_weight * _directional_flow(
+            call_put=state.call_put,
+            buy_volume=buy_volume,
+            sell_volume=sell_volume,
+            buy_weight=buy_weight,
+            sell_weight=sell_weight,
+        )
+    return score_sum
+
+
+def _weighted_abs_sum(
+    weighted_components: list[tuple[_ContractState, float]],
+    volume_getter,
+    *,
+    buy_weight: float,
+    sell_weight: float,
+) -> float:
+    abs_sum = 0.0
+    for state, contract_weight in weighted_components:
+        buy_volume, sell_volume = volume_getter(state)
+        abs_sum += contract_weight * (buy_weight * buy_volume + sell_weight * sell_volume)
+    return abs_sum

@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+from collections import deque
 import json
 import time
 import threading
+from dataclasses import dataclass
 from dataclasses import replace
 from datetime import datetime
 from typing import Any
 
-from qt_platform.domain import LiveRunMetadata
+from qt_platform.domain import Bar, CanonicalTick, LiveRunMetadata
 from qt_platform.features import compute_minute_force_feature_series
 from qt_platform.live.recorder import aggregate_ticks_to_bars
 from qt_platform.live.shioaji_provider import ShioajiLiveProvider
@@ -24,6 +26,28 @@ from qt_platform.storage.base import BarRepository
 
 LIVE_SUBSCRIBE_LEAD_SECONDS = 20.0
 OPTION_ROOT_RETRY_SECONDS = 5.0
+MAX_LIVE_SNAPSHOTS = 5000
+MAX_LIVE_BARS = 720
+
+
+@dataclass
+class _MinuteBarState:
+    minute_ts: datetime
+    trading_day: Any
+    symbol: str
+    instrument_key: str
+    contract_month: str
+    strike_price: float | None
+    call_put: str | None
+    session: str
+    source: str
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+    up_ticks: float
+    down_ticks: float
 
 
 class OptionPowerRuntimeService:
@@ -66,6 +90,12 @@ class OptionPowerRuntimeService:
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
         self._stopped = threading.Event()
+        self._history_lock = threading.Lock()
+        self._snapshot_history: deque[dict[str, Any]] = deque(maxlen=MAX_LIVE_SNAPSHOTS)
+        self._bars_history: deque[dict[str, Any]] = deque(maxlen=MAX_LIVE_BARS)
+        self._bar_index: dict[datetime, int] = {}
+        self._open_bar_state: _MinuteBarState | None = None
+        self._next_snapshot_at: datetime | None = None
 
     def start(self, run_id: str) -> None:
         if self._thread and self._thread.is_alive():
@@ -83,6 +113,9 @@ class OptionPowerRuntimeService:
         self._thread.join(timeout=timeout)
 
     def current_snapshot(self) -> dict[str, Any]:
+        with self._history_lock:
+            if self._snapshot_history:
+                return self._snapshot_history[-1]["snapshot"]
         snapshot = self.aggregator.snapshot(
             generated_at=datetime.now(),
             run_id=self.run_id,
@@ -92,6 +125,66 @@ class OptionPowerRuntimeService:
             warning=self.warning or self.error_message,
         )
         return snapshot.to_dict()
+
+    def live_metadata(self) -> dict[str, Any]:
+        with self._history_lock:
+            first_ts = self._snapshot_history[0]["simulated_at"] if self._snapshot_history else None
+            last_ts = self._snapshot_history[-1]["simulated_at"] if self._snapshot_history else None
+            return {
+                "mode": "live",
+                "run_id": self.run_id,
+                "status": self.status,
+                "option_root": self.aggregator.option_root,
+                "underlying_symbol": self.underlying_future_symbol,
+                "snapshot_count": len(self._snapshot_history),
+                "bar_count": len(self._bars_history),
+                "start": first_ts,
+                "end": last_ts,
+                "selected_option_roots": [
+                    item for item in self.aggregator.option_root.split(",") if item
+                ],
+                "available_series": [
+                    "pressure_index_5m",
+                    "pressure_index",
+                    "pressure_index_1m",
+                    "raw_pressure",
+                    "raw_pressure_1m",
+                ],
+            }
+
+    def live_bars(self) -> list[dict[str, Any]]:
+        with self._history_lock:
+            bars = list(self._bars_history)
+            open_bar = _bar_state_to_chart_dict(self._open_bar_state) if self._open_bar_state else None
+        if open_bar:
+            if bars and bars[-1]["time"] == open_bar["time"]:
+                bars[-1] = open_bar
+            else:
+                bars.append(open_bar)
+        return bars
+
+    def live_series(self, names: list[str]) -> dict[str, list[dict[str, Any]]]:
+        with self._history_lock:
+            history = list(self._snapshot_history)
+        payload: dict[str, list[dict[str, Any]]] = {}
+        for name in names:
+            payload[name] = [
+                {"time": item["simulated_at"], "value": item["snapshot"].get(name, 0)}
+                for item in history
+            ]
+        return payload
+
+    def live_snapshot_at(self, ts: datetime) -> dict[str, Any] | None:
+        with self._history_lock:
+            history = list(self._snapshot_history)
+        if not history:
+            return None
+        target = ts.isoformat()
+        best = min(
+            history,
+            key=lambda item: abs(datetime.fromisoformat(item["simulated_at"]) - datetime.fromisoformat(target)),
+        )
+        return best
 
     def _run(self) -> None:
         ready_emitted = False
@@ -202,17 +295,23 @@ class OptionPowerRuntimeService:
                     self.provider._contracts[target_code] = contract
             self.aggregator.set_option_root(",".join(selected_roots))
             self.reference_price = reference_price
+            self._reset_live_cache()
             symbols = [str(getattr(contract, "symbol", "")) for contract in contracts]
             codes = [str(getattr(contract, "code", "")) for contract in contracts]
+            underlying_contract = self.provider._resolve_contract(self.underlying_future_symbol)
+            all_contracts = [underlying_contract, *contracts]
+            underlying_code = str(getattr(underlying_contract, "code", "") or self.underlying_future_symbol)
+            if underlying_code:
+                self.provider._contracts[underlying_code] = underlying_contract
             metadata = LiveRunMetadata(
                 run_id=self.run_id or "",
                 provider="shioaji",
                 mode="option_power_service",
                 started_at=datetime.now(),
                 session_scope=self.session_scope,
-                topic_count=len(contracts),
-                symbols_json=json.dumps(symbols, ensure_ascii=False),
-                codes_json=json.dumps(codes, ensure_ascii=False),
+                topic_count=len(all_contracts),
+                symbols_json=json.dumps([self.underlying_future_symbol, *symbols], ensure_ascii=False),
+                codes_json=json.dumps([underlying_code, *codes], ensure_ascii=False),
                 option_root=",".join(selected_roots),
                 underlying_future_symbol=self.underlying_future_symbol,
                 expiry_count=self.expiry_count,
@@ -227,7 +326,7 @@ class OptionPowerRuntimeService:
                 {
                     "status": "subscribed",
                     "run_id": self.run_id,
-                    "topic_count": len(contracts),
+                    "topic_count": len(all_contracts),
                     "option_roots": selected_roots,
                     "expiry_count": self.expiry_count,
                     "atm_window": self.atm_window,
@@ -247,9 +346,15 @@ class OptionPowerRuntimeService:
                 )
             if not self._ready.is_set():
                 self._ready.set()
-            for tick in self.provider.stream_ticks_from_contracts(contracts=contracts, max_events=None):
-                self.aggregator.ingest_tick(tick)
+            self._next_snapshot_at = datetime.now()
+            for tick in self.provider.stream_ticks_from_contracts(contracts=all_contracts, max_events=None):
+                if tick.symbol == self.underlying_future_symbol:
+                    self.reference_price = tick.price
+                    self._ingest_underlying_tick(tick)
+                else:
+                    self.aggregator.ingest_tick(tick)
                 batch.append(tick)
+                self._maybe_record_snapshots(tick.ts)
                 if len(batch) >= self.batch_size:
                     self._flush_batch(batch)
                     batch = []
@@ -274,6 +379,82 @@ class OptionPowerRuntimeService:
             compute_minute_force_feature_series(bars, run_id=self.run_id)
         )
 
+    def _reset_live_cache(self) -> None:
+        with self._history_lock:
+            self._snapshot_history.clear()
+            self._bars_history.clear()
+            self._bar_index.clear()
+            self._open_bar_state = None
+            self._next_snapshot_at = None
+
+    def _ingest_underlying_tick(self, tick: CanonicalTick) -> None:
+        minute_ts = tick.ts.replace(second=0, microsecond=0)
+        with self._history_lock:
+            if self._open_bar_state is None or self._open_bar_state.minute_ts != minute_ts:
+                if self._open_bar_state is not None:
+                    self._append_closed_bar(self._open_bar_state)
+                self._open_bar_state = _MinuteBarState(
+                    minute_ts=minute_ts,
+                    trading_day=tick.trading_day,
+                    symbol=tick.symbol,
+                    instrument_key=tick.instrument_key or tick.symbol,
+                    contract_month=tick.contract_month,
+                    strike_price=tick.strike_price,
+                    call_put=tick.call_put,
+                    session=tick.session,
+                    source=tick.source,
+                    open=tick.price,
+                    high=tick.price,
+                    low=tick.price,
+                    close=tick.price,
+                    volume=tick.size,
+                    up_ticks=1.0 if tick.tick_direction == "up" else 0.0,
+                    down_ticks=1.0 if tick.tick_direction == "down" else 0.0,
+                )
+                return
+
+            state = self._open_bar_state
+            state.high = max(state.high, tick.price)
+            state.low = min(state.low, tick.price)
+            state.close = tick.price
+            state.volume += tick.size
+            if tick.tick_direction == "up":
+                state.up_ticks += 1
+            elif tick.tick_direction == "down":
+                state.down_ticks += 1
+
+    def _append_closed_bar(self, state: _MinuteBarState) -> None:
+        bar = _bar_state_to_chart_dict(state)
+        existing_idx = self._bar_index.get(state.minute_ts)
+        if existing_idx is not None and existing_idx < len(self._bars_history):
+            self._bars_history[existing_idx] = bar
+            return
+        self._bars_history.append(bar)
+        self._bar_index = {datetime.fromisoformat(item["time"]): idx for idx, item in enumerate(self._bars_history)}
+
+    def _maybe_record_snapshots(self, tick_ts: datetime) -> None:
+        if self._next_snapshot_at is None:
+            self._next_snapshot_at = tick_ts.replace(microsecond=0)
+        while self._next_snapshot_at is not None and tick_ts >= self._next_snapshot_at:
+            snapshot = self.aggregator.snapshot(
+                generated_at=self._next_snapshot_at,
+                run_id=self.run_id,
+                underlying_reference_price=self.reference_price,
+                status=self.status,
+                stop_reason=self.stop_reason,
+                warning=self.warning or self.error_message,
+            ).to_dict()
+            with self._history_lock:
+                self._snapshot_history.append(
+                    {
+                        "session_id": self.run_id,
+                        "index": len(self._snapshot_history),
+                        "simulated_at": self._next_snapshot_at.isoformat(),
+                        "snapshot": snapshot,
+                    }
+                )
+            self._next_snapshot_at += timedelta(seconds=self.snapshot_interval_seconds)
+
 
 def _normalize_call_put(option_right) -> str:
     raw = getattr(option_right, "value", option_right)
@@ -292,3 +473,16 @@ def _sleep_until(target: datetime) -> None:
         if remaining <= 0:
             return
         time.sleep(min(remaining, 30.0))
+
+
+def _bar_state_to_chart_dict(state: _MinuteBarState | None) -> dict[str, Any] | None:
+    if state is None:
+        return None
+    return {
+        "time": state.minute_ts.isoformat(),
+        "open": state.open,
+        "high": state.high,
+        "low": state.low,
+        "close": state.close,
+        "volume": state.volume,
+    }

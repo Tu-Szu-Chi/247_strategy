@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from qt_platform.contracts import resolve_mtx_monthly_contract
 from qt_platform.domain import Bar
 from qt_platform.providers.base import BaseProvider
 from qt_platform.session import classify_session, trading_day_for
@@ -84,7 +85,11 @@ class FinMindAdapter(BaseProvider):
             end_date=end_date.isoformat(),
         )
         rows = payload.get("data", [])
-        bars = [self._normalize_futures_row(row, session_scope=session_scope) for row in rows]
+        bars = [
+            bar
+            for row in rows
+            if (bar := self._normalize_futures_row(row, session_scope=session_scope)) is not None
+        ]
         bars.sort(key=lambda item: item.ts)
         return bars
 
@@ -125,7 +130,10 @@ class FinMindAdapter(BaseProvider):
                 futures_id = str(row.get("futures_id"))
                 if futures_id not in symbol_set:
                     continue
-                grouped[futures_id].append(self._normalize_futures_row(row, session_scope=session_scope))
+                bar = self._normalize_futures_row(row, session_scope=session_scope)
+                if bar is None:
+                    continue
+                grouped[futures_id].append(bar)
             day += timedelta(days=1)
         for bars in grouped.values():
             bars.sort(key=lambda item: item.ts)
@@ -224,7 +232,7 @@ class FinMindAdapter(BaseProvider):
             time.sleep(min_interval - elapsed)
 
     @staticmethod
-    def _normalize_futures_row(row: dict, session_scope: str) -> Bar:
+    def _normalize_futures_row(row: dict, session_scope: str) -> Bar | None:
         trading_session = row.get("trading_session", "position")
         if session_scope == "day" and trading_session != "position":
             raise ValueError("Received non-day-session row while session_scope=day.")
@@ -232,12 +240,17 @@ class FinMindAdapter(BaseProvider):
             raise ValueError("Received non-night-session row while session_scope=night.")
 
         ts = datetime.fromisoformat(f"{row['date']}T00:00:00")
+        symbol = str(row["futures_id"])
+        contract_month = str(row["contract_date"])
+        if not _include_futures_history_contract(symbol=symbol, contract_month=contract_month, trading_day=ts.date()):
+            return None
+
         return Bar(
             ts=ts,
             trading_day=datetime.fromisoformat(f"{row['date']}T00:00:00").date(),
-            symbol=row["futures_id"],
-            instrument_key=row["futures_id"],
-            contract_month=str(row["contract_date"]),
+            symbol=symbol,
+            instrument_key=symbol,
+            contract_month=contract_month,
             session=_map_session(trading_session),
             open=float(row["open"]),
             high=float(row["max"]),
@@ -285,7 +298,8 @@ class FinMindAdapter(BaseProvider):
                 continue
             symbol = str(row["futures_id"])
             contract_month = str(row["contract_date"])
-            if not _include_futures_tick_contract(symbol=symbol, contract_month=contract_month):
+            trading_day = trading_day_for(ts)
+            if not _include_futures_history_contract(symbol=symbol, contract_month=contract_month, trading_day=trading_day):
                 continue
 
             bucket_key = (
@@ -394,7 +408,9 @@ def _map_session(trading_session: str) -> str:
 _MONTHLY_CONTRACT_PATTERN = re.compile(r"^\d{6}$")
 
 
-def _include_futures_tick_contract(symbol: str, contract_month: str) -> bool:
+def _include_futures_history_contract(symbol: str, contract_month: str, trading_day: date) -> bool:
     if symbol != "MTX":
         return True
-    return bool(_MONTHLY_CONTRACT_PATTERN.fullmatch(contract_month))
+    if not _MONTHLY_CONTRACT_PATTERN.fullmatch(contract_month):
+        return False
+    return contract_month == resolve_mtx_monthly_contract(trading_day).contract_month

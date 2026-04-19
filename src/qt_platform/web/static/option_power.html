@@ -12,7 +12,7 @@
         <div>
           <p class="eyebrow">Night Session Monitor</p>
           <h1>Option Power</h1>
-          <p class="subtitle">盤別累積力道為主，1 分鐘變化為輔助。</p>
+          <p class="subtitle">盤別累積力道為主，1 分鐘變化為輔助。<span id="data-mode">live</span></p>
         </div>
         <div class="status-panel">
           <div><span>WebSocket</span><strong id="connection-status">connecting</strong></div>
@@ -26,6 +26,48 @@
       <section class="controls">
         <label for="expiry-select">Expiry</label>
         <select id="expiry-select"></select>
+      </section>
+
+      <section id="replay-controls" class="replay-panel hidden">
+        <div class="replay-form">
+          <label for="replay-start">Start</label>
+          <input id="replay-start" type="datetime-local">
+          <label for="replay-end">End</label>
+          <input id="replay-end" type="datetime-local">
+          <button id="replay-load" type="button">Load Replay</button>
+        </div>
+        <div class="replay-toolbar">
+          <button id="replay-play" type="button">Play</button>
+          <button id="replay-pause" type="button">Pause</button>
+          <label for="replay-speed">Speed</label>
+          <select id="replay-speed">
+            <option value="1">1x</option>
+            <option value="2">2x</option>
+            <option value="5" selected>5x</option>
+            <option value="10">10x</option>
+          </select>
+          <span id="replay-progress">0 / 0</span>
+        </div>
+        <input id="replay-slider" type="range" min="0" max="0" step="1" value="0">
+      </section>
+
+      <section class="pressure-grid">
+        <article class="pressure-card">
+          <span>Session Raw</span>
+          <strong id="raw-pressure">0</strong>
+        </article>
+        <article class="pressure-card">
+          <span>Session Index</span>
+          <strong id="pressure-index">0</strong>
+        </article>
+        <article class="pressure-card">
+          <span>1m Raw</span>
+          <strong id="raw-pressure-1m">0</strong>
+        </article>
+        <article class="pressure-card">
+          <span>1m Index</span>
+          <strong id="pressure-index-1m">0</strong>
+        </article>
       </section>
 
       <section class="chart-card">

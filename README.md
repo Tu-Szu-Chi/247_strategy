@@ -133,6 +133,7 @@ PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml re
 - 備註:
   - 匯入器已支援 chunked upsert，適合大檔
   - `TWOTC` 會存成 `instrument_key=index:TWOTC`
+  - `MXF*` 會以 `symbol=MTX` 匯入，並依 `trading_day` 補上月契約 `contract_month`
 
 ```bash
 PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml import-csv-folder --database-url postgresql://postgres:postgres@localhost:5432/trading --folder tmp --pattern '*.csv' --chunk-size 10000

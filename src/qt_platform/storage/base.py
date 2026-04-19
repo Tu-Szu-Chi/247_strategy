@@ -61,6 +61,15 @@ class BarRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def list_ticks_for_symbols(
+        self,
+        symbols: list[str],
+        start: datetime,
+        end: datetime,
+    ) -> list[CanonicalTick]:
+        raise NotImplementedError
+
+    @abstractmethod
     def upsert_minute_force_features(self, features: Iterable[MinuteForceFeatures]) -> int:
         raise NotImplementedError
 

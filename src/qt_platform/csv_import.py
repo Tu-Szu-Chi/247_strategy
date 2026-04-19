@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import csv
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Iterable
 
+from qt_platform.contracts import resolve_mtx_monthly_contract
 from qt_platform.domain import Bar
 from qt_platform.session import classify_session, trading_day_for
 from qt_platform.storage.base import BarRepository
@@ -128,13 +129,14 @@ def _row_to_bar(row: dict[str, str], source: str, build_source: str) -> Bar:
     raw_symbol = row["Symbol"].strip()
     symbol = _canonical_symbol_for(raw_symbol)
     ts = _parse_timestamp(row["Date"], row["Time"])
+    trading_day = trading_day_for(ts)
     session = classify_session(ts)
     return Bar(
         ts=ts,
-        trading_day=trading_day_for(ts),
+        trading_day=trading_day,
         symbol=symbol,
         instrument_key=_instrument_key_for(raw_symbol),
-        contract_month=_contract_month_for(raw_symbol),
+        contract_month=_contract_month_for(raw_symbol, trading_day),
         session=session,
         open=float(row["Open"]),
         high=float(row["High"]),
@@ -159,11 +161,11 @@ def _instrument_key_for(symbol: str) -> str:
     return symbol
 
 
-def _contract_month_for(symbol: str) -> str:
+def _contract_month_for(symbol: str, trading_day: date) -> str:
     if symbol == "TWOTC" or symbol.isdigit():
         return ""
     if _canonical_symbol_for(symbol) == "MTX":
-        return ""
+        return resolve_mtx_monthly_contract(trading_day).contract_month
     return symbol
 
 

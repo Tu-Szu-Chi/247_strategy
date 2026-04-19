@@ -24,7 +24,7 @@ from qt_platform.features import compute_minute_force_feature_series
 from qt_platform.history_sync import build_history_entries, sync_history_days
 from qt_platform.live.recorder import LiveRecordResult, LiveRecorderService
 from qt_platform.live.shioaji_provider import ShioajiLiveProvider
-from qt_platform.option_power import OptionPowerRuntimeService
+from qt_platform.option_power import OptionPowerReplayService, OptionPowerRuntimeService
 from qt_platform.contracts import (
     is_continuous_symbol,
     resolve_mtx_monthly_contract,
@@ -153,6 +153,18 @@ def main() -> None:
     serve_option_power.add_argument("--ready-timeout-seconds", type=float, default=15.0)
     serve_option_power.add_argument("--log-file", default="logs/serve-option-power.log")
 
+    serve_option_power_replay = subparsers.add_parser("serve-option-power-replay")
+    serve_option_power_replay.add_argument("--database-url")
+    serve_option_power_replay.add_argument("--option-root", default="AUTO")
+    serve_option_power_replay.add_argument("--expiry-count", type=int, default=2)
+    serve_option_power_replay.add_argument("--underlying-symbol", default="MTX")
+    serve_option_power_replay.add_argument("--host", default="127.0.0.1")
+    serve_option_power_replay.add_argument("--port", type=int, default=8000)
+    serve_option_power_replay.add_argument("--snapshot-interval-seconds", type=float, default=5.0)
+    serve_option_power_replay.add_argument("--start", required=True)
+    serve_option_power_replay.add_argument("--end", required=True)
+    serve_option_power_replay.add_argument("--log-file", default="logs/serve-option-power-replay.log")
+
     resolve_contract = subparsers.add_parser("resolve-contract")
     resolve_contract.add_argument("--symbol", default="MTX")
     resolve_contract.add_argument("--date", required=True)
@@ -177,6 +189,8 @@ def main() -> None:
         _history_sync(args, settings)
     elif args.command == "serve-option-power":
         _serve_option_power(args, settings)
+    elif args.command == "serve-option-power-replay":
+        _serve_option_power_replay(args, settings)
     elif args.command == "resolve-contract":
         _resolve_contract(args)
 
@@ -816,6 +830,47 @@ def _serve_option_power(args: argparse.Namespace, settings: Settings) -> None:
             "host": args.host,
             "port": args.port,
             "url": f"http://{args.host}:{args.port}/",
+        },
+        args.log_file,
+    )
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info", access_log=False)
+
+
+def _serve_option_power_replay(args: argparse.Namespace, settings: Settings) -> None:
+    try:
+        import uvicorn
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError(
+            "uvicorn is required for serve-option-power-replay. Install with: pip install -e .[web]"
+        ) from exc
+
+    store = build_bar_repository(_database_url(args, settings))
+    replay = OptionPowerReplayService(
+        store=store,
+        option_root=args.option_root,
+        expiry_count=args.expiry_count,
+        underlying_symbol=args.underlying_symbol,
+        snapshot_interval_seconds=args.snapshot_interval_seconds,
+    )
+    metadata = replay.create_session(
+        start=datetime.fromisoformat(args.start),
+        end=datetime.fromisoformat(args.end),
+        set_as_default=True,
+    )
+    app = build_option_power_app(replay_service=replay)
+    _emit_runtime_status(
+        {
+            "status": "replay_web_ready",
+            "host": args.host,
+            "port": args.port,
+            "url": f"http://{args.host}:{args.port}/",
+            "research_url": f"http://{args.host}:{args.port}/research",
+            "replay_session_id": metadata["session_id"],
+            "snapshot_count": metadata["snapshot_count"],
+            "selected_option_roots": metadata["selected_option_roots"],
+            "underlying_symbol": metadata["underlying_symbol"],
+            "start": metadata["start"],
+            "end": metadata["end"],
         },
         args.log_file,
     )

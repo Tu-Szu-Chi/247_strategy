@@ -303,6 +303,28 @@ class SQLiteBarStore(BarRepository):
             rows = cursor.fetchall()
         return [self._row_to_tick(row) for row in rows]
 
+    def list_ticks_for_symbols(
+        self,
+        symbols: list[str],
+        start: datetime,
+        end: datetime,
+    ) -> list[CanonicalTick]:
+        if not symbols:
+            return []
+        placeholders = ",".join("?" for _ in symbols)
+        with sqlite3.connect(self.path) as conn:
+            cursor = conn.execute(
+                f"""
+                SELECT ts, trading_day, symbol, instrument_key, contract_month, strike_price, call_put, session, price, size, tick_direction, total_volume, bid_side_total_vol, ask_side_total_vol, source, payload_json
+                FROM raw_ticks
+                WHERE symbol IN ({placeholders}) AND ts >= ? AND ts <= ?
+                ORDER BY ts, instrument_key, price, size, source
+                """,
+                [*symbols, start.isoformat(), end.isoformat()],
+            )
+            rows = cursor.fetchall()
+        return [self._row_to_tick(row) for row in rows]
+
     def upsert_minute_force_features(self, features: Iterable[MinuteForceFeatures]) -> int:
         rows = [self._feature_to_row(feature) for feature in features]
         if not rows:

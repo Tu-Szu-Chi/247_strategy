@@ -9,6 +9,7 @@ from qt_platform.live.shioaji_provider import (
     _available_tx_option_roots,
     _call_put,
     _contract_month,
+    _derivative_metadata,
     _extract_tx_option_root,
     _map_tick_direction,
     _nearest_expiry_dates,
@@ -113,6 +114,14 @@ class ShioajiProviderHelperTest(unittest.TestCase):
         self.assertEqual(_contract_month(contract), "202504")
         contract = DummyContract(delivery_date="202504W2")
         self.assertEqual(_contract_month(contract), "202504W2")
+
+    def test_derivative_metadata_returns_none_for_future_contract(self) -> None:
+        contract = DummyContract(code="MXFE6", symbol="MXFE6", strike_price=0.0, option_right="")
+        self.assertEqual(_derivative_metadata(contract, "MXFE6"), (None, None))
+
+    def test_derivative_metadata_preserves_option_fields(self) -> None:
+        contract = DummyContract(code="TX438000D6", symbol="TX4", strike_price=38000.0, option_right="C")
+        self.assertEqual(_derivative_metadata(contract, "TX438000D6"), (38000.0, "call"))
 
     def test_call_put_normalization(self) -> None:
         self.assertEqual(_call_put(DummyContract(option_right="C")), "call")

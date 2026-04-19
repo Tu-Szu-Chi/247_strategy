@@ -89,7 +89,29 @@ class CsvImportTest(unittest.TestCase):
         self.assertEqual(len(mtx_rows), 1)
         self.assertEqual(mtx_rows[0].symbol, "MTX")
         self.assertEqual(mtx_rows[0].instrument_key, "MXF1")
-        self.assertEqual(mtx_rows[0].contract_month, "")
+        self.assertEqual(mtx_rows[0].contract_month, "202604")
+
+    def test_import_csv_file_for_mtx_night_session_uses_trading_day_contract_month(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            db_path = f"{temp_dir}/bars.db"
+            csv_path = Path(temp_dir) / "MXF1.csv"
+            csv_path.write_text(
+                "\n".join(
+                    [
+                        "Symbol,Date,Time,Open,High,Low,Close,TotalVolume,UpTicks,DownTicks",
+                        "MXF1,2026/4/1,00:01:00,32276,32293,32266,32290,347,79,66",
+                    ]
+                )
+            )
+            store = SQLiteBarStore(db_path)
+
+            result = import_csv_file(store, csv_path)
+            rows = store.list_bars("1m", "MTX", datetime(2026, 4, 1, 0, 1), datetime(2026, 4, 1, 0, 1))
+
+        self.assertEqual(result.upserted_bars, 1)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].trading_day.isoformat(), "2026-03-31")
+        self.assertEqual(rows[0].contract_month, "202604")
 
 
 if __name__ == "__main__":

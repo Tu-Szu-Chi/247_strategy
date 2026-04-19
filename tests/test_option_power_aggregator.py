@@ -43,7 +43,7 @@ class OptionPowerAggregatorTest(unittest.TestCase):
         snapshot = aggregator.snapshot(
             generated_at=base_ts + timedelta(seconds=30),
             run_id="run-1",
-            underlying_reference_price=20000.0,
+            underlying_reference_price=18000.0,
             status="running",
         )
 
@@ -57,6 +57,11 @@ class OptionPowerAggregatorTest(unittest.TestCase):
         self.assertEqual(contract.rolling_1m_sell_volume, 3)
         self.assertEqual(contract.power_1m_delta, 7)
         self.assertEqual(contract.unknown_volume, 2)
+        self.assertEqual(snapshot.raw_pressure, 7)
+        self.assertEqual(snapshot.pressure_index, 54)
+        self.assertEqual(snapshot.raw_pressure_1m, 7)
+        self.assertEqual(snapshot.pressure_index_1m, 54)
+        self.assertEqual(snapshot.pressure_index_5m, 54)
 
     def test_snapshot_evicts_old_rolling_events(self) -> None:
         aggregator = OptionPowerAggregator(option_root="TXO")
@@ -142,6 +147,59 @@ class OptionPowerAggregatorTest(unittest.TestCase):
         )
 
         self.assertEqual(snapshot.option_root, "TXX,TX4")
+
+    def test_snapshot_computes_weighted_pressure_across_calls_and_puts(self) -> None:
+        aggregator = OptionPowerAggregator(option_root="TXO")
+        base_ts = datetime(2025, 4, 11, 9, 0, 0)
+        aggregator.ingest_tick(
+            _tick(
+                ts=base_ts,
+                session="day",
+                direction="up",
+                size=10,
+                instrument_key="TXO202504W218000C",
+                contract_month="202504W2",
+                strike_price=18000.0,
+                call_put="call",
+            )
+        )
+        aggregator.ingest_tick(
+            _tick(
+                ts=base_ts + timedelta(seconds=1),
+                session="day",
+                direction="down",
+                size=10,
+                instrument_key="TXO202504W218100P",
+                contract_month="202504W2",
+                strike_price=18100.0,
+                call_put="put",
+            )
+        )
+        aggregator.ingest_tick(
+            _tick(
+                ts=base_ts + timedelta(seconds=2),
+                session="day",
+                direction="down",
+                size=10,
+                instrument_key="TXO20250518200C",
+                contract_month="202505",
+                strike_price=18200.0,
+                call_put="call",
+            )
+        )
+
+        snapshot = aggregator.snapshot(
+            generated_at=base_ts + timedelta(seconds=30),
+            run_id="run-1",
+            underlying_reference_price=18000.0,
+            status="running",
+        )
+
+        self.assertEqual(snapshot.raw_pressure, 15)
+        self.assertEqual(snapshot.pressure_index, 61)
+        self.assertEqual(snapshot.raw_pressure_1m, 15)
+        self.assertEqual(snapshot.pressure_index_1m, 61)
+        self.assertEqual(snapshot.pressure_index_5m, 61)
 
 
 if __name__ == "__main__":

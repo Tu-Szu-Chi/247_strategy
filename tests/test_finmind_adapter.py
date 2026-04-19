@@ -53,6 +53,24 @@ class FinMindAdapterTest(unittest.TestCase):
         self.assertEqual(bar.open_interest, 98765.0)
         self.assertEqual(bar.build_source, "finmind_daily")
 
+    def test_normalize_futures_row_filters_non_front_month_mtx_daily(self) -> None:
+        row = {
+            "date": "2024-01-16",
+            "futures_id": "MTX",
+            "contract_date": "202402",
+            "trading_session": "position",
+            "open": 1,
+            "max": 1,
+            "min": 1,
+            "close": 1,
+            "volume": 1,
+            "open_interest": 1,
+        }
+
+        bar = FinMindAdapter._normalize_futures_row(row, session_scope="day_and_night")
+
+        self.assertIsNone(bar)
+
     def test_normalize_stock_row_maps_fields(self) -> None:
         row = {
             "date": "2024-04-08",
@@ -128,7 +146,7 @@ class FinMindAdapterTest(unittest.TestCase):
         self.assertEqual(bars[0].instrument_key, "TX")
         self.assertEqual(bars[0].build_source, "finmind_tick_agg")
 
-    def test_aggregate_ticks_filters_mtx_weekly_and_spread_contracts(self) -> None:
+    def test_aggregate_ticks_filters_mtx_to_front_month_only(self) -> None:
         rows = [
             {
                 "contract_date": "202604",
@@ -158,11 +176,19 @@ class FinMindAdapterTest(unittest.TestCase):
                 "price": 20010,
                 "volume": 2,
             },
+            {
+                "contract_date": "202605",
+                "date": "2026-04-17 08:45:30",
+                "futures_id": "MTX",
+                "price": 20100,
+                "volume": 2,
+            },
         ]
 
         bars = FinMindAdapter._aggregate_ticks(rows, session_scope="day_and_night")
 
         self.assertEqual([bar.contract_month for bar in bars], ["202604", "202605"])
+        self.assertEqual([bar.ts for bar in bars], [datetime(2026, 4, 13, 8, 45), datetime(2026, 4, 17, 8, 45)])
         self.assertTrue(all(bar.symbol == "MTX" for bar in bars))
 
     def test_fetch_daily_batch_calls_one_request_per_day(self) -> None:

@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Option Power Research</title>
+    <link rel="stylesheet" href="/research.css">
+    <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+  </head>
+  <body>
+    <main class="page">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Research Replay</p>
+          <h1>MTX + Option Power</h1>
+          <p class="subtitle">主圖看 MTX，副圖看 pressure，右側同步當下履約價結構。</p>
+        </div>
+        <div class="meta-card">
+          <div><span>Mode</span><strong id="mode-label">-</strong></div>
+          <div><span>Session</span><strong id="session-id">-</strong></div>
+          <div><span>Roots</span><strong id="roots-label">-</strong></div>
+          <div><span>Range</span><strong id="range-label">-</strong></div>
+          <div><span>Cursor</span><strong id="cursor-time">-</strong></div>
+        </div>
+      </section>
+
+      <section class="toolbar">
+        <label for="replay-start">Start</label>
+        <input id="replay-start" type="datetime-local">
+        <label for="replay-end">End</label>
+        <input id="replay-end" type="datetime-local">
+        <button id="replay-load" type="button">Load Replay</button>
+        <label for="series-select">Indicator</label>
+        <select id="series-select">
+          <option value="pressure_index_5m">pressure_index_5m</option>
+          <option value="pressure_index">pressure_index</option>
+          <option value="pressure_index_1m">pressure_index_1m</option>
+          <option value="raw_pressure">raw_pressure</option>
+          <option value="raw_pressure_1m">raw_pressure_1m</option>
+        </select>
+      </section>
+
+      <section class="workspace">
+        <div class="charts-column">
+          <article class="chart-card">
+            <div class="chart-title">MTX Price</div>
+            <div id="price-chart" class="chart-box"></div>
+          </article>
+          <article class="chart-card">
+            <div class="chart-title">Indicator</div>
+            <div id="indicator-chart" class="chart-box small"></div>
+          </article>
+        </div>
+
+        <aside class="detail-column">
+          <section class="pressure-grid">
+            <article class="pressure-card">
+              <span>Session Raw</span>
+              <strong id="raw-pressure">0</strong>
+            </article>
+            <article class="pressure-card">
+              <span>Session Index</span>
+              <strong id="pressure-index">0</strong>
+            </article>
+            <article class="pressure-card">
+              <span>1m Raw</span>
+              <strong id="raw-pressure-1m">0</strong>
+            </article>
+            <article class="pressure-card">
+              <span>1m Index</span>
+              <strong id="pressure-index-1m">0</strong>
+            </article>
+          </section>
+
+          <section class="controls">
+            <label for="expiry-select">Expiry</label>
+            <select id="expiry-select"></select>
+          </section>
+
+          <section class="chart-card snapshot-card">
+            <div class="chart-header">
+              <div>Strike</div>
+              <div>Call</div>
+              <div>Put</div>
+            </div>
+            <div id="chart" class="chart-grid"></div>
+          </section>
+        </aside>
+      </section>
+    </main>
+    <script src="/research.js"></script>
+  </body>
+  </html>

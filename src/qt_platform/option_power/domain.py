@@ -44,6 +44,11 @@ class OptionPowerSnapshot:
     session: str
     option_root: str
     underlying_reference_price: float | None
+    raw_pressure: int
+    pressure_index: int
+    raw_pressure_1m: int
+    pressure_index_1m: int
+    pressure_index_5m: int
     expiries: list[OptionExpirySnapshot]
     contract_count: int
     status: str

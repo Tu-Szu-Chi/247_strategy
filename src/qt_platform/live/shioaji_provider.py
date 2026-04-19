@@ -299,14 +299,15 @@ class ShioajiLiveProvider(BaseLiveProvider):
             contract = self._contracts.get(code)
             ts = _tick_datetime(tick)
             root_symbol = _root_symbol_for_tick(code, contract)
+            strike_price, call_put = _derivative_metadata(contract, code)
             canonical = CanonicalTick(
                 ts=ts,
                 trading_day=trading_day_for(ts),
                 symbol=root_symbol,
                 instrument_key=code or root_symbol,
                 contract_month=_contract_month(contract),
-                strike_price=_strike_price(contract),
-                call_put=_call_put(contract),
+                strike_price=strike_price,
+                call_put=call_put,
                 session=classify_session(ts),
                 price=float(getattr(tick, "close", 0.0)),
                 size=float(getattr(tick, "volume", 0.0)),
@@ -480,6 +481,12 @@ def _contract_month(contract: Any) -> str:
         if value:
             return str(value)
     return ""
+
+
+def _derivative_metadata(contract: Any, code: Any) -> tuple[float | None, str | None]:
+    if _extract_tx_option_root(code) is None:
+        return None, None
+    return _strike_price(contract), _call_put(contract)
 
 
 def _strike_price(contract: Any) -> float | None:
