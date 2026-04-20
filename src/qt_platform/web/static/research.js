@@ -58,6 +58,7 @@ let snapshotRequestSequence = 0;
 let activeSnapshotRequestSequence = 0;
 
 const CROSSHAIR_SNAPSHOT_DEBOUNCE_MS = 120;
+const REALTIME_SCROLL_EPSILON = 0.5;
 
 function initCharts() {
   if (typeof LightweightCharts === "undefined") {
@@ -390,6 +391,8 @@ function renderTimeline(bars, lineData) {
   if (!chartsEnabled || !priceChart || !indicatorChart || !candleSeries || !lineSeries) {
     return;
   }
+  const shouldFollowPrice = currentMode === "live" && isNearRealtime(priceChart);
+  const shouldFollowIndicator = currentMode === "live" && isNearRealtime(indicatorChart);
   const priceVisibleRange = priceChart.timeScale().getVisibleRange();
   const indicatorVisibleRange = indicatorChart.timeScale().getVisibleRange();
   const normalizedBars = (bars || []).map(normalizeBar).filter(Boolean);
@@ -402,12 +405,27 @@ function renderTimeline(bars, lineData) {
     timelineHasFitContent = true;
     return;
   }
-  if (priceVisibleRange) {
+  if (shouldFollowPrice) {
+    priceChart.timeScale().scrollToRealTime();
+  } else if (priceVisibleRange) {
     priceChart.timeScale().setVisibleRange(priceVisibleRange);
   }
-  if (indicatorVisibleRange) {
+  if (shouldFollowIndicator) {
+    indicatorChart.timeScale().scrollToRealTime();
+  } else if (indicatorVisibleRange) {
     indicatorChart.timeScale().setVisibleRange(indicatorVisibleRange);
   }
+}
+
+function isNearRealtime(targetChart) {
+  if (!targetChart) {
+    return false;
+  }
+  const timeScale = targetChart.timeScale();
+  if (!timeScale || typeof timeScale.scrollPosition !== "function") {
+    return false;
+  }
+  return Math.abs(Number(timeScale.scrollPosition()) || 0) <= REALTIME_SCROLL_EPSILON;
 }
 
 function renderSnapshot() {
