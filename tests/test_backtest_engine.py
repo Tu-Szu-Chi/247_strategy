@@ -36,8 +36,8 @@ class BacktestEngineTest(unittest.TestCase):
     def test_signal_fills_on_next_open(self) -> None:
         start = datetime(2024, 1, 1, 8, 45)
         bars = [
-            Bar(start, start.date(), "TX", "202401", "day", 100, 101, 99, 100, 10, None, "test"),
-            Bar(start + timedelta(minutes=1), start.date(), "TX", "202401", "day", 105, 106, 104, 105, 10, None, "test"),
+            Bar(start, start.date(), "MTX", "202401", "day", 100, 101, 99, 100, 10, None, "test"),
+            Bar(start + timedelta(minutes=1), start.date(), "MTX", "202401", "day", 105, 106, 104, 105, 10, None, "test"),
         ]
 
         result = run_backtest(bars=bars, strategy=OneShotStrategy(), config=BacktestConfig(starting_cash=1000))
@@ -89,9 +89,9 @@ class BacktestEngineTest(unittest.TestCase):
 
         start = datetime(2024, 1, 1, 8, 45)
         bars = [
-            Bar(start, start.date(), "TX", "202401", "day", 100, 101, 99, 100, 10, None, "test"),
-            Bar(start + timedelta(minutes=1), start.date(), "TX", "202401", "day", 106, 107, 105, 106, 10, None, "test"),
-            Bar(start + timedelta(minutes=2), start.date(), "TX", "202401", "day", 107, 108, 106, 107, 10, None, "test"),
+            Bar(start, start.date(), "MTX", "202401", "day", 100, 101, 99, 100, 10, None, "test"),
+            Bar(start + timedelta(minutes=1), start.date(), "MTX", "202401", "day", 106, 107, 105, 106, 10, None, "test"),
+            Bar(start + timedelta(minutes=2), start.date(), "MTX", "202401", "day", 107, 108, 106, 107, 10, None, "test"),
         ]
 
         result = run_backtest(bars=bars, strategy=ThresholdStrategy(), config=BacktestConfig(starting_cash=1000))
@@ -107,7 +107,7 @@ class BacktestEngineTest(unittest.TestCase):
                 bar=Bar(
                     datetime(2024, 1, 1, 8, 45),
                     datetime(2024, 1, 1).date(),
-                    "TX",
+                    "MTX",
                     "202401",
                     "day",
                     100,
@@ -120,13 +120,13 @@ class BacktestEngineTest(unittest.TestCase):
                 )
             ),
             portfolio=PortfolioState(cash=1000.0, position_size=1, average_entry_price=100.0),
-            universe=StrategyUniverse(primary_symbol="TX"),
+            universe=StrategyUniverse(primary_symbol="MTX"),
         )
         decisions = policy.decide(
             [
                 SignalIntent(
                     ts=datetime(2024, 1, 1, 8, 45),
-                    symbol="TX",
+                    symbol="MTX",
                     action=SignalAction.BUY,
                     reason="duplicate_buy",
                 )
@@ -142,7 +142,7 @@ class BacktestEngineTest(unittest.TestCase):
             Bar(
                 start + timedelta(minutes=index),
                 start.date(),
-                "TX",
+                "MTX",
                 "202401",
                 "day",
                 close,
@@ -184,8 +184,8 @@ class BacktestEngineTest(unittest.TestCase):
 
         start = datetime(2024, 1, 1, 8, 45)
         bars = [
-            Bar(start, start.date(), "TX", "202401", "day", 100, 101, 99, 100, 10, None, "test", up_ticks=10, down_ticks=1),
-            Bar(start + timedelta(minutes=1), start.date(), "TX", "202401", "day", 105, 106, 90, 95, 10, None, "test", up_ticks=1, down_ticks=10),
+            Bar(start, start.date(), "MTX", "202401", "day", 100, 101, 99, 100, 10, None, "test", up_ticks=10, down_ticks=1),
+            Bar(start + timedelta(minutes=1), start.date(), "MTX", "202401", "day", 105, 106, 90, 95, 10, None, "test", up_ticks=1, down_ticks=10),
         ]
         result = run_backtest(bars=bars, strategy=StopStrategy(), config=BacktestConfig(starting_cash=1000))
         self.assertEqual(len(result.fills), 2)

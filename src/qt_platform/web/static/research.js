@@ -46,6 +46,18 @@ let lineSeries = null;
 let livePollingHandle = null;
 let chartsEnabled = true;
 let liveBundlePollingInFlight = false;
+let syncingVisibleRange = false;
+let timelineHasFitContent = false;
+let snapshotRowMap = new Map();
+let snapshotEmptyState = null;
+let crosshairSnapshotTimeout = null;
+let pendingCrosshairSnapshotTs = "";
+let lastRequestedSnapshotTs = "";
+let lastRenderedSnapshotTs = "";
+let snapshotRequestSequence = 0;
+let activeSnapshotRequestSequence = 0;
+
+const CROSSHAIR_SNAPSHOT_DEBOUNCE_MS = 120;
 
 function initCharts() {
   if (typeof LightweightCharts === "undefined") {
@@ -72,13 +84,17 @@ function initCharts() {
   });
 
   priceChart.timeScale().subscribeVisibleTimeRangeChange((range) => {
-    if (range) {
+    if (range && !syncingVisibleRange) {
+      syncingVisibleRange = true;
       indicatorChart.timeScale().setVisibleRange(range);
+      syncingVisibleRange = false;
     }
   });
   indicatorChart.timeScale().subscribeVisibleTimeRangeChange((range) => {
-    if (range) {
+    if (range && !syncingVisibleRange) {
+      syncingVisibleRange = true;
       priceChart.timeScale().setVisibleRange(range);
+      syncingVisibleRange = false;
     }
   });
 
@@ -88,11 +104,7 @@ function initCharts() {
     }
     const isoTime = toIsoTime(param.time);
     cursorTime.textContent = formatDateTime(isoTime);
-    if (currentMode === "replay" && replaySession) {
-      await loadReplaySnapshotAt(isoTime);
-    } else if (currentMode === "live") {
-      await loadLiveSnapshotAt(isoTime);
-    }
+    scheduleCrosshairSnapshotLoad(isoTime);
   };
   priceChart.subscribeCrosshairMove(syncCrosshair);
   indicatorChart.subscribeCrosshairMove(syncCrosshair);
@@ -118,6 +130,18 @@ function chartOptions(height) {
       horzLine: { color: "rgba(255,209,102,0.35)", width: 1 },
     },
     rightPriceScale: { borderColor: "rgba(255,255,255,0.08)" },
+    handleScroll: {
+      mouseWheel: false,
+      pressedMouseMove: true,
+      horzTouchDrag: true,
+      vertTouchDrag: false,
+    },
+    handleScale: {
+      mouseWheel: false,
+      pinch: false,
+      axisPressedMouseMove: true,
+      axisDoubleClickReset: false,
+    },
     timeScale: {
       borderColor: "rgba(255,255,255,0.08)",
       timeVisible: true,
@@ -198,11 +222,17 @@ async function loadReplayBundle() {
 
   renderTimeline(bars, indicatorSeries[seriesSelect.value] || []);
   currentSnapshot = snapshotPayload.snapshot;
+  lastRequestedSnapshotTs = replaySession.start;
+  lastRenderedSnapshotTs = replaySession.start;
   cursorTime.textContent = formatDateTime(snapshotPayload.simulated_at);
   renderSnapshot();
 }
 
 async function loadReplaySnapshotAt(ts) {
+  const requestSequence = beginSnapshotRequest(ts);
+  if (requestSequence === null) {
+    return;
+  }
   const response = await fetch(
     `/api/option-power/replay/sessions/${replaySession.session_id}/snapshot-at?ts=${encodeURIComponent(ts)}`,
     { cache: "no-store" },
@@ -211,7 +241,11 @@ async function loadReplaySnapshotAt(ts) {
     return;
   }
   const payload = await response.json();
+  if (!shouldApplySnapshotResponse(requestSequence, ts)) {
+    return;
+  }
   currentSnapshot = payload.snapshot;
+  lastRenderedSnapshotTs = ts;
   renderSnapshot();
 }
 
@@ -238,6 +272,8 @@ async function loadLiveBundle(strict = false) {
     const snapshotPayload = await snapshotResponse.json();
     currentSnapshot = snapshotPayload.snapshot;
     if (currentSnapshot && currentSnapshot.generated_at) {
+      lastRequestedSnapshotTs = currentSnapshot.generated_at;
+      lastRenderedSnapshotTs = currentSnapshot.generated_at;
       cursorTime.textContent = formatDateTime(currentSnapshot.generated_at);
     }
     renderSnapshot();
@@ -288,25 +324,90 @@ async function loadLiveBundleLatest() {
 }
 
 async function loadLiveSnapshotAt(ts) {
+  const requestSequence = beginSnapshotRequest(ts);
+  if (requestSequence === null) {
+    return;
+  }
   const response = await fetch(`/api/option-power/live/snapshot-at?ts=${encodeURIComponent(ts)}`, { cache: "no-store" });
   if (!response.ok) {
     return;
   }
   const payload = await response.json();
+  if (!shouldApplySnapshotResponse(requestSequence, ts)) {
+    return;
+  }
   currentSnapshot = payload.snapshot;
+  lastRenderedSnapshotTs = ts;
   renderSnapshot();
+}
+
+function scheduleCrosshairSnapshotLoad(ts) {
+  if (!ts || ts === pendingCrosshairSnapshotTs || ts === lastRequestedSnapshotTs || ts === lastRenderedSnapshotTs) {
+    return;
+  }
+  pendingCrosshairSnapshotTs = ts;
+  if (crosshairSnapshotTimeout !== null) {
+    window.clearTimeout(crosshairSnapshotTimeout);
+  }
+  crosshairSnapshotTimeout = window.setTimeout(async () => {
+    crosshairSnapshotTimeout = null;
+    const targetTs = pendingCrosshairSnapshotTs;
+    pendingCrosshairSnapshotTs = "";
+    if (!targetTs) {
+      return;
+    }
+    if (currentMode === "replay" && replaySession) {
+      await loadReplaySnapshotAt(targetTs);
+    } else if (currentMode === "live") {
+      await loadLiveSnapshotAt(targetTs);
+    }
+  }, CROSSHAIR_SNAPSHOT_DEBOUNCE_MS);
+}
+
+function clearScheduledCrosshairSnapshotLoad() {
+  pendingCrosshairSnapshotTs = "";
+  if (crosshairSnapshotTimeout !== null) {
+    window.clearTimeout(crosshairSnapshotTimeout);
+    crosshairSnapshotTimeout = null;
+  }
+}
+
+function beginSnapshotRequest(ts) {
+  if (!ts || ts === lastRequestedSnapshotTs || ts === lastRenderedSnapshotTs) {
+    return null;
+  }
+  lastRequestedSnapshotTs = ts;
+  snapshotRequestSequence += 1;
+  activeSnapshotRequestSequence = snapshotRequestSequence;
+  return activeSnapshotRequestSequence;
+}
+
+function shouldApplySnapshotResponse(requestSequence, ts) {
+  return requestSequence === activeSnapshotRequestSequence && ts === lastRequestedSnapshotTs;
 }
 
 function renderTimeline(bars, lineData) {
   if (!chartsEnabled || !priceChart || !indicatorChart || !candleSeries || !lineSeries) {
     return;
   }
+  const priceVisibleRange = priceChart.timeScale().getVisibleRange();
+  const indicatorVisibleRange = indicatorChart.timeScale().getVisibleRange();
   const normalizedBars = (bars || []).map(normalizeBar).filter(Boolean);
   const normalizedLineData = (lineData || []).map(normalizeLinePoint).filter(Boolean);
   candleSeries.setData(normalizedBars);
   lineSeries.setData(normalizedLineData);
-  priceChart.timeScale().fitContent();
-  indicatorChart.timeScale().fitContent();
+  if (!timelineHasFitContent) {
+    priceChart.timeScale().fitContent();
+    indicatorChart.timeScale().fitContent();
+    timelineHasFitContent = true;
+    return;
+  }
+  if (priceVisibleRange) {
+    priceChart.timeScale().setVisibleRange(priceVisibleRange);
+  }
+  if (indicatorVisibleRange) {
+    indicatorChart.timeScale().setVisibleRange(indicatorVisibleRange);
+  }
 }
 
 function renderSnapshot() {
@@ -322,7 +423,7 @@ function renderSnapshot() {
   syncExpiryOptions(expiries);
   const currentExpiry = expiries.find((item) => item.contract_month === selectedExpiry) || expiries[0];
   if (!currentExpiry) {
-    chart.innerHTML = `<div class="empty">該時間點沒有 option snapshot。</div>`;
+    renderEmptySnapshot();
     return;
   }
 
@@ -330,18 +431,7 @@ function renderSnapshot() {
   const contracts = currentExpiry.contracts || [];
   const grouped = groupByStrike(contracts);
   const maxAbsPower = Math.max(1, ...contracts.map((item) => Math.abs(item.cumulative_power || 0)));
-
-  chart.innerHTML = "";
-  grouped.forEach((entry) => {
-    const row = document.createElement("div");
-    row.className = "row";
-    row.innerHTML = `
-      <div class="strike-label">${entry.strike}</div>
-      ${renderCell(entry.call, maxAbsPower, "C")}
-      ${renderCell(entry.put, maxAbsPower, "P")}
-    `;
-    chart.appendChild(row);
-  });
+  renderSnapshotRows(grouped, maxAbsPower);
 }
 
 function normalizeBar(item) {
@@ -371,24 +461,136 @@ function normalizeLinePoint(item) {
   return { time, value };
 }
 
-function renderCell(contract, maxAbsPower, label) {
-  if (!contract) {
-    return `<div class="cell"><div class="cell-head"><span>${label}</span><strong>-</strong></div><div class="bar-wrap"><div class="midline"></div></div></div>`;
+function renderEmptySnapshot() {
+  if (!snapshotEmptyState) {
+    snapshotEmptyState = document.createElement("div");
+    snapshotEmptyState.className = "empty";
+    snapshotEmptyState.textContent = "該時間點沒有 option snapshot。";
   }
+  chart.replaceChildren(snapshotEmptyState);
+  snapshotRowMap = new Map();
+}
+
+function renderSnapshotRows(grouped, maxAbsPower) {
+  if (snapshotEmptyState && chart.contains(snapshotEmptyState)) {
+    chart.removeChild(snapshotEmptyState);
+  }
+
+  const nextRowMap = new Map();
+  grouped.forEach((entry) => {
+    const key = String(entry.strike);
+    let row = snapshotRowMap.get(key);
+    if (!row) {
+      row = createSnapshotRow(entry.strike);
+    }
+    updateSnapshotRow(row, entry, maxAbsPower);
+    chart.appendChild(row);
+    nextRowMap.set(key, row);
+  });
+
+  snapshotRowMap.forEach((row, key) => {
+    if (!nextRowMap.has(key)) {
+      row.remove();
+    }
+  });
+  snapshotRowMap = nextRowMap;
+}
+
+function createSnapshotRow(strike) {
+  const row = document.createElement("div");
+  row.className = "row";
+
+  const strikeLabel = document.createElement("div");
+  strikeLabel.className = "strike-label";
+  strikeLabel.textContent = String(strike);
+  row.appendChild(strikeLabel);
+
+  row.appendChild(createSnapshotCell("C"));
+  row.appendChild(createSnapshotCell("P"));
+  return row;
+}
+
+function createSnapshotCell(label) {
+  const cell = document.createElement("div");
+  cell.className = "cell";
+
+  const head = document.createElement("div");
+  head.className = "cell-head";
+
+  const labelNode = document.createElement("span");
+  labelNode.textContent = label;
+
+  const deltaValue = document.createElement("strong");
+  deltaValue.className = "delta";
+  deltaValue.textContent = "-";
+
+  head.append(labelNode, deltaValue);
+
+  const barWrap = document.createElement("div");
+  barWrap.className = "bar-wrap";
+
+  const midline = document.createElement("div");
+  midline.className = "midline";
+
+  const midPrice = document.createElement("div");
+  midPrice.className = "mid-price";
+  midPrice.textContent = "-";
+
+  const bar = document.createElement("div");
+  bar.className = "bar hidden-bar";
+
+  const barValue = document.createElement("div");
+  barValue.className = "bar-value";
+  barValue.textContent = "-";
+
+  barWrap.append(midline, midPrice, bar, barValue);
+  cell.append(head, barWrap);
+  return cell;
+}
+
+function updateSnapshotRow(row, entry, maxAbsPower) {
+  row.firstChild.textContent = String(entry.strike);
+  updateSnapshotCell(row.children[1], entry.call, maxAbsPower);
+  updateSnapshotCell(row.children[2], entry.put, maxAbsPower);
+}
+
+function updateSnapshotCell(cell, contract, maxAbsPower) {
+  const deltaValue = cell.querySelector(".delta");
+  const midPrice = cell.querySelector(".mid-price");
+  const bar = cell.querySelector(".bar");
+  const barValue = cell.querySelector(".bar-value");
+
+  if (!contract) {
+    deltaValue.className = "delta";
+    deltaValue.textContent = "-";
+    midPrice.textContent = "-";
+    bar.className = "bar hidden-bar";
+    bar.style.width = "0%";
+    bar.style.left = "";
+    bar.style.right = "";
+    barValue.textContent = "-";
+    return;
+  }
+
   const widthPercent = Math.min(100, (Math.abs(contract.cumulative_power || 0) / maxAbsPower) * 50);
   const isBull = isBullishDirection(contract);
   const deltaClass = deltaDirectionClass(contract);
-  return `
-    <div class="cell">
-      <div class="cell-head"><span>${label}</span><strong class="delta ${deltaClass}">${formatSigned(contract.power_1m_delta)}</strong></div>
-      <div class="bar-wrap">
-        <div class="midline"></div>
-        <div class="mid-price">${formatPrice(contract.last_price)}</div>
-        <div class="bar ${isBull ? "bull" : "bear"}" style="${isBull ? "left:50%;" : "right:50%;"} width:${widthPercent}%;"></div>
-        <div class="bar-value">${formatSigned(contract.cumulative_power)}</div>
-      </div>
-    </div>
-  `;
+
+  deltaValue.className = deltaClass ? `delta ${deltaClass}` : "delta";
+  deltaValue.textContent = formatSigned(contract.power_1m_delta);
+  midPrice.textContent = formatPrice(contract.last_price);
+
+  bar.className = `bar ${isBull ? "bull" : "bear"}`;
+  bar.style.width = `${widthPercent}%`;
+  if (isBull) {
+    bar.style.left = "50%";
+    bar.style.right = "";
+  } else {
+    bar.style.right = "50%";
+    bar.style.left = "";
+  }
+
+  barValue.textContent = formatSigned(contract.cumulative_power);
 }
 
 function isBullishDirection(contract) {
@@ -505,6 +707,7 @@ function hydrateReplayInputs() {
 expirySelect.addEventListener("change", () => renderSnapshot());
 
 seriesSelect.addEventListener("change", async () => {
+  clearScheduledCrosshairSnapshotLoad();
   if (currentMode === "replay" && replaySession) {
     await loadReplayBundle();
   } else if (currentMode === "live") {
@@ -515,6 +718,7 @@ seriesSelect.addEventListener("change", async () => {
 replayLoadButton.addEventListener("click", async () => {
   try {
     stopLivePolling();
+    clearScheduledCrosshairSnapshotLoad();
     await createReplay();
   } catch (error) {
     cursorTime.textContent = "load-error";

@@ -135,7 +135,7 @@ class OptionPowerRuntimeService:
                 "run_id": self.run_id,
                 "status": self.status,
                 "option_root": self.aggregator.option_root,
-                "underlying_symbol": self.underlying_future_symbol,
+                "underlying_symbol": _canonical_underlying_symbol(self.underlying_future_symbol),
                 "snapshot_count": len(self._snapshot_history),
                 "bar_count": len(self._bars_history),
                 "start": first_ts,
@@ -498,3 +498,12 @@ def _bar_state_to_chart_dict(state: _MinuteBarState | None) -> dict[str, Any] | 
         "close": state.close,
         "volume": state.volume,
     }
+
+
+def _canonical_underlying_symbol(value: str) -> str:
+    normalized = value.upper()
+    if normalized.startswith("MXF"):
+        return "MTX"
+    if normalized.startswith("TXF"):
+        return "MTX"
+    return normalized

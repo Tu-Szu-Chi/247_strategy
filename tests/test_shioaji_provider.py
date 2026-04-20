@@ -106,8 +106,8 @@ class ShioajiProviderHelperTest(unittest.TestCase):
         self.assertEqual(_root_symbol_for_tick("TXU17800R6", contract), "TXU")
 
     def test_root_symbol_for_tick_keeps_future_root(self) -> None:
-        contract = DummyContract(code="TXFR1", symbol="TXFR1")
-        self.assertEqual(_root_symbol_for_tick("TXFR1", contract), "TX")
+        contract = DummyContract(code="MXFR1", symbol="MXFR1")
+        self.assertEqual(_root_symbol_for_tick("MXFR1", contract), "MTX")
 
     def test_contract_month_prefers_delivery_fields(self) -> None:
         contract = DummyContract(delivery_month="202504")
@@ -230,12 +230,12 @@ class ShioajiProviderHelperTest(unittest.TestCase):
         provider.connected = True
         provider.api = DummyAPI()
         provider._sj = DummyShioajiModule()
-        contract = DummyContract(code="TXFR1")
+        contract = DummyContract(code="MXFR1")
         tick = CanonicalTick(
             ts=datetime(2026, 4, 15, 21, 1, 0),
             trading_day=date(2026, 4, 15),
-            symbol="TX",
-            instrument_key="TXFR1",
+            symbol="MTX",
+            instrument_key="MXFR1",
             contract_month="202604",
             strike_price=None,
             call_put=None,
@@ -262,7 +262,7 @@ class ShioajiProviderHelperTest(unittest.TestCase):
         provider.api = DummyAPI()
         provider._sj = DummyShioajiModule()
         provider._queue = SequencedQueue([queue.Empty()])
-        contract = DummyContract(code="TXFR1")
+        contract = DummyContract(code="MXFR1")
 
         with patch("qt_platform.live.shioaji_provider.classify_session", return_value="unknown"):
             ticks = list(provider.stream_ticks_from_contracts([contract], max_events=1))

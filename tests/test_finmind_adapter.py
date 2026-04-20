@@ -30,7 +30,7 @@ class FinMindAdapterTest(unittest.TestCase):
     def test_normalize_futures_row_maps_fields(self) -> None:
         row = {
             "date": "2024-04-08",
-            "futures_id": "TX",
+            "futures_id": "MTX",
             "contract_date": "202404",
             "trading_session": "position",
             "open": 20000,
@@ -45,8 +45,8 @@ class FinMindAdapterTest(unittest.TestCase):
 
         self.assertEqual(bar.ts, datetime(2024, 4, 8, 0, 0, 0))
         self.assertEqual(bar.trading_day.isoformat(), "2024-04-08")
-        self.assertEqual(bar.symbol, "TX")
-        self.assertEqual(bar.instrument_key, "TX")
+        self.assertEqual(bar.symbol, "MTX")
+        self.assertEqual(bar.instrument_key, "MTX")
         self.assertEqual(bar.contract_month, "202404")
         self.assertEqual(bar.session, "day")
         self.assertEqual(bar.close, 20050.0)
@@ -112,21 +112,21 @@ class FinMindAdapterTest(unittest.TestCase):
             {
                 "contract_date": "202404",
                 "date": "2024-04-08 08:45:01",
-                "futures_id": "TX",
+                "futures_id": "MTX",
                 "price": 20000,
                 "volume": 1,
             },
             {
                 "contract_date": "202404",
                 "date": "2024-04-08 08:45:30",
-                "futures_id": "TX",
+                "futures_id": "MTX",
                 "price": 20010,
                 "volume": 2,
             },
             {
                 "contract_date": "202404",
                 "date": "2024-04-08 08:45:40",
-                "futures_id": "TX",
+                "futures_id": "MTX",
                 "price": 19990,
                 "volume": 3,
             },
@@ -143,7 +143,7 @@ class FinMindAdapterTest(unittest.TestCase):
         self.assertEqual(bars[0].close, 19990.0)
         self.assertEqual(bars[0].volume, 6.0)
         self.assertEqual(bars[0].session, "day")
-        self.assertEqual(bars[0].instrument_key, "TX")
+        self.assertEqual(bars[0].instrument_key, "MTX")
         self.assertEqual(bars[0].build_source, "finmind_tick_agg")
 
     def test_aggregate_ticks_filters_mtx_to_front_month_only(self) -> None:

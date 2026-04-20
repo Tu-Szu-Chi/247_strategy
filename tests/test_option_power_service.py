@@ -74,7 +74,7 @@ class OptionPowerRuntimeServiceTest(unittest.TestCase):
             option_root="AUTO",
             expiry_count=2,
             atm_window=20,
-            underlying_future_symbol="TXFR1",
+            underlying_future_symbol="MXFR1",
             call_put="both",
             session_scope="day_and_night",
             batch_size=500,
@@ -110,16 +110,16 @@ class OptionPowerRuntimeServiceTest(unittest.TestCase):
             "UnderlyingContract",
             (),
             {
-                "code": "TXF202604",
-                "target_code": "TXFR1",
+                "code": "MXF202604",
+                "target_code": "MXFR1",
             },
         )()
         ticks = [
             CanonicalTick(
                 ts=datetime(2026, 4, 20, 9, 0, 1),
                 trading_day=date(2026, 4, 20),
-                symbol="TX",
-                instrument_key="TXF202604",
+                symbol="MTX",
+                instrument_key="MXF202604",
                 contract_month="202604",
                 strike_price=None,
                 call_put=None,
@@ -136,7 +136,7 @@ class OptionPowerRuntimeServiceTest(unittest.TestCase):
             option_root="AUTO",
             expiry_count=2,
             atm_window=20,
-            underlying_future_symbol="TXFR1",
+            underlying_future_symbol="MXFR1",
             call_put="both",
             session_scope="day_and_night",
             batch_size=500,

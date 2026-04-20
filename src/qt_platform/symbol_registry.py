@@ -65,7 +65,7 @@ def _instrument_type(raw: str | None, market: str, symbol: str) -> str:
     if market == "TWSE":
         return "stock"
     if market == "TAIFEX":
-        if root_symbol_for(symbol) in {"TX", "MTX", "TXF"}:
+        if root_symbol_for(symbol) in {"MTX", "MXF"}:
             return "future"
         if symbol.startswith("TX"):
             return "option"

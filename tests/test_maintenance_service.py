@@ -24,14 +24,14 @@ class MaintenanceServiceTest(unittest.TestCase):
             store.upsert_bars(
                 "1m",
                 [
-                    Bar(datetime(2024, 1, 1, 8, 45), datetime(2024, 1, 1).date(), "TX", "202401", "day", 1, 1, 1, 1, 1, None, "test"),
-                    Bar(datetime(2024, 1, 1, 8, 47), datetime(2024, 1, 1).date(), "TX", "202401", "day", 1, 1, 1, 1, 1, None, "test"),
+                    Bar(datetime(2024, 1, 1, 8, 45), datetime(2024, 1, 1).date(), "MTX", "202401", "day", 1, 1, 1, 1, 1, None, "test"),
+                    Bar(datetime(2024, 1, 1, 8, 47), datetime(2024, 1, 1).date(), "MTX", "202401", "day", 1, 1, 1, 1, 1, None, "test"),
                 ]
             )
             service = MaintenanceService(provider=DummyProvider(), store=store)
 
             gaps = service.scan_gaps(
-                symbol="TX",
+                symbol="MTX",
                 start=datetime(2024, 1, 1, 8, 45),
                 end=datetime(2024, 1, 1, 8, 47),
                 expected_step=timedelta(minutes=1),

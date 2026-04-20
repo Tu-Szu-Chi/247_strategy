@@ -22,8 +22,8 @@ TX_OPTION_ROOT_PATTERN = re.compile(r"^TX[A-Z0-9]$")
 LIVE_FUTURE_ALIAS = {
     "MTX": "MXFR1",
     "MXF": "MXFR1",
-    "TX": "TXFR1",
-    "TXF": "TXFR1",
+    "TX": "MXFR1",
+    "TXF": "MXFR1",
 }
 
 
@@ -161,7 +161,7 @@ class ShioajiLiveProvider(BaseLiveProvider):
         option_root: str | None = None,
         expiry_count: int = 2,
         atm_window: int = 20,
-        underlying_future_symbol: str = "TXFR1",
+        underlying_future_symbol: str = "MXFR1",
         call_put: str = "both",
     ) -> list[Any]:
         selected_roots, contracts, _ = self.resolve_option_universe(
@@ -178,7 +178,7 @@ class ShioajiLiveProvider(BaseLiveProvider):
         option_root: str | None = None,
         expiry_count: int = 2,
         atm_window: int = 20,
-        underlying_future_symbol: str = "TXFR1",
+        underlying_future_symbol: str = "MXFR1",
         call_put: str = "both",
     ) -> tuple[list[str], list[Any], float]:
         if not self.connected or self.api is None:
@@ -205,7 +205,7 @@ class ShioajiLiveProvider(BaseLiveProvider):
         option_root: str | None = None,
         expiry_count: int = 2,
         atm_window: int = 20,
-        underlying_future_symbol: str = "TXFR1",
+        underlying_future_symbol: str = "MXFR1",
         call_put: str = "both",
     ) -> list[str]:
         selected = self.resolve_option_contracts(
@@ -349,7 +349,7 @@ class ShioajiLiveProvider(BaseLiveProvider):
             if contract is None:
                 raise ValueError(
                     f"Unable to resolve Shioaji contract for symbol '{symbol}'. "
-                    "Pass the exact Shioaji contract code, for example 2330, TXFR1, or TXO20250418000C."
+                    "Pass the exact Shioaji contract code, for example 2330, MXFR1, or TXO20250418000C."
                 ) from exc
         code = getattr(contract, "code", symbol)
         target_code = getattr(contract, "target_code", None)
@@ -447,7 +447,7 @@ def _normalize_root_symbol(value: str) -> str:
     if normalized.startswith("MXF"):
         return "MTX"
     if normalized.startswith("TXF"):
-        return "TX"
+        return "MTX"
     return normalized
 
 

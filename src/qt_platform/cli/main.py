@@ -100,7 +100,7 @@ def main() -> None:
     option_minute_features.add_argument("--option-root")
     option_minute_features.add_argument("--expiry-count", type=int, default=2)
     option_minute_features.add_argument("--atm-window", type=int, default=20)
-    option_minute_features.add_argument("--underlying-future-symbol", default="TXFR1")
+    option_minute_features.add_argument("--underlying-future-symbol", default="MXFR1")
     option_minute_features.add_argument("--limit", type=int, default=20)
     option_minute_features.add_argument("--run-id")
 
@@ -117,7 +117,7 @@ def main() -> None:
     runtime.add_argument("--registry")
     runtime.add_argument("--expiry-count", type=int, default=2)
     runtime.add_argument("--atm-window", type=int, default=20)
-    runtime.add_argument("--underlying-future-symbol", default="TXFR1")
+    runtime.add_argument("--underlying-future-symbol", default="MXFR1")
     runtime.add_argument("--call-put", default="both")
     runtime.add_argument("--max-events", type=int)
     runtime.add_argument("--batch-size", type=int, default=500)
@@ -141,7 +141,7 @@ def main() -> None:
     serve_option_power.add_argument("--option-root", default="AUTO")
     serve_option_power.add_argument("--expiry-count", type=int, default=2)
     serve_option_power.add_argument("--atm-window", type=int, default=20)
-    serve_option_power.add_argument("--underlying-future-symbol", default="TXFR1")
+    serve_option_power.add_argument("--underlying-future-symbol", default="MXFR1")
     serve_option_power.add_argument("--call-put", default="both")
     serve_option_power.add_argument("--batch-size", type=int, default=500)
     serve_option_power.add_argument("--idle-timeout-seconds", type=float, default=30.0)
@@ -295,8 +295,8 @@ def _live_symbol_for_registry_future(symbol: str) -> str:
     mapping = {
         "MTX": "MXFR1",
         "MXF": "MXFR1",
-        "TX": "TXFR1",
-        "TXF": "TXFR1",
+        "TX": "MXFR1",
+        "TXF": "MXFR1",
     }
     return mapping.get(symbol, mapping.get(root_symbol_for(symbol), symbol))
 

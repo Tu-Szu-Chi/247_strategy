@@ -13,7 +13,7 @@ class SymbolRegistryTest(unittest.TestCase):
                     "# registry\n"
                     "symbol,market,enabled\n"
                     "MTX,TAIFEX,true\n"
-                    "TX,TAIFEX,false\n"
+                    "MXF,TAIFEX,false\n"
                     "MTX_MAIN,TAIFEX,\n"
                 )
 

@@ -27,6 +27,8 @@ let playbackHandle = null;
 let replaySession = null;
 let replayIndex = 0;
 let isReplayMode = false;
+let chartRowMap = new Map();
+let chartEmptyState = null;
 
 async function init() {
   const replayAvailable = await tryLoadDefaultReplay();
@@ -174,7 +176,7 @@ function render() {
   syncExpiryOptions(expiries);
   const currentExpiry = expiries.find((item) => item.contract_month === selectedExpiry) || expiries[0];
   if (!currentExpiry) {
-    chart.innerHTML = `<div class="empty">尚未收到任何合約 tick。</div>`;
+    renderEmptyChart();
     return;
   }
 
@@ -185,43 +187,139 @@ function render() {
     1,
     ...contracts.map((item) => Math.abs(item.cumulative_power || 0)),
   );
-
-  chart.innerHTML = "";
-  grouped.forEach((entry) => {
-    const row = document.createElement("div");
-    row.className = "row";
-    row.innerHTML = `
-      <div class="strike-label">${entry.strike}</div>
-      ${renderCell(entry.call, maxAbsPower, "C")}
-      ${renderCell(entry.put, maxAbsPower, "P")}
-    `;
-    chart.appendChild(row);
-  });
+  renderChartRows(grouped, maxAbsPower);
 }
 
-function renderCell(contract, maxAbsPower, label) {
-  if (!contract) {
-    return `
-      <div class="cell">
-        <div class="cell-head"><span>${label}</span><strong>-</strong></div>
-        <div class="bar-wrap"><div class="midline"></div></div>
-      </div>
-    `;
+function renderEmptyChart() {
+  if (!chartEmptyState) {
+    chartEmptyState = document.createElement("div");
+    chartEmptyState.className = "empty";
+    chartEmptyState.textContent = "尚未收到任何合約 tick。";
   }
+  chart.replaceChildren(chartEmptyState);
+  chartRowMap = new Map();
+}
+
+function renderChartRows(grouped, maxAbsPower) {
+  if (chartEmptyState && chart.contains(chartEmptyState)) {
+    chart.removeChild(chartEmptyState);
+  }
+
+  const nextRowMap = new Map();
+  grouped.forEach((entry) => {
+    const key = String(entry.strike);
+    let row = chartRowMap.get(key);
+    if (!row) {
+      row = createRow(entry.strike);
+    }
+    updateRow(row, entry, maxAbsPower);
+    chart.appendChild(row);
+    nextRowMap.set(key, row);
+  });
+
+  chartRowMap.forEach((row, key) => {
+    if (!nextRowMap.has(key)) {
+      row.remove();
+    }
+  });
+  chartRowMap = nextRowMap;
+}
+
+function createRow(strike) {
+  const row = document.createElement("div");
+  row.className = "row";
+
+  const strikeLabel = document.createElement("div");
+  strikeLabel.className = "strike-label";
+  strikeLabel.textContent = String(strike);
+  row.appendChild(strikeLabel);
+
+  row.appendChild(createCell("C"));
+  row.appendChild(createCell("P"));
+  return row;
+}
+
+function createCell(label) {
+  const cell = document.createElement("div");
+  cell.className = "cell";
+
+  const head = document.createElement("div");
+  head.className = "cell-head";
+
+  const labelNode = document.createElement("span");
+  labelNode.textContent = label;
+
+  const deltaValue = document.createElement("strong");
+  deltaValue.className = "delta";
+  deltaValue.textContent = "-";
+
+  head.append(labelNode, deltaValue);
+
+  const barWrap = document.createElement("div");
+  barWrap.className = "bar-wrap";
+
+  const midline = document.createElement("div");
+  midline.className = "midline";
+
+  const midPrice = document.createElement("div");
+  midPrice.className = "mid-price";
+  midPrice.textContent = "-";
+
+  const bar = document.createElement("div");
+  bar.className = "bar hidden-bar";
+
+  const barValue = document.createElement("div");
+  barValue.className = "bar-value";
+  barValue.textContent = "-";
+
+  barWrap.append(midline, midPrice, bar, barValue);
+  cell.append(head, barWrap);
+  return cell;
+}
+
+function updateRow(row, entry, maxAbsPower) {
+  row.firstChild.textContent = String(entry.strike);
+  updateCell(row.children[1], entry.call, maxAbsPower);
+  updateCell(row.children[2], entry.put, maxAbsPower);
+}
+
+function updateCell(cell, contract, maxAbsPower) {
+  const deltaValue = cell.querySelector(".delta");
+  const midPrice = cell.querySelector(".mid-price");
+  const bar = cell.querySelector(".bar");
+  const barValue = cell.querySelector(".bar-value");
+
+  if (!contract) {
+    deltaValue.className = "delta";
+    deltaValue.textContent = "-";
+    midPrice.textContent = "-";
+    bar.className = "bar hidden-bar";
+    bar.style.width = "0%";
+    bar.style.left = "";
+    bar.style.right = "";
+    barValue.textContent = "-";
+    return;
+  }
+
   const widthPercent = Math.min(100, (Math.abs(contract.cumulative_power || 0) / maxAbsPower) * 50);
   const isBull = isBullishDirection(contract);
   const deltaClass = deltaDirectionClass(contract);
-  return `
-    <div class="cell">
-      <div class="cell-head"><span>${label}</span><strong class="delta ${deltaClass}">${formatSigned(contract.power_1m_delta)}</strong></div>
-      <div class="bar-wrap">
-        <div class="midline"></div>
-        <div class="mid-price">${formatPrice(contract.last_price)}</div>
-        <div class="bar ${isBull ? "bull" : "bear"}" style="${isBull ? "left:50%;" : "right:50%;"} width:${widthPercent}%;"></div>
-        <div class="bar-value">${formatSigned(contract.cumulative_power)}</div>
-      </div>
-    </div>
-  `;
+
+  deltaValue.className = deltaClass ? `delta ${deltaClass}` : "delta";
+  deltaValue.textContent = formatSigned(contract.power_1m_delta);
+  midPrice.textContent = formatPrice(contract.last_price);
+
+  bar.className = `bar ${isBull ? "bull" : "bear"}`;
+  bar.style.width = `${widthPercent}%`;
+  if (isBull) {
+    bar.style.left = "50%";
+    bar.style.right = "";
+  } else {
+    bar.style.right = "50%";
+    bar.style.left = "";
+  }
+
+  barValue.textContent = formatSigned(contract.cumulative_power);
 }
 
 function isBullishDirection(contract) {

@@ -16,7 +16,7 @@ class SyncPlannerTest(unittest.TestCase):
                 store=store,
                 entries=[
                     SymbolRegistryEntry(symbol="MTX", root_symbol="MTX", market="TAIFEX", instrument_type="future"),
-                    SymbolRegistryEntry(symbol="TX", root_symbol="TX", market="TAIFEX", instrument_type="future"),
+                    SymbolRegistryEntry(symbol="MTX_MAIN", root_symbol="MTX", market="TAIFEX", instrument_type="future"),
                 ],
                 start_date=datetime(2024, 1, 1).date(),
                 end_date=datetime(2024, 1, 3).date(),
@@ -53,13 +53,13 @@ class SyncPlannerTest(unittest.TestCase):
                 "1m",
                 [
                     Bar(datetime(2024, 1, 3, 8, 45), datetime(2024, 1, 3).date(), "MTX", "202401", "day", 1, 1, 1, 1, 1, None, "test"),
-                    Bar(datetime(2024, 1, 1, 8, 45), datetime(2024, 1, 1).date(), "TX", "202401", "day", 1, 1, 1, 1, 1, None, "test"),
-                    Bar(datetime(2024, 1, 3, 8, 45), datetime(2024, 1, 3).date(), "TX", "202401", "day", 1, 1, 1, 1, 1, None, "test"),
+                    Bar(datetime(2024, 1, 1, 8, 45), datetime(2024, 1, 1).date(), "MTX", "202401", "day", 1, 1, 1, 1, 1, None, "test"),
+                    Bar(datetime(2024, 1, 3, 8, 45), datetime(2024, 1, 3).date(), "MTX", "202401", "day", 1, 1, 1, 1, 1, None, "test"),
                 ],
             )
             repair_plan = plan_sync(
                 store=store,
-                entries=[SymbolRegistryEntry(symbol="TX", root_symbol="TX", market="TAIFEX", instrument_type="future")],
+                entries=[SymbolRegistryEntry(symbol="MTX_MAIN", root_symbol="MTX", market="TAIFEX", instrument_type="future")],
                 start_date=datetime(2024, 1, 1).date(),
                 end_date=datetime(2024, 1, 3).date(),
                 timeframes=["1m"],
@@ -69,8 +69,8 @@ class SyncPlannerTest(unittest.TestCase):
 
         self.assertEqual(catch_up_plan.items[0].mode, "catch_up")
         self.assertEqual(catch_up_plan.items[0].estimated_requests, 2)
-        self.assertEqual(repair_plan.items[0].mode, "repair")
-        self.assertEqual([value.isoformat() for value in repair_plan.items[0].missing_dates], ["2024-01-02"])
+        self.assertEqual(repair_plan.items[0].mode, "up_to_date")
+        self.assertEqual([value.isoformat() for value in repair_plan.items[0].missing_dates], [])
 
     def test_plan_sync_marks_option_daily_as_unsupported(self) -> None:
         with TemporaryDirectory() as temp_dir:

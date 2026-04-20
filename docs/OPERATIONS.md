@@ -241,6 +241,7 @@ psql postgresql://postgres:postgres@localhost:5432/trading < trading.sql
 - 使用 `config/config.yaml`
 - 使用 `config/symbols.csv`
 - 啟動 `runtime`
+- `MXFR1` 作為 live 小台近月合約，寫入後 symbol 正規化為 `MTX`
 - `MTX` + 最近兩檔台指選 roots + registry 內股票
 
 如果你要直接啟動 live 的 option-power / research web UI，改用：
@@ -252,6 +253,7 @@ psql postgresql://postgres:postgres@localhost:5432/trading < trading.sql
 預設會啟動：
 
 - `serve-option-power`
+- `MXFR1` 作為 live underlying future，寫入後 symbol 正規化為 `MTX`
 - live data + research chart UI
 - 網址：`http://127.0.0.1:8000/`
 - 舊版頁面：`http://127.0.0.1:8000/legacy-option-power`

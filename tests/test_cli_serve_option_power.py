@@ -17,7 +17,7 @@ class ServeOptionPowerTest(unittest.TestCase):
             option_root="AUTO",
             expiry_count=2,
             atm_window=20,
-            underlying_future_symbol="TXFR1",
+            underlying_future_symbol="MXFR1",
             call_put="both",
             session_scope="day_and_night",
             batch_size=500,

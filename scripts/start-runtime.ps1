@@ -1,7 +1,7 @@
 param(
     [string]$ConfigPath = "config/config.yaml",
     [string]$RegistryPath = "config/symbols.csv",
-    [string]$UnderlyingFutureSymbol = "TXFR1",
+    [string]$UnderlyingFutureSymbol = "MXFR1",
     [int]$ExpiryCount = 2,
     [int]$AtmWindow = 20,
     [string]$CallPut = "both",
