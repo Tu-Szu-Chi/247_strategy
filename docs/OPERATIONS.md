@@ -243,6 +243,19 @@ psql postgresql://postgres:postgres@localhost:5432/trading < trading.sql
 - 啟動 `runtime`
 - `MTX` + 最近兩檔台指選 roots + registry 內股票
 
+如果你要直接啟動 live 的 option-power / research web UI，改用：
+
+```powershell
+.\scripts\start-option-power.ps1
+```
+
+預設會啟動：
+
+- `serve-option-power`
+- live data + research chart UI
+- 網址：`http://127.0.0.1:8000/`
+- 舊版頁面：`http://127.0.0.1:8000/legacy-option-power`
+
 若要補 history，改用：
 
 ```powershell
