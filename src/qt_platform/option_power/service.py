@@ -6,7 +6,7 @@ import time
 import threading
 from dataclasses import dataclass
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from qt_platform.domain import Bar, CanonicalTick, LiveRunMetadata
@@ -301,8 +301,20 @@ class OptionPowerRuntimeService:
             underlying_contract = self.provider._resolve_contract(self.underlying_future_symbol)
             all_contracts = [underlying_contract, *contracts]
             underlying_code = str(getattr(underlying_contract, "code", "") or self.underlying_future_symbol)
+            underlying_target_code = str(getattr(underlying_contract, "target_code", "") or "")
+            underlying_identifiers = {
+                value
+                for value in {
+                    self.underlying_future_symbol,
+                    underlying_code,
+                    underlying_target_code,
+                }
+                if value
+            }
             if underlying_code:
                 self.provider._contracts[underlying_code] = underlying_contract
+            if underlying_target_code:
+                self.provider._contracts[underlying_target_code] = underlying_contract
             metadata = LiveRunMetadata(
                 run_id=self.run_id or "",
                 provider="shioaji",
@@ -348,7 +360,7 @@ class OptionPowerRuntimeService:
                 self._ready.set()
             self._next_snapshot_at = datetime.now()
             for tick in self.provider.stream_ticks_from_contracts(contracts=all_contracts, max_events=None):
-                if tick.symbol == self.underlying_future_symbol:
+                if (tick.instrument_key or tick.symbol) in underlying_identifiers:
                     self.reference_price = tick.price
                     self._ingest_underlying_tick(tick)
                 else:

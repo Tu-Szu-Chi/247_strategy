@@ -44,8 +44,16 @@ let indicatorChart = null;
 let candleSeries = null;
 let lineSeries = null;
 let livePollingHandle = null;
+let chartsEnabled = true;
+let liveBundlePollingInFlight = false;
 
 function initCharts() {
+  if (typeof LightweightCharts === "undefined") {
+    chartsEnabled = false;
+    priceChartContainer.innerHTML = `<div class="empty">Chart library not loaded. Live data will still refresh.</div>`;
+    indicatorChartContainer.innerHTML = `<div class="empty">Chart library not loaded. Live data will still refresh.</div>`;
+    return;
+  }
   priceChart = LightweightCharts.createChart(priceChartContainer, chartOptions(440));
   candleSeries = priceChart.addCandlestickSeries({
     upColor: "#ff6a5a",
@@ -121,10 +129,16 @@ function chartOptions(height) {
 
 async function init() {
   initCharts();
+  try {
+    await loadLiveBundle(true);
+    startLivePolling();
+    return;
+  } catch (error) {
+    // Fall back to replay if live mode is not available yet.
+  }
   const replayLoaded = await tryLoadDefaultReplay();
   if (!replayLoaded) {
-    await loadLiveBundle();
-    startLivePolling();
+    modeLabel.textContent = "live-error";
   }
 }
 
@@ -201,7 +215,7 @@ async function loadReplaySnapshotAt(ts) {
   renderSnapshot();
 }
 
-async function loadLiveBundle() {
+async function loadLiveBundle(strict = false) {
   const [metaResponse, barsResponse, seriesResponse, snapshotResponse] = await Promise.all([
     fetch("/api/option-power/live/meta", { cache: "no-store" }),
     fetch("/api/option-power/live/bars", { cache: "no-store" }),
@@ -220,21 +234,34 @@ async function loadLiveBundle() {
     ? `${formatDateTime(liveMeta.start)} -> ${formatDateTime(liveMeta.end)}`
     : "live stream";
 
-  const bars = await barsResponse.json();
-  const indicatorSeries = await seriesResponse.json();
-  const snapshotPayload = await snapshotResponse.json();
+  try {
+    const snapshotPayload = await snapshotResponse.json();
+    currentSnapshot = snapshotPayload.snapshot;
+    if (currentSnapshot && currentSnapshot.generated_at) {
+      cursorTime.textContent = formatDateTime(currentSnapshot.generated_at);
+    }
+    renderSnapshot();
+  } catch (error) {
+    if (strict) {
+      throw error;
+    }
+    modeLabel.textContent = "live-partial";
+  }
 
-  renderTimeline(bars, indicatorSeries[seriesSelect.value] || []);
-  currentSnapshot = snapshotPayload.snapshot;
-  cursorTime.textContent = formatDateTime(currentSnapshot.generated_at);
-  renderSnapshot();
+  try {
+    const bars = await barsResponse.json();
+    const indicatorSeries = await seriesResponse.json();
+    renderTimeline(bars, indicatorSeries[seriesSelect.value] || []);
+  } catch (error) {
+    modeLabel.textContent = "live-partial";
+  }
 }
 
 function startLivePolling() {
   stopLivePolling();
   livePollingHandle = window.setInterval(async () => {
     try {
-      await loadLiveBundle();
+      await loadLiveBundleLatest();
     } catch (error) {
       modeLabel.textContent = "live-error";
     }
@@ -245,6 +272,18 @@ function stopLivePolling() {
   if (livePollingHandle !== null) {
     window.clearInterval(livePollingHandle);
     livePollingHandle = null;
+  }
+}
+
+async function loadLiveBundleLatest() {
+  if (liveBundlePollingInFlight) {
+    return;
+  }
+  liveBundlePollingInFlight = true;
+  try {
+    await loadLiveBundle();
+  } finally {
+    liveBundlePollingInFlight = false;
   }
 }
 
@@ -259,8 +298,13 @@ async function loadLiveSnapshotAt(ts) {
 }
 
 function renderTimeline(bars, lineData) {
-  candleSeries.setData((bars || []).map(normalizeBar));
-  lineSeries.setData((lineData || []).map(normalizeLinePoint));
+  if (!chartsEnabled || !priceChart || !indicatorChart || !candleSeries || !lineSeries) {
+    return;
+  }
+  const normalizedBars = (bars || []).map(normalizeBar).filter(Boolean);
+  const normalizedLineData = (lineData || []).map(normalizeLinePoint).filter(Boolean);
+  candleSeries.setData(normalizedBars);
+  lineSeries.setData(normalizedLineData);
   priceChart.timeScale().fitContent();
   indicatorChart.timeScale().fitContent();
 }
@@ -301,11 +345,30 @@ function renderSnapshot() {
 }
 
 function normalizeBar(item) {
-  return { time: toUnixSeconds(item.time), open: item.open, high: item.high, low: item.low, close: item.close };
+  if (!item || item.time === null || item.time === undefined) {
+    return null;
+  }
+  const time = toUnixSeconds(item.time);
+  const open = Number(item.open);
+  const high = Number(item.high);
+  const low = Number(item.low);
+  const close = Number(item.close);
+  if ([time, open, high, low, close].some((value) => Number.isNaN(value))) {
+    return null;
+  }
+  return { time, open, high, low, close };
 }
 
 function normalizeLinePoint(item) {
-  return { time: toUnixSeconds(item.time), value: item.value };
+  if (!item || item.time === null || item.time === undefined || item.value === null || item.value === undefined) {
+    return null;
+  }
+  const time = toUnixSeconds(item.time);
+  const value = Number(item.value);
+  if (Number.isNaN(time) || Number.isNaN(value)) {
+    return null;
+  }
+  return { time, value };
 }
 
 function renderCell(contract, maxAbsPower, label) {
@@ -445,7 +508,7 @@ seriesSelect.addEventListener("change", async () => {
   if (currentMode === "replay" && replaySession) {
     await loadReplayBundle();
   } else if (currentMode === "live") {
-    await loadLiveBundle();
+    await loadLiveBundle(true);
   }
 });
 

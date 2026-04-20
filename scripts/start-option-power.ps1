@@ -1,11 +1,11 @@
 param(
     [string]$ConfigPath = "config/config.yaml",
-    [string]$UnderlyingFutureSymbol = "MXFR1",
+    [string]$UnderlyingFutureSymbol = "TXFR1",
     [int]$ExpiryCount = 2,
     [int]$AtmWindow = 20,
     [string]$CallPut = "both",
     [string]$SessionScope = "day_and_night",
-    [string]$Host = "127.0.0.1",
+    [string]$ListenHost = "127.0.0.1",
     [int]$Port = 8000,
     [double]$SnapshotIntervalSeconds = 5.0,
     [double]$ReadyTimeoutSeconds = 15.0,
@@ -37,7 +37,7 @@ if (-not (Test-Path $LogDir)) {
     New-Item -ItemType Directory -Path $LogDir | Out-Null
 }
 
-$Args = @(
+$CliArgs = @(
     "-m", "qt_platform.cli.main",
     "--config", $ConfigPath,
     "serve-option-power",
@@ -46,7 +46,7 @@ $Args = @(
     "--underlying-future-symbol", $UnderlyingFutureSymbol,
     "--call-put", $CallPut,
     "--session-scope", $SessionScope,
-    "--host", $Host,
+    "--host", $ListenHost,
     "--port", $Port,
     "--snapshot-interval-seconds", $SnapshotIntervalSeconds,
     "--ready-timeout-seconds", $ReadyTimeoutSeconds,
@@ -54,11 +54,11 @@ $Args = @(
 )
 
 if ($Simulation) {
-    $Args += "--simulation"
+    $CliArgs += "--simulation"
 }
 
 if ($DatabaseUrl) {
-    $Args = @(
+    $CliArgs = @(
         "-m", "qt_platform.cli.main",
         "--config", $ConfigPath,
         "serve-option-power",
@@ -68,14 +68,14 @@ if ($DatabaseUrl) {
         "--underlying-future-symbol", $UnderlyingFutureSymbol,
         "--call-put", $CallPut,
         "--session-scope", $SessionScope,
-        "--host", $Host,
+        "--host", $ListenHost,
         "--port", $Port,
         "--snapshot-interval-seconds", $SnapshotIntervalSeconds,
         "--ready-timeout-seconds", $ReadyTimeoutSeconds,
         "--log-file", $LogFile
     )
     if ($Simulation) {
-        $Args += "--simulation"
+        $CliArgs += "--simulation"
     }
 }
 
@@ -85,10 +85,10 @@ Write-Host "Config: $ConfigFullPath"
 Write-Host "Underlying future symbol: $UnderlyingFutureSymbol"
 Write-Host "Option roots: AUTO nearest $ExpiryCount"
 Write-Host "ATM window: $AtmWindow"
-Write-Host "Host: $Host"
+Write-Host "Host: $ListenHost"
 Write-Host "Port: $Port"
-Write-Host "Research URL: http://$Host`:$Port/"
-Write-Host "Legacy URL: http://$Host`:$Port/legacy-option-power"
+Write-Host "Research URL: http://$ListenHost`:$Port/"
+Write-Host "Legacy URL: http://$ListenHost`:$Port/legacy-option-power"
 Write-Host "Log file: $LogFullPath"
 
-& $PythonExe @Args
+& $PythonExe @CliArgs
