@@ -44,6 +44,7 @@ class OptionPowerSnapshot:
     session: str
     option_root: str
     underlying_reference_price: float | None
+    underlying_reference_source: str | None
     raw_pressure: int
     pressure_index: int
     raw_pressure_1m: int

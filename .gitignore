@@ -14,6 +14,7 @@ build/
 *.db
 *.log
 **/*.log
+logs/
 reports/
 .env
 Sinopac.pfx

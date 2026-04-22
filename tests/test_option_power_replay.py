@@ -110,6 +110,22 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
                     open_interest=None,
                     source="stub_replay",
                     instrument_key="MTX202605",
+                ),
+                Bar(
+                    ts=base_ts,
+                    trading_day=date(2026, 4, 16),
+                    symbol="TWII",
+                    contract_month="",
+                    session="day",
+                    open=19380.0,
+                    high=19410.0,
+                    low=19370.0,
+                    close=19400.0,
+                    volume=0.0,
+                    open_interest=None,
+                    source="stub_replay",
+                    instrument_key="index:TWII",
+                    build_source="live_snapshot_agg",
                 )
             ],
         )
@@ -131,7 +147,8 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
         self.assertEqual(metadata["snapshot_count"], 3)
 
         default_snapshot = service.current_snapshot()
-        self.assertEqual(default_snapshot["underlying_reference_price"], 19450.0)
+        self.assertEqual(default_snapshot["underlying_reference_price"], 19400.0)
+        self.assertEqual(default_snapshot["underlying_reference_source"], "twii")
         self.assertEqual(default_snapshot["raw_pressure"], 0)
         self.assertEqual(default_snapshot["pressure_index"], 0)
 

@@ -16,6 +16,7 @@ TX_OPTION_ROOT_CANDIDATES = [
     *[f"TX{digit}" for digit in range(10)],
     *[f"TX{chr(code)}" for code in range(ord("A"), ord("Z") + 1)],
 ]
+DAY_INDICATOR_SYMBOL = "TWII"
 
 
 @dataclass(frozen=True)
@@ -154,6 +155,7 @@ class OptionPowerReplayService:
                 "session": "unknown",
                 "option_root": self.option_root,
                 "underlying_reference_price": None,
+                "underlying_reference_source": None,
                 "raw_pressure": 0,
                 "pressure_index": 0,
                 "raw_pressure_1m": 0,
@@ -173,6 +175,7 @@ class OptionPowerReplayService:
                 "session": "unknown",
                 "option_root": self.option_root,
                 "underlying_reference_price": None,
+                "underlying_reference_source": None,
                 "raw_pressure": 0,
                 "pressure_index": 0,
                 "raw_pressure_1m": 0,
@@ -217,25 +220,35 @@ class OptionPowerReplayService:
         snapshots: list[dict] = []
         snapshot_datetimes: list[datetime] = []
         snapshot_times: list[str] = []
-        latest_reference_price: float | None = None
+        latest_future_reference_price: float | None = None
         tick_index = 0
         boundary = start
         interval = timedelta(seconds=max(self.snapshot_interval_seconds, 1.0))
         session_id = f"replay-{datetime.now().strftime('%Y%m%dT%H%M%S')}-{uuid4().hex[:8]}"
+        day_indicator_bars = self.store.list_bars("1m", DAY_INDICATOR_SYMBOL, start, end)
 
         while boundary <= end:
             while tick_index < len(replay_ticks) and replay_ticks[tick_index].ts <= boundary:
                 tick = replay_ticks[tick_index]
                 if tick.symbol == self.underlying_symbol:
-                    latest_reference_price = tick.price
+                    latest_future_reference_price = tick.price
                 else:
                     aggregator.ingest_tick(tick)
                 tick_index += 1
 
+            reference_price, reference_source = _resolve_replay_reference_price(
+                boundary=boundary,
+                session=classify_session(boundary),
+                day_indicator_bars=day_indicator_bars,
+                latest_future_reference_price=latest_future_reference_price,
+                underlying_symbol=self.underlying_symbol,
+            )
+
             snapshot = aggregator.snapshot(
                 generated_at=boundary,
                 run_id=session_id,
-                underlying_reference_price=latest_reference_price,
+                underlying_reference_price=reference_price,
+                underlying_reference_source=reference_source,
                 status="replay_ready",
             ).to_dict()
             snapshots.append(snapshot)
@@ -304,6 +317,32 @@ def _build_indicator_series(snapshot_times: list[str], snapshots: list[dict]) ->
         for name in series_names:
             payload[name].append({"time": ts, "value": snapshot.get(name, 0)})
     return payload
+
+
+def _resolve_replay_reference_price(
+    *,
+    boundary: datetime,
+    session: str,
+    day_indicator_bars: list[Bar],
+    latest_future_reference_price: float | None,
+    underlying_symbol: str,
+) -> tuple[float | None, str | None]:
+    if session == "day":
+        day_price = _latest_bar_close_before(day_indicator_bars, boundary)
+        if day_price is not None:
+            return day_price, DAY_INDICATOR_SYMBOL.lower()
+    if latest_future_reference_price is not None:
+        return latest_future_reference_price, underlying_symbol.lower()
+    return None, None
+
+
+def _latest_bar_close_before(bars: list[Bar], boundary: datetime) -> float | None:
+    latest_close = None
+    for bar in bars:
+        if bar.ts > boundary:
+            break
+        latest_close = bar.close
+    return latest_close
 
 
 def _bar_to_chart_dict(bar: Bar) -> dict:

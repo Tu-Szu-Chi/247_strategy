@@ -25,6 +25,12 @@ LIVE_FUTURE_ALIAS = {
     "TX": "MXFR1",
     "TXF": "MXFR1",
 }
+LIVE_INDEX_ALIAS = {
+    "TWII": "001",
+    "TAIEX": "001",
+    "TSE001": "001",
+    "001": "001",
+}
 
 
 class ShioajiLiveProvider(BaseLiveProvider):
@@ -89,25 +95,37 @@ class ShioajiLiveProvider(BaseLiveProvider):
     def stream_ticks_from_contracts(self, contracts: list[Any], max_events: int | None = None) -> Iterable[CanonicalTick]:
         if not self.connected or self.api is None or self._sj is None:
             raise RuntimeError("ShioajiLiveProvider must be connected before streaming ticks.")
-        for contract in contracts:
-            code = getattr(contract, "code", None)
-            target_code = getattr(contract, "target_code", None)
-            if code:
-                self._contracts[str(code)] = contract
-            if target_code:
-                self._contracts[str(target_code)] = contract
-            self.api.quote.subscribe(
-                contract,
-                quote_type=self._sj.constant.QuoteType.Tick,
-                version=self._sj.constant.QuoteVersion.v1,
-            )
+        try:
+            for contract in contracts:
+                code = getattr(contract, "code", None)
+                target_code = getattr(contract, "target_code", None)
+                if code:
+                    self._contracts[str(code)] = contract
+                if target_code:
+                    self._contracts[str(target_code)] = contract
+                self.api.quote.subscribe(
+                    contract,
+                    quote_type=self._sj.constant.QuoteType.Tick,
+                    version=self._sj.constant.QuoteVersion.v1,
+                )
+        except Exception as exc:
+            if self._is_connection_error(exc):
+                self._mark_connection_lost(str(exc))
+                return
+            raise
 
         emitted = 0
         last_usage_check = datetime.now()
         try:
-            if self._should_pause_for_usage():
-                self._stop_reason = "usage_threshold_reached"
-                return
+            try:
+                if self._should_pause_for_usage():
+                    self._stop_reason = "usage_threshold_reached"
+                    return
+            except Exception as exc:
+                if self._is_connection_error(exc):
+                    self._mark_connection_lost(str(exc))
+                    return
+                raise
             while max_events is None or emitted < max_events:
                 try:
                     tick = self._queue.get(timeout=self.idle_timeout_seconds)
@@ -117,18 +135,30 @@ class ShioajiLiveProvider(BaseLiveProvider):
                         self._stop_reason = "session_closed"
                         return
                     if (now - last_usage_check).total_seconds() >= self.settings.usage_check_interval_seconds:
-                        if self._should_pause_for_usage():
-                            self._stop_reason = "usage_threshold_reached"
-                            return
+                        try:
+                            if self._should_pause_for_usage():
+                                self._stop_reason = "usage_threshold_reached"
+                                return
+                        except Exception as exc:
+                            if self._is_connection_error(exc):
+                                self._mark_connection_lost(str(exc))
+                                return
+                            raise
                         last_usage_check = now
                     continue
                 yield tick
                 emitted += 1
                 now = datetime.now()
                 if (now - last_usage_check).total_seconds() >= self.settings.usage_check_interval_seconds:
-                    if self._should_pause_for_usage():
-                        self._stop_reason = "usage_threshold_reached"
-                        return
+                    try:
+                        if self._should_pause_for_usage():
+                            self._stop_reason = "usage_threshold_reached"
+                            return
+                    except Exception as exc:
+                        if self._is_connection_error(exc):
+                            self._mark_connection_lost(str(exc))
+                            return
+                        raise
                     last_usage_check = now
         finally:
             for contract in contracts:
@@ -358,6 +388,27 @@ class ShioajiLiveProvider(BaseLiveProvider):
             self._contracts[str(target_code)] = contract
         return contract
 
+    def resolve_taiex_contract(self) -> Any:
+        assert self.api is not None
+        index_code = LIVE_INDEX_ALIAS["TWII"]
+        contract = self._resolve_index_contract(index_code)
+        if contract is None:
+            raise ValueError("Unable to resolve TAIEX index contract from Shioaji Contracts.Indexs.")
+        code = getattr(contract, "code", index_code)
+        self._contracts[str(code)] = contract
+        return contract
+
+    def snapshot_price(self, contract: Any, timeout: int = 5000) -> float:
+        assert self.api is not None
+        snapshots = self.api.snapshots([contract], timeout=timeout)
+        if not snapshots:
+            raise RuntimeError(f"Unable to resolve snapshot for contract '{getattr(contract, 'code', contract)}'.")
+        snapshot = snapshots[0]
+        price = getattr(snapshot, "close", None) or getattr(snapshot, "reference", None)
+        if price in (None, 0):
+            raise RuntimeError(f"Snapshot for '{getattr(contract, 'code', contract)}' does not contain a usable price.")
+        return float(price)
+
     def _resolve_stock_contract(self, symbol: str) -> Any | None:
         assert self.api is not None
         try:
@@ -370,6 +421,25 @@ class ShioajiLiveProvider(BaseLiveProvider):
             try:
                 bucket = getattr(self.api.Contracts.Stocks, market)
                 contract = bucket[symbol]
+                if contract is not None:
+                    return contract
+            except Exception:
+                continue
+        return None
+
+    def _resolve_index_contract(self, symbol: str) -> Any | None:
+        assert self.api is not None
+        normalized = LIVE_INDEX_ALIAS.get(symbol.upper(), symbol.upper())
+        try:
+            contract = self.api.Contracts.Indexs[normalized]
+            if contract is not None:
+                return contract
+        except Exception:
+            pass
+        for market in ("TSE", "OTC"):
+            try:
+                bucket = getattr(self.api.Contracts.Indexs, market)
+                contract = bucket[normalized]
                 if contract is not None:
                     return contract
             except Exception:
@@ -413,6 +483,23 @@ class ShioajiLiveProvider(BaseLiveProvider):
         if effective_limit <= 0:
             return False
         return usage.bytes_used / effective_limit >= self.settings.pause_threshold_ratio
+
+    def _mark_connection_lost(self, detail: str | None = None) -> None:
+        self.connected = False
+        self._stop_reason = "connection_lost"
+        if detail:
+            print(f"Shioaji connection lost: {detail}", file=sys.stderr)
+
+    @staticmethod
+    def _is_connection_error(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return (
+            isinstance(exc, TimeoutError)
+            or "not ready" in message
+            or "connection reset" in message
+            or "session down" in message
+            or "topic: api/v1/auth/usage" in message
+        )
 
 
 def _tick_datetime(tick: Any) -> datetime:
@@ -476,7 +563,13 @@ def _extract_tx_option_root(value: Any) -> str | None:
 
 
 def _contract_month(contract: Any) -> str:
-    for attr in ("delivery_month", "delivery_date", "contract_date"):
+    delivery_date = getattr(contract, "delivery_date", None)
+    if delivery_date:
+        raw = str(delivery_date)
+        if re.match(r"^\d{4}/\d{2}/\d{2}$", raw):
+            return raw.replace("/", "")
+        return raw
+    for attr in ("delivery_month", "contract_date"):
         value = getattr(contract, attr, None)
         if value:
             return str(value)

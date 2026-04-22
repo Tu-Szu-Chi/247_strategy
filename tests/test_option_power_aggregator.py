@@ -44,10 +44,12 @@ class OptionPowerAggregatorTest(unittest.TestCase):
             generated_at=base_ts + timedelta(seconds=30),
             run_id="run-1",
             underlying_reference_price=18000.0,
+            underlying_reference_source="twii",
             status="running",
         )
 
         self.assertEqual(snapshot.session, "day")
+        self.assertEqual(snapshot.underlying_reference_source, "twii")
         self.assertEqual(snapshot.contract_count, 1)
         contract = snapshot.expiries[0].contracts[0]
         self.assertEqual(contract.cumulative_buy_volume, 10)
@@ -73,6 +75,7 @@ class OptionPowerAggregatorTest(unittest.TestCase):
             generated_at=base_ts + timedelta(seconds=70),
             run_id="run-1",
             underlying_reference_price=None,
+            underlying_reference_source=None,
             status="running",
         )
 
@@ -92,6 +95,7 @@ class OptionPowerAggregatorTest(unittest.TestCase):
             generated_at=base_ts + timedelta(minutes=80),
             run_id="run-1",
             underlying_reference_price=None,
+            underlying_reference_source=None,
             status="running",
         )
 
@@ -129,11 +133,39 @@ class OptionPowerAggregatorTest(unittest.TestCase):
             generated_at=base_ts + timedelta(seconds=5),
             run_id="run-1",
             underlying_reference_price=None,
+            underlying_reference_source=None,
             status="running",
         )
 
         self.assertEqual([expiry.contract_month for expiry in snapshot.expiries], ["202504W2", "202505"])
         self.assertEqual([expiry.label for expiry in snapshot.expiries], ["2025-04 W2", "2025-05"])
+
+    def test_snapshot_formats_expiry_labels_for_exact_delivery_date(self) -> None:
+        aggregator = OptionPowerAggregator(option_root="TXY")
+        base_ts = datetime(2025, 4, 11, 9, 0, 0)
+        aggregator.ingest_tick(
+            _tick(
+                ts=base_ts,
+                session="day",
+                direction="up",
+                size=5,
+                instrument_key="TXY2026042438200C",
+                contract_month="20260424",
+                strike_price=38200.0,
+                call_put="call",
+            )
+        )
+
+        snapshot = aggregator.snapshot(
+            generated_at=base_ts + timedelta(seconds=5),
+            run_id="run-1",
+            underlying_reference_price=None,
+            underlying_reference_source=None,
+            status="running",
+        )
+
+        self.assertEqual(snapshot.expiries[0].contract_month, "20260424")
+        self.assertEqual(snapshot.expiries[0].label, "2026-04-24")
 
     def test_snapshot_uses_updated_option_roots_metadata(self) -> None:
         aggregator = OptionPowerAggregator(option_root="AUTO")
@@ -143,6 +175,7 @@ class OptionPowerAggregatorTest(unittest.TestCase):
             generated_at=datetime(2025, 4, 11, 9, 0, 0),
             run_id="run-1",
             underlying_reference_price=None,
+            underlying_reference_source=None,
             status="running",
         )
 
@@ -192,6 +225,7 @@ class OptionPowerAggregatorTest(unittest.TestCase):
             generated_at=base_ts + timedelta(seconds=30),
             run_id="run-1",
             underlying_reference_price=18000.0,
+            underlying_reference_source="twii",
             status="running",
         )
 

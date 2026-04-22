@@ -12,7 +12,7 @@ from typing import Any
 from qt_platform.domain import Bar, CanonicalTick, LiveRunMetadata
 from qt_platform.features import compute_minute_force_feature_series
 from qt_platform.live.recorder import aggregate_ticks_to_bars
-from qt_platform.live.shioaji_provider import ShioajiLiveProvider
+from qt_platform.live.shioaji_provider import ShioajiLiveProvider, _contract_month
 from qt_platform.option_power.aggregator import OptionPowerAggregator
 from qt_platform.session import (
     classify_session,
@@ -20,6 +20,7 @@ from qt_platform.session import (
     is_in_session_scope,
     next_activation_start,
     next_session_start,
+    trading_day_for,
 )
 from qt_platform.storage.base import BarRepository
 
@@ -28,6 +29,9 @@ LIVE_SUBSCRIBE_LEAD_SECONDS = 20.0
 OPTION_ROOT_RETRY_SECONDS = 5.0
 MAX_LIVE_SNAPSHOTS = 5000
 MAX_LIVE_BARS = 720
+DAY_INDICATOR_SYMBOL = "TWII"
+DAY_INDICATOR_INSTRUMENT_KEY = "index:TWII"
+INDEX_REFERENCE_STALE_SECONDS = 30.0
 
 
 @dataclass
@@ -79,7 +83,14 @@ class OptionPowerRuntimeService:
         self.log_callback = log_callback
 
         self.run_id: str | None = None
-        self.reference_price: float | None = None
+        self.subscription_reference_price: float | None = None
+        self.underlying_reference_price: float | None = None
+        self.underlying_reference_source: str | None = None
+        self._underlying_future_price: float | None = None
+        self._underlying_future_tick_ts: datetime | None = None
+        self._day_indicator_contract = None
+        self._day_indicator_price: float | None = None
+        self._day_indicator_tick_ts: datetime | None = None
         self.metadata: LiveRunMetadata | None = None
         self.stop_reason: str | None = None
         self.status = "initialized"
@@ -95,6 +106,7 @@ class OptionPowerRuntimeService:
         self._bars_history: deque[dict[str, Any]] = deque(maxlen=MAX_LIVE_BARS)
         self._bar_index: dict[datetime, int] = {}
         self._open_bar_state: _MinuteBarState | None = None
+        self._day_indicator_bar_state: _MinuteBarState | None = None
         self._next_snapshot_at: datetime | None = None
 
     def start(self, run_id: str) -> None:
@@ -119,7 +131,8 @@ class OptionPowerRuntimeService:
         snapshot = self.aggregator.snapshot(
             generated_at=datetime.now(),
             run_id=self.run_id,
-            underlying_reference_price=self.reference_price,
+            underlying_reference_price=self.underlying_reference_price,
+            underlying_reference_source=self.underlying_reference_source,
             status=self.status,
             stop_reason=self.stop_reason,
             warning=self.warning or self.error_message,
@@ -294,11 +307,24 @@ class OptionPowerRuntimeService:
                 if target_code:
                     self.provider._contracts[target_code] = contract
             self.aggregator.set_option_root(",".join(selected_roots))
-            self.reference_price = reference_price
+            self.subscription_reference_price = reference_price
+            self._underlying_future_price = reference_price
+            self._underlying_future_tick_ts = datetime.now()
+            self._day_indicator_contract = None
+            self._day_indicator_price = None
+            self._day_indicator_tick_ts = None
+            self._refresh_indicator_reference(datetime.now())
             self._reset_live_cache()
             symbols = [str(getattr(contract, "symbol", "")) for contract in contracts]
             codes = [str(getattr(contract, "code", "")) for contract in contracts]
             underlying_contract = self.provider._resolve_contract(self.underlying_future_symbol)
+            indicator_contract = None
+            try:
+                indicator_contract = self.provider.resolve_taiex_contract()
+                self._day_indicator_contract = indicator_contract
+                self._refresh_day_indicator_snapshot(datetime.now())
+            except Exception as exc:
+                self.warning = str(exc)
             all_contracts = [underlying_contract, *contracts]
             underlying_code = str(getattr(underlying_contract, "code", "") or self.underlying_future_symbol)
             underlying_target_code = str(getattr(underlying_contract, "target_code", "") or "")
@@ -322,14 +348,20 @@ class OptionPowerRuntimeService:
                 started_at=datetime.now(),
                 session_scope=self.session_scope,
                 topic_count=len(all_contracts),
-                symbols_json=json.dumps([self.underlying_future_symbol, *symbols], ensure_ascii=False),
-                codes_json=json.dumps([underlying_code, *codes], ensure_ascii=False),
+                symbols_json=json.dumps(
+                    [self.underlying_future_symbol, *symbols],
+                    ensure_ascii=False,
+                ),
+                codes_json=json.dumps(
+                    [underlying_code, *codes],
+                    ensure_ascii=False,
+                ),
                 option_root=",".join(selected_roots),
                 underlying_future_symbol=self.underlying_future_symbol,
                 expiry_count=self.expiry_count,
                 atm_window=self.atm_window,
                 call_put=self.call_put,
-                reference_price=reference_price,
+                reference_price=self.subscription_reference_price,
                 status="started",
             )
             self.store.create_live_run(metadata)
@@ -342,7 +374,8 @@ class OptionPowerRuntimeService:
                     "option_roots": selected_roots,
                     "expiry_count": self.expiry_count,
                     "atm_window": self.atm_window,
-                    "reference_price": reference_price,
+                    "reference_price": self.subscription_reference_price,
+                    "indicator_symbol": DAY_INDICATOR_SYMBOL if indicator_contract is not None else None,
                 }
             )
             self.status = "running"
@@ -351,7 +384,7 @@ class OptionPowerRuntimeService:
                 self.aggregator.seed_contract(
                     instrument_key=code,
                     symbol=self.option_root,
-                    contract_month=str(getattr(contract, "delivery_date", None) or getattr(contract, "delivery_month", "")),
+                    contract_month=_contract_month(contract),
                     strike_price=float(getattr(contract, "strike_price", 0.0)),
                     call_put=_normalize_call_put(getattr(contract, "option_right", None)),
                     session=classify_session(datetime.now()),
@@ -361,7 +394,10 @@ class OptionPowerRuntimeService:
             self._next_snapshot_at = datetime.now()
             for tick in self.provider.stream_ticks_from_contracts(contracts=all_contracts, max_events=None):
                 if (tick.instrument_key or tick.symbol) in underlying_identifiers:
-                    self.reference_price = tick.price
+                    self._underlying_future_price = tick.price
+                    self._underlying_future_tick_ts = tick.ts
+                    self.subscription_reference_price = tick.price
+                    self._refresh_indicator_reference(tick.ts)
                     self._ingest_underlying_tick(tick)
                 else:
                     self.aggregator.ingest_tick(tick)
@@ -397,6 +433,7 @@ class OptionPowerRuntimeService:
             self._bars_history.clear()
             self._bar_index.clear()
             self._open_bar_state = None
+            self._day_indicator_bar_state = None
             self._next_snapshot_at = None
 
     def _ingest_underlying_tick(self, tick: CanonicalTick) -> None:
@@ -444,14 +481,44 @@ class OptionPowerRuntimeService:
         self._bars_history.append(bar)
         self._bar_index = {datetime.fromisoformat(item["time"]): idx for idx, item in enumerate(self._bars_history)}
 
+    def _upsert_day_indicator_bar(self, state: _MinuteBarState) -> None:
+        self.store.upsert_bars(
+            "1m",
+            [
+                Bar(
+                    ts=state.minute_ts,
+                    trading_day=state.trading_day,
+                    symbol=state.symbol,
+                    instrument_key=state.instrument_key,
+                    contract_month=state.contract_month,
+                    strike_price=state.strike_price,
+                    call_put=state.call_put,
+                    session=state.session,
+                    open=state.open,
+                    high=state.high,
+                    low=state.low,
+                    close=state.close,
+                    volume=state.volume,
+                    open_interest=None,
+                    source=state.source,
+                    up_ticks=state.up_ticks,
+                    down_ticks=state.down_ticks,
+                    build_source="live_snapshot_agg",
+                )
+            ],
+        )
+
     def _maybe_record_snapshots(self, tick_ts: datetime) -> None:
         if self._next_snapshot_at is None:
             self._next_snapshot_at = tick_ts.replace(microsecond=0)
         while self._next_snapshot_at is not None and tick_ts >= self._next_snapshot_at:
+            self._refresh_day_indicator_snapshot(self._next_snapshot_at)
+            self._refresh_indicator_reference(self._next_snapshot_at)
             snapshot = self.aggregator.snapshot(
                 generated_at=self._next_snapshot_at,
                 run_id=self.run_id,
-                underlying_reference_price=self.reference_price,
+                underlying_reference_price=self.underlying_reference_price,
+                underlying_reference_source=self.underlying_reference_source,
                 status=self.status,
                 stop_reason=self.stop_reason,
                 warning=self.warning or self.error_message,
@@ -466,6 +533,62 @@ class OptionPowerRuntimeService:
                     }
                 )
             self._next_snapshot_at += timedelta(seconds=self.snapshot_interval_seconds)
+
+    def _refresh_day_indicator_snapshot(self, now: datetime) -> None:
+        if self._day_indicator_contract is None or classify_session(now) != "day":
+            return
+        try:
+            self._day_indicator_price = self.provider.snapshot_price(self._day_indicator_contract)
+            self._day_indicator_tick_ts = now
+            self._ingest_day_indicator_price(now, self._day_indicator_price)
+        except Exception:
+            pass
+
+    def _ingest_day_indicator_price(self, now: datetime, price: float) -> None:
+        minute_ts = now.replace(second=0, microsecond=0)
+        if self._day_indicator_bar_state is None or self._day_indicator_bar_state.minute_ts != minute_ts:
+            if self._day_indicator_bar_state is not None:
+                self._upsert_day_indicator_bar(self._day_indicator_bar_state)
+            self._day_indicator_bar_state = _MinuteBarState(
+                minute_ts=minute_ts,
+                trading_day=trading_day_for(now),
+                symbol=DAY_INDICATOR_SYMBOL,
+                instrument_key=DAY_INDICATOR_INSTRUMENT_KEY,
+                contract_month="",
+                strike_price=None,
+                call_put=None,
+                session="day",
+                source="shioaji_snapshot",
+                open=price,
+                high=price,
+                low=price,
+                close=price,
+                volume=0.0,
+                up_ticks=0.0,
+                down_ticks=0.0,
+            )
+            self._upsert_day_indicator_bar(self._day_indicator_bar_state)
+            return
+
+        state = self._day_indicator_bar_state
+        state.high = max(state.high, price)
+        state.low = min(state.low, price)
+        state.close = price
+        self._upsert_day_indicator_bar(state)
+
+    def _refresh_indicator_reference(self, now: datetime) -> None:
+        current_session = classify_session(now)
+        if current_session == "day":
+            if (
+                self._day_indicator_price is not None
+                and self._day_indicator_tick_ts is not None
+                and (now - self._day_indicator_tick_ts).total_seconds() <= INDEX_REFERENCE_STALE_SECONDS
+            ):
+                self.underlying_reference_price = self._day_indicator_price
+                self.underlying_reference_source = DAY_INDICATOR_SYMBOL.lower()
+                return
+        self.underlying_reference_price = self._underlying_future_price
+        self.underlying_reference_source = self.underlying_future_symbol.lower() if self._underlying_future_price is not None else None
 
 
 def _normalize_call_put(option_right) -> str:

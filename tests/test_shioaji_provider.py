@@ -56,6 +56,11 @@ class DummyAPI:
         )
 
 
+class FailingUsageAPI(DummyAPI):
+    def usage(self):
+        raise TimeoutError("Topic: api/v1/auth/usage timed out")
+
+
 class DummyShioajiModule:
     class constant:
         class QuoteType:
@@ -114,6 +119,8 @@ class ShioajiProviderHelperTest(unittest.TestCase):
         self.assertEqual(_contract_month(contract), "202504")
         contract = DummyContract(delivery_date="202504W2")
         self.assertEqual(_contract_month(contract), "202504W2")
+        contract = DummyContract(delivery_month="202504", delivery_date="2026/04/24")
+        self.assertEqual(_contract_month(contract), "20260424")
 
     def test_derivative_metadata_returns_none_for_future_contract(self) -> None:
         contract = DummyContract(code="MXFE6", symbol="MXFE6", strike_price=0.0, option_right="")
@@ -269,6 +276,24 @@ class ShioajiProviderHelperTest(unittest.TestCase):
 
         self.assertEqual(ticks, [])
         self.assertEqual(provider.stop_reason(), "session_closed")
+
+    def test_stream_ticks_returns_connection_lost_when_usage_check_times_out(self) -> None:
+        provider = ShioajiLiveProvider(
+            settings=ShioajiSettings(usage_check_interval_seconds=0.0),
+            idle_timeout_seconds=0.01,
+        )
+        provider.connected = True
+        provider.api = FailingUsageAPI()
+        provider._sj = DummyShioajiModule()
+        provider._queue = SequencedQueue([queue.Empty()])
+        contract = DummyContract(code="MXFR1")
+
+        with patch("qt_platform.live.shioaji_provider.classify_session", return_value="day"):
+            ticks = list(provider.stream_ticks_from_contracts([contract], max_events=1))
+
+        self.assertEqual(ticks, [])
+        self.assertEqual(provider.stop_reason(), "connection_lost")
+        self.assertFalse(provider.connected)
 
 
 if __name__ == "__main__":

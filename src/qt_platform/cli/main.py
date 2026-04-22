@@ -819,7 +819,7 @@ def _serve_option_power(args: argparse.Namespace, settings: Settings) -> None:
     runtime.start(run_id=run_id)
     if not runtime.wait_until_ready(timeout=args.ready_timeout_seconds):
         raise RuntimeError("Option power runtime did not become ready within timeout.")
-    if runtime.status not in {"running", "waiting_for_session"}:
+    if runtime.status in {"error", "completed", "paused_for_usage_limit"}:
         raise RuntimeError(runtime.error_message or f"Option power runtime failed with status={runtime.status}.")
 
     app = build_option_power_app(runtime)

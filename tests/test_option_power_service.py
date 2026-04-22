@@ -29,10 +29,14 @@ class DummyProvider:
 
 
 class DummyStore:
+    def __init__(self) -> None:
+        self.upserted_bars = []
+
     def append_ticks(self, ticks):
         return 0
 
     def upsert_bars(self, timeframe, bars):
+        self.upserted_bars.extend(list(bars))
         return 0
 
     def upsert_minute_force_features(self, features):
@@ -43,11 +47,20 @@ class DummyStore:
 
 
 class StreamingProvider(DummyProvider):
-    def __init__(self, ticks, contracts, underlying_contract) -> None:
+    def __init__(self, ticks, contracts, underlying_contract, indicator_contract=None, indicator_price=19555.0) -> None:
         super().__init__()
         self._ticks = ticks
         self._contracts = {}
         self._resolved_contract = underlying_contract
+        self._indicator_contract = indicator_contract or type(
+            "IndicatorContract",
+            (),
+            {
+                "code": "001",
+                "symbol": "TSE001",
+            },
+        )()
+        self._indicator_price = indicator_price
         self._option_contracts = contracts
 
     def resolve_option_universe(self, **kwargs):
@@ -55,6 +68,12 @@ class StreamingProvider(DummyProvider):
 
     def _resolve_contract(self, symbol):
         return self._resolved_contract
+
+    def resolve_taiex_contract(self):
+        return self._indicator_contract
+
+    def snapshot_price(self, contract, timeout=5000):
+        return self._indicator_price
 
     def stream_ticks_from_contracts(self, contracts, max_events=None):
         for tick in self._ticks:
@@ -150,6 +169,175 @@ class OptionPowerRuntimeServiceTest(unittest.TestCase):
         bars = service.live_bars()
         self.assertEqual(len(bars), 1)
         self.assertEqual(bars[0]["close"], 20001.0)
+
+    def test_run_cycle_uses_day_index_for_indicator_reference(self) -> None:
+        option_contract = type(
+            "OptionContract",
+            (),
+            {
+                "code": "TX420260420000C",
+                "symbol": "TX4C",
+                "delivery_date": "2026/04/22",
+                "strike_price": 20000.0,
+                "option_right": "call",
+            },
+        )()
+        underlying_contract = type(
+            "UnderlyingContract",
+            (),
+            {
+                "code": "MXF202604",
+                "target_code": "MXFR1",
+            },
+        )()
+        indicator_contract = type(
+            "IndicatorContract",
+            (),
+            {
+                "code": "001",
+                "target_code": "",
+            },
+        )()
+        ticks = [
+            CanonicalTick(
+                ts=datetime(2026, 4, 20, 9, 0, 1),
+                trading_day=date(2026, 4, 20),
+                symbol="MTX",
+                instrument_key="MXF202604",
+                contract_month="202604",
+                strike_price=None,
+                call_put=None,
+                session="day",
+                price=20001.0,
+                size=1.0,
+                tick_direction="up",
+                source="shioaji_live",
+            )
+        ]
+        service = OptionPowerRuntimeService(
+            provider=StreamingProvider(ticks, [option_contract], underlying_contract, indicator_contract, indicator_price=19555.0),
+            store=DummyStore(),
+            option_root="AUTO",
+            expiry_count=2,
+            atm_window=20,
+            underlying_future_symbol="MXFR1",
+            call_put="both",
+            session_scope="day_and_night",
+            batch_size=500,
+            snapshot_interval_seconds=5.0,
+            log_callback=lambda payload: None,
+        )
+        service.run_id = "test-run"
+
+        service._run_cycle()
+        service._refresh_day_indicator_snapshot(datetime(2026, 4, 20, 9, 0, 2))
+        service._refresh_indicator_reference(datetime(2026, 4, 20, 9, 0, 2))
+
+        snapshot = service.current_snapshot()
+        self.assertEqual(snapshot["underlying_reference_price"], 19555.0)
+        self.assertEqual(snapshot["underlying_reference_source"], "twii")
+
+    def test_run_cycle_keeps_future_reference_during_night_session(self) -> None:
+        option_contract = type(
+            "OptionContract",
+            (),
+            {
+                "code": "TX420260420000C",
+                "symbol": "TX4C",
+                "delivery_date": "2026/04/22",
+                "strike_price": 20000.0,
+                "option_right": "call",
+            },
+        )()
+        underlying_contract = type(
+            "UnderlyingContract",
+            (),
+            {
+                "code": "MXF202604",
+                "target_code": "MXFR1",
+            },
+        )()
+        ticks = [
+            CanonicalTick(
+                ts=datetime(2026, 4, 20, 21, 0, 1),
+                trading_day=date(2026, 4, 20),
+                symbol="MTX",
+                instrument_key="MXF202604",
+                contract_month="202604",
+                strike_price=None,
+                call_put=None,
+                session="night",
+                price=20088.0,
+                size=1.0,
+                tick_direction="up",
+                source="shioaji_live",
+            )
+        ]
+        service = OptionPowerRuntimeService(
+            provider=StreamingProvider(ticks, [option_contract], underlying_contract, indicator_price=19555.0),
+            store=DummyStore(),
+            option_root="AUTO",
+            expiry_count=2,
+            atm_window=20,
+            underlying_future_symbol="MXFR1",
+            call_put="both",
+            session_scope="day_and_night",
+            batch_size=500,
+            snapshot_interval_seconds=5.0,
+            log_callback=lambda payload: None,
+        )
+        service.run_id = "test-run"
+
+        service._run_cycle()
+
+        snapshot = service.current_snapshot()
+        self.assertEqual(snapshot["underlying_reference_price"], 20088.0)
+        self.assertEqual(snapshot["underlying_reference_source"], "mxfr1")
+
+    def test_refresh_day_indicator_snapshot_persists_bar_to_store(self) -> None:
+        option_contract = type(
+            "OptionContract",
+            (),
+            {
+                "code": "TX420260420000C",
+                "symbol": "TX4C",
+                "delivery_date": "2026/04/22",
+                "strike_price": 20000.0,
+                "option_right": "call",
+            },
+        )()
+        underlying_contract = type(
+            "UnderlyingContract",
+            (),
+            {
+                "code": "MXF202604",
+                "target_code": "MXFR1",
+            },
+        )()
+        store = DummyStore()
+        provider = StreamingProvider([], [option_contract], underlying_contract, indicator_price=19555.0)
+        service = OptionPowerRuntimeService(
+            provider=provider,
+            store=store,
+            option_root="AUTO",
+            expiry_count=2,
+            atm_window=20,
+            underlying_future_symbol="MXFR1",
+            call_put="both",
+            session_scope="day_and_night",
+            batch_size=500,
+            snapshot_interval_seconds=5.0,
+            log_callback=lambda payload: None,
+        )
+        service.provider.connect()
+        service._day_indicator_contract = service.provider.resolve_taiex_contract()
+        service._refresh_day_indicator_snapshot(datetime(2026, 4, 20, 9, 0, 1))
+        service.provider.close()
+
+        twii_bars = [bar for bar in store.upserted_bars if bar.symbol == "TWII"]
+        self.assertTrue(twii_bars)
+        self.assertEqual(twii_bars[-1].instrument_key, "index:TWII")
+        self.assertEqual(twii_bars[-1].build_source, "live_snapshot_agg")
 
 
 if __name__ == "__main__":

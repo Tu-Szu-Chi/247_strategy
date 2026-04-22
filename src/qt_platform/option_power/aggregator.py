@@ -15,6 +15,7 @@ from qt_platform.option_power.domain import (
 
 
 MONTH_CONTRACT_PATTERN = re.compile(r"^(?P<year>\d{4})(?P<month>\d{2})$")
+DATE_CONTRACT_PATTERN = re.compile(r"^(?P<year>\d{4})(?P<month>\d{2})(?P<day>\d{2})$")
 WEEKLY_CONTRACT_PATTERN = re.compile(r"^(?P<year>\d{4})(?P<month>\d{2})W(?P<week>\d+)$")
 RAW_PRESSURE_BUY_WEIGHT = 1.0
 RAW_PRESSURE_SELL_WEIGHT = 1.1
@@ -143,6 +144,7 @@ class OptionPowerAggregator:
         generated_at: datetime,
         run_id: str | None,
         underlying_reference_price: float | None,
+        underlying_reference_source: str | None,
         status: str,
         stop_reason: str | None = None,
         warning: str | None = None,
@@ -199,6 +201,7 @@ class OptionPowerAggregator:
                 session=self._session,
                 option_root=self.option_root,
                 underlying_reference_price=underlying_reference_price,
+                underlying_reference_source=underlying_reference_source,
                 raw_pressure=pressure_metrics["raw_pressure"],
                 pressure_index=pressure_metrics["pressure_index"],
                 raw_pressure_1m=pressure_metrics["raw_pressure_1m"],
@@ -233,6 +236,13 @@ def _format_expiry_label(contract_month: str) -> str:
         month = weekly_match.group("month")
         week = weekly_match.group("week")
         return f"{year}-{month} W{week}"
+
+    date_match = DATE_CONTRACT_PATTERN.match(contract_month)
+    if date_match:
+        year = date_match.group("year")
+        month = date_match.group("month")
+        day = date_match.group("day")
+        return f"{year}-{month}-{day}"
 
     month_match = MONTH_CONTRACT_PATTERN.match(contract_month)
     if month_match:

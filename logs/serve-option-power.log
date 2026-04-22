@@ -18,3 +18,7 @@
 {"status": "connected", "provider": "shioaji", "run_id": "live-20260415T212235-ee5fcfa2"}
 {"status": "subscribed", "run_id": "live-20260415T212235-ee5fcfa2", "topic_count": 164, "option_roots": ["TXX", "TX4"], "expiry_count": 2, "atm_window": 20, "reference_price": 37136.0}
 {"status": "web_ready", "run_id": "live-20260415T212235-ee5fcfa2", "host": "127.0.0.1", "port": 8000, "url": "http://127.0.0.1:8000/"}
+{"status": "connected", "provider": "shioaji", "run_id": "live-20260420T210317-35a1d0c7"}
+{"status": "subscribed", "run_id": "live-20260420T210317-35a1d0c7", "topic_count": 165, "option_roots": ["TX4", "TXY"], "expiry_count": 2, "atm_window": 20, "reference_price": 37435.0}
+{"status": "web_ready", "run_id": "live-20260420T210317-35a1d0c7", "host": "127.0.0.1", "port": 8000, "url": "http://127.0.0.1:8000/"}
+{"status": "waiting_for_session", "run_id": "live-20260420T210317-35a1d0c7", "now": "2026-04-21T05:00:30.621574", "wake_at": "2026-04-21T08:44:40", "session_wake_at": "2026-04-21T08:45:00", "subscribe_lead_seconds": 20.0, "session_scope": "day_and_night"}

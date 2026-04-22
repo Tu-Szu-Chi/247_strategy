@@ -166,7 +166,9 @@ function render() {
   sessionLabel.textContent = latestSnapshot.session || "-";
   rootsLabel.textContent = (latestSnapshot.option_root || "-").replaceAll(",", " + ");
   snapshotTime.textContent = formatTime(latestSnapshot.generated_at);
-  referencePrice.textContent = latestSnapshot.underlying_reference_price ?? "-";
+  const reference = latestSnapshot.underlying_reference_price;
+  const referenceSource = latestSnapshot.underlying_reference_source;
+  referencePrice.textContent = reference == null ? "-" : `${reference}${referenceSource ? ` (${referenceSource})` : ""}`;
   renderPressureValue(rawPressure, latestSnapshot.raw_pressure);
   renderPressureValue(pressureIndex, latestSnapshot.pressure_index);
   renderPressureValue(rawPressure1m, latestSnapshot.raw_pressure_1m);
