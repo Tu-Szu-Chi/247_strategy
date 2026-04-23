@@ -3,6 +3,11 @@ Kronos/
 backtrader/
 .idea/
 .venv/
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
 __pycache__/
 .pytest_cache/
 .mypy_cache/
@@ -18,5 +23,6 @@ logs/
 reports/
 .env
 Sinopac.pfx
+config/config.yaml
 config/config.yaml
 tmp/
