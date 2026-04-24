@@ -50,6 +50,9 @@ class OptionPowerSnapshot:
     raw_pressure_1m: int
     pressure_index_1m: int
     pressure_index_5m: int
+    pressure_abs: int
+    pressure_abs_1m: int
+    pressure_abs_5m: int
     expiries: list[OptionExpirySnapshot]
     contract_count: int
     status: str

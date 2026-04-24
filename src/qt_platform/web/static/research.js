@@ -6,15 +6,27 @@ const cursorTime = document.getElementById("cursor-time");
 const replayStartInput = document.getElementById("replay-start");
 const replayEndInput = document.getElementById("replay-end");
 const replayLoadButton = document.getElementById("replay-load");
-const seriesSelect = document.getElementById("series-select");
+const primarySeriesSelect = document.getElementById("primary-series-select");
+const secondarySeriesSelect = document.getElementById("secondary-series-select");
 const expirySelect = document.getElementById("expiry-select");
 const chart = document.getElementById("chart");
 const rawPressure = document.getElementById("raw-pressure");
 const pressureIndex = document.getElementById("pressure-index");
 const rawPressure1m = document.getElementById("raw-pressure-1m");
 const pressureIndex1m = document.getElementById("pressure-index-1m");
+const pressureIndex5m = document.getElementById("pressure-index-5m");
+const pressureAbs = document.getElementById("pressure-abs");
+const pressureAbs1m = document.getElementById("pressure-abs-1m");
+const pressureAbs5m = document.getElementById("pressure-abs-5m");
+const callCumulativePower = document.getElementById("call-cumulative-power");
+const putCumulativePower = document.getElementById("put-cumulative-power");
+const callPower1m = document.getElementById("call-power-1m");
+const putPower1m = document.getElementById("put-power-1m");
 const priceChartContainer = document.getElementById("price-chart");
-const indicatorChartContainer = document.getElementById("indicator-chart");
+const primaryIndicatorChartContainer = document.getElementById("primary-indicator-chart");
+const secondaryIndicatorChartContainer = document.getElementById("secondary-indicator-chart");
+const primaryIndicatorTitle = document.getElementById("primary-indicator-title");
+const secondaryIndicatorTitle = document.getElementById("secondary-indicator-title");
 const displayDateTimeFormatter = new Intl.DateTimeFormat("zh-TW", {
   timeZone: "Asia/Taipei",
   year: "numeric",
@@ -40,9 +52,14 @@ let liveMeta = null;
 let currentSnapshot = null;
 let selectedExpiry = "";
 let priceChart = null;
-let indicatorChart = null;
+let primaryIndicatorChart = null;
+let secondaryIndicatorChart = null;
 let candleSeries = null;
-let lineSeries = null;
+let ma10Series = null;
+let ma30Series = null;
+let ma60Series = null;
+let primaryLineSeries = null;
+let secondaryLineSeries = null;
 let livePollingHandle = null;
 let chartsEnabled = true;
 let liveBundlePollingInFlight = false;
@@ -64,7 +81,8 @@ function initCharts() {
   if (typeof LightweightCharts === "undefined") {
     chartsEnabled = false;
     priceChartContainer.innerHTML = `<div class="empty">Chart library not loaded. Live data will still refresh.</div>`;
-    indicatorChartContainer.innerHTML = `<div class="empty">Chart library not loaded. Live data will still refresh.</div>`;
+    primaryIndicatorChartContainer.innerHTML = `<div class="empty">Chart library not loaded. Live data will still refresh.</div>`;
+    secondaryIndicatorChartContainer.innerHTML = `<div class="empty">Chart library not loaded. Live data will still refresh.</div>`;
     return;
   }
   priceChart = LightweightCharts.createChart(priceChartContainer, chartOptions(440));
@@ -75,28 +93,57 @@ function initCharts() {
     wickUpColor: "#ff6a5a",
     wickDownColor: "#41b883",
   });
+  ma10Series = priceChart.addLineSeries({
+    color: "#ffd166",
+    lineWidth: 2,
+    crosshairMarkerVisible: false,
+    priceLineVisible: false,
+    lastValueVisible: false,
+  });
+  ma30Series = priceChart.addLineSeries({
+    color: "#7dd3fc",
+    lineWidth: 2,
+    crosshairMarkerVisible: false,
+    priceLineVisible: false,
+    lastValueVisible: false,
+  });
+  ma60Series = priceChart.addLineSeries({
+    color: "#c084fc",
+    lineWidth: 2,
+    crosshairMarkerVisible: false,
+    priceLineVisible: false,
+    lastValueVisible: false,
+  });
 
-  indicatorChart = LightweightCharts.createChart(indicatorChartContainer, chartOptions(220));
-  lineSeries = indicatorChart.addLineSeries({
+  primaryIndicatorChart = LightweightCharts.createChart(primaryIndicatorChartContainer, chartOptions(180));
+  primaryLineSeries = primaryIndicatorChart.addLineSeries({
     color: "#ffd166",
     lineWidth: 2,
     crosshairMarkerVisible: true,
     priceLineVisible: false,
   });
-
-  priceChart.timeScale().subscribeVisibleTimeRangeChange((range) => {
-    if (range && !syncingVisibleRange) {
-      syncingVisibleRange = true;
-      indicatorChart.timeScale().setVisibleRange(range);
-      syncingVisibleRange = false;
-    }
+  secondaryIndicatorChart = LightweightCharts.createChart(secondaryIndicatorChartContainer, chartOptions(180));
+  secondaryLineSeries = secondaryIndicatorChart.addLineSeries({
+    color: "#7dd3fc",
+    lineWidth: 2,
+    crosshairMarkerVisible: true,
+    priceLineVisible: false,
   });
-  indicatorChart.timeScale().subscribeVisibleTimeRangeChange((range) => {
-    if (range && !syncingVisibleRange) {
+
+  const allCharts = [priceChart, primaryIndicatorChart, secondaryIndicatorChart];
+  allCharts.forEach((sourceChart) => {
+    sourceChart.timeScale().subscribeVisibleTimeRangeChange((range) => {
+      if (!range || syncingVisibleRange) {
+        return;
+      }
       syncingVisibleRange = true;
-      priceChart.timeScale().setVisibleRange(range);
+      allCharts.forEach((targetChart) => {
+        if (targetChart !== sourceChart) {
+          targetChart.timeScale().setVisibleRange(range);
+        }
+      });
       syncingVisibleRange = false;
-    }
+    });
   });
 
   const syncCrosshair = async (param) => {
@@ -107,8 +154,7 @@ function initCharts() {
     cursorTime.textContent = formatDateTime(isoTime);
     scheduleCrosshairSnapshotLoad(isoTime);
   };
-  priceChart.subscribeCrosshairMove(syncCrosshair);
-  indicatorChart.subscribeCrosshairMove(syncCrosshair);
+  allCharts.forEach((targetChart) => targetChart.subscribeCrosshairMove(syncCrosshair));
 }
 
 function chartOptions(height) {
@@ -211,9 +257,10 @@ async function loadReplayBundle() {
   rootsLabel.textContent = replaySession.selected_option_roots.join(" + ");
   rangeLabel.textContent = `${formatDateTime(replaySession.start)} -> ${formatDateTime(replaySession.end)}`;
 
+  const requestedSeries = selectedSeriesNames();
   const [barsResponse, seriesResponse, snapshotResponse] = await Promise.all([
     fetch(`/api/option-power/replay/sessions/${replaySession.session_id}/bars`, { cache: "no-store" }),
-    fetch(`/api/option-power/replay/sessions/${replaySession.session_id}/series?names=${encodeURIComponent(seriesSelect.value)}`, { cache: "no-store" }),
+    fetch(`/api/option-power/replay/sessions/${replaySession.session_id}/series?names=${encodeURIComponent(requestedSeries.join(","))}`, { cache: "no-store" }),
     fetch(`/api/option-power/replay/sessions/${replaySession.session_id}/snapshot-at?ts=${encodeURIComponent(replaySession.start)}`, { cache: "no-store" }),
   ]);
 
@@ -221,7 +268,11 @@ async function loadReplayBundle() {
   const indicatorSeries = await seriesResponse.json();
   const snapshotPayload = await snapshotResponse.json();
 
-  renderTimeline(bars, indicatorSeries[seriesSelect.value] || []);
+  renderTimeline(
+    bars,
+    indicatorSeries[primarySeriesSelect.value] || [],
+    indicatorSeries[secondarySeriesSelect.value] || [],
+  );
   currentSnapshot = snapshotPayload.snapshot;
   lastRequestedSnapshotTs = replaySession.start;
   lastRenderedSnapshotTs = replaySession.start;
@@ -251,10 +302,11 @@ async function loadReplaySnapshotAt(ts) {
 }
 
 async function loadLiveBundle(strict = false) {
+  const requestedSeries = selectedSeriesNames();
   const [metaResponse, barsResponse, seriesResponse, snapshotResponse] = await Promise.all([
     fetch("/api/option-power/live/meta", { cache: "no-store" }),
     fetch("/api/option-power/live/bars", { cache: "no-store" }),
-    fetch(`/api/option-power/live/series?names=${encodeURIComponent(seriesSelect.value)}`, { cache: "no-store" }),
+    fetch(`/api/option-power/live/series?names=${encodeURIComponent(requestedSeries.join(","))}`, { cache: "no-store" }),
     fetch("/api/option-power/live/snapshot/latest", { cache: "no-store" }),
   ]);
   if (!metaResponse.ok) {
@@ -288,7 +340,11 @@ async function loadLiveBundle(strict = false) {
   try {
     const bars = await barsResponse.json();
     const indicatorSeries = await seriesResponse.json();
-    renderTimeline(bars, indicatorSeries[seriesSelect.value] || []);
+    renderTimeline(
+      bars,
+      indicatorSeries[primarySeriesSelect.value] || [],
+      indicatorSeries[secondarySeriesSelect.value] || [],
+    );
   } catch (error) {
     modeLabel.textContent = "live-partial";
   }
@@ -387,21 +443,45 @@ function shouldApplySnapshotResponse(requestSequence, ts) {
   return requestSequence === activeSnapshotRequestSequence && ts === lastRequestedSnapshotTs;
 }
 
-function renderTimeline(bars, lineData) {
-  if (!chartsEnabled || !priceChart || !indicatorChart || !candleSeries || !lineSeries) {
+function renderTimeline(bars, primaryLineData, secondaryLineData) {
+  if (
+    !chartsEnabled ||
+    !priceChart ||
+    !primaryIndicatorChart ||
+    !secondaryIndicatorChart ||
+    !candleSeries ||
+    !ma10Series ||
+    !ma30Series ||
+    !ma60Series ||
+    !primaryLineSeries ||
+    !secondaryLineSeries
+  ) {
     return;
   }
   const shouldFollowPrice = currentMode === "live" && isNearRealtime(priceChart);
-  const shouldFollowIndicator = currentMode === "live" && isNearRealtime(indicatorChart);
+  const shouldFollowPrimary = currentMode === "live" && isNearRealtime(primaryIndicatorChart);
+  const shouldFollowSecondary = currentMode === "live" && isNearRealtime(secondaryIndicatorChart);
   const priceVisibleRange = priceChart.timeScale().getVisibleRange();
-  const indicatorVisibleRange = indicatorChart.timeScale().getVisibleRange();
+  const primaryVisibleRange = primaryIndicatorChart.timeScale().getVisibleRange();
+  const secondaryVisibleRange = secondaryIndicatorChart.timeScale().getVisibleRange();
   const normalizedBars = (bars || []).map(normalizeBar).filter(Boolean);
-  const normalizedLineData = (lineData || []).map(normalizeLinePoint).filter(Boolean);
+  const ma10Data = buildMovingAverageSeries(normalizedBars, 10);
+  const ma30Data = buildMovingAverageSeries(normalizedBars, 30);
+  const ma60Data = buildMovingAverageSeries(normalizedBars, 60);
+  const normalizedPrimaryLineData = (primaryLineData || []).map(normalizeLinePoint).filter(Boolean);
+  const normalizedSecondaryLineData = (secondaryLineData || []).map(normalizeLinePoint).filter(Boolean);
   candleSeries.setData(normalizedBars);
-  lineSeries.setData(normalizedLineData);
+  ma10Series.setData(ma10Data);
+  ma30Series.setData(ma30Data);
+  ma60Series.setData(ma60Data);
+  primaryLineSeries.setData(normalizedPrimaryLineData);
+  secondaryLineSeries.setData(normalizedSecondaryLineData);
+  primaryIndicatorTitle.textContent = prettySeriesName(primarySeriesSelect.value);
+  secondaryIndicatorTitle.textContent = prettySeriesName(secondarySeriesSelect.value);
   if (!timelineHasFitContent) {
     priceChart.timeScale().fitContent();
-    indicatorChart.timeScale().fitContent();
+    primaryIndicatorChart.timeScale().fitContent();
+    secondaryIndicatorChart.timeScale().fitContent();
     timelineHasFitContent = true;
     return;
   }
@@ -410,10 +490,15 @@ function renderTimeline(bars, lineData) {
   } else if (priceVisibleRange) {
     priceChart.timeScale().setVisibleRange(priceVisibleRange);
   }
-  if (shouldFollowIndicator) {
-    indicatorChart.timeScale().scrollToRealTime();
-  } else if (indicatorVisibleRange) {
-    indicatorChart.timeScale().setVisibleRange(indicatorVisibleRange);
+  if (shouldFollowPrimary) {
+    primaryIndicatorChart.timeScale().scrollToRealTime();
+  } else if (primaryVisibleRange) {
+    primaryIndicatorChart.timeScale().setVisibleRange(primaryVisibleRange);
+  }
+  if (shouldFollowSecondary) {
+    secondaryIndicatorChart.timeScale().scrollToRealTime();
+  } else if (secondaryVisibleRange) {
+    secondaryIndicatorChart.timeScale().setVisibleRange(secondaryVisibleRange);
   }
 }
 
@@ -436,17 +521,23 @@ function renderSnapshot() {
   renderPressureValue(pressureIndex, currentSnapshot.pressure_index);
   renderPressureValue(rawPressure1m, currentSnapshot.raw_pressure_1m);
   renderPressureValue(pressureIndex1m, currentSnapshot.pressure_index_1m);
+  renderPressureValue(pressureIndex5m, currentSnapshot.pressure_index_5m);
+  renderPressureValue(pressureAbs, currentSnapshot.pressure_abs, { showSign: false, directional: false });
+  renderPressureValue(pressureAbs1m, currentSnapshot.pressure_abs_1m, { showSign: false, directional: false });
+  renderPressureValue(pressureAbs5m, currentSnapshot.pressure_abs_5m, { showSign: false, directional: false });
 
   const expiries = currentSnapshot.expiries || [];
   syncExpiryOptions(expiries);
   const currentExpiry = expiries.find((item) => item.contract_month === selectedExpiry) || expiries[0];
   if (!currentExpiry) {
+    renderExpiryAggregateCards([]);
     renderEmptySnapshot();
     return;
   }
 
   selectedExpiry = currentExpiry.contract_month;
   const contracts = currentExpiry.contracts || [];
+  renderExpiryAggregateCards(contracts);
   const grouped = groupByStrike(contracts);
   const maxAbsPower = Math.max(1, ...contracts.map((item) => Math.abs(item.cumulative_power || 0)));
   renderSnapshotRows(grouped, maxAbsPower);
@@ -465,6 +556,25 @@ function normalizeBar(item) {
     return null;
   }
   return { time, open, high, low, close };
+}
+
+function buildMovingAverageSeries(bars, period) {
+  const points = [];
+  let rollingSum = 0;
+  for (let idx = 0; idx < bars.length; idx += 1) {
+    rollingSum += Number(bars[idx].close || 0);
+    if (idx >= period) {
+      rollingSum -= Number(bars[idx - period].close || 0);
+    }
+    if (idx < period - 1) {
+      continue;
+    }
+    points.push({
+      time: bars[idx].time,
+      value: Number((rollingSum / period).toFixed(2)),
+    });
+  }
+  return points;
 }
 
 function normalizeLinePoint(item) {
@@ -652,10 +762,19 @@ function syncExpiryOptions(expiries) {
   });
 }
 
-function renderPressureValue(element, value) {
+function renderPressureValue(element, value, options = {}) {
+  const { showSign = true, directional = true } = options;
   const num = Number(value || 0);
-  element.textContent = formatSigned(num);
-  element.className = pressureClass(num);
+  element.textContent = showSign ? formatSigned(num) : formatUnsigned(num);
+  element.className = directional ? pressureClass(num) : "pressure-neutral";
+}
+
+function renderExpiryAggregateCards(contracts) {
+  const totals = summarizeContractsBySide(contracts || []);
+  renderPressureValue(callCumulativePower, totals.call.cumulative_power);
+  renderPressureValue(putCumulativePower, totals.put.cumulative_power);
+  renderPressureValue(callPower1m, totals.call.power_1m_delta);
+  renderPressureValue(putPower1m, totals.put.power_1m_delta);
 }
 
 function pressureClass(value) {
@@ -667,6 +786,11 @@ function pressureClass(value) {
 function formatSigned(value) {
   const num = Number(value || 0);
   return `${num > 0 ? "+" : ""}${num.toFixed(0)}`;
+}
+
+function formatUnsigned(value) {
+  const num = Number(value || 0);
+  return num.toFixed(0);
 }
 
 function formatPrice(value) {
@@ -717,6 +841,30 @@ function localIsoString(date) {
   return `${year}-${month}-${day}T${hour}:${minute}:${second}`;
 }
 
+function selectedSeriesNames() {
+  return Array.from(new Set([primarySeriesSelect.value, secondarySeriesSelect.value]));
+}
+
+function prettySeriesName(name) {
+  return String(name || "")
+    .split("_")
+    .map((part) => part.toUpperCase())
+    .join(" ");
+}
+
+function summarizeContractsBySide(contracts) {
+  const totals = {
+    call: { cumulative_power: 0, power_1m_delta: 0 },
+    put: { cumulative_power: 0, power_1m_delta: 0 },
+  };
+  contracts.forEach((contract) => {
+    const side = contract.call_put === "put" ? "put" : "call";
+    totals[side].cumulative_power += Number(contract.cumulative_power || 0);
+    totals[side].power_1m_delta += Number(contract.power_1m_delta || 0);
+  });
+  return totals;
+}
+
 function hydrateReplayInputs() {
   replayStartInput.value = toDatetimeLocal(replaySession.start);
   replayEndInput.value = toDatetimeLocal(replaySession.end);
@@ -724,14 +872,17 @@ function hydrateReplayInputs() {
 
 expirySelect.addEventListener("change", () => renderSnapshot());
 
-seriesSelect.addEventListener("change", async () => {
+async function reloadSeriesSelection() {
   clearScheduledCrosshairSnapshotLoad();
   if (currentMode === "replay" && replaySession) {
     await loadReplayBundle();
   } else if (currentMode === "live") {
     await loadLiveBundle(true);
   }
-});
+}
+
+primarySeriesSelect.addEventListener("change", reloadSeriesSelection);
+secondarySeriesSelect.addEventListener("change", reloadSeriesSelection);
 
 replayLoadButton.addEventListener("click", async () => {
   try {

@@ -1,13 +1,64 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from qt_platform.domain import BacktestResult
+
+
+def build_backtest_report_payload(result: BacktestResult, name: str) -> dict[str, Any]:
+    return {
+        "name": name,
+        "generated_at": datetime.now().isoformat(),
+        "starting_cash": result.starting_cash,
+        "ending_cash": result.ending_cash,
+        "metrics": result.metrics,
+        "equity_curve": [
+            {"ts": ts.isoformat(), "equity": equity}
+            for ts, equity in result.equity_curve
+        ],
+        "fills": [
+            {
+                "ts": fill.ts.isoformat(),
+                "side": fill.side.value,
+                "price": fill.price,
+                "size": fill.size,
+                "reason": fill.reason,
+            }
+            for fill in result.fills
+        ],
+        "trades": [
+            {
+                "entry_ts": trade.entry_ts.isoformat(),
+                "exit_ts": trade.exit_ts.isoformat(),
+                "side": trade.side.value,
+                "entry_price": trade.entry_price,
+                "exit_price": trade.exit_price,
+                "size": trade.size,
+                "pnl": trade.pnl,
+            }
+            for trade in result.trades
+        ],
+    }
+
+
+def write_json_report(result: BacktestResult, output_dir: str, name: str) -> Path:
+    import json
+
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    target = Path(output_dir) / f"{name}.json"
+    target.write_text(
+        json.dumps(build_backtest_report_payload(result, name), indent=2),
+        encoding="utf-8",
+    )
+    return target
 
 
 def write_html_report(result: BacktestResult, output_dir: str, name: str) -> Path:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     target = Path(output_dir) / f"{name}.html"
+    json_target = Path(output_dir) / f"{name}.json"
     rows = "\n".join(
         f"<tr><td>{key}</td><td>{value}</td></tr>"
         for key, value in sorted(result.metrics.items())
@@ -27,6 +78,7 @@ def write_html_report(result: BacktestResult, output_dir: str, name: str) -> Pat
     <h1>{name}</h1>
     <p>Starting cash: {result.starting_cash:.2f}</p>
     <p>Ending cash: {result.ending_cash:.2f}</p>
+    <p>JSON report: <a href="{json_target.name}">{json_target.name}</a></p>
     <table>
       <thead><tr><th>Metric</th><th>Value</th></tr></thead>
       <tbody>{rows}</tbody>
@@ -34,6 +86,11 @@ def write_html_report(result: BacktestResult, output_dir: str, name: str) -> Pat
   </body>
 </html>
 """
-    target.write_text(html)
+    target.write_text(html, encoding="utf-8")
     return target
 
+
+def write_backtest_report_bundle(result: BacktestResult, output_dir: str, name: str) -> tuple[Path, Path]:
+    json_report = write_json_report(result, output_dir, name)
+    html_report = write_html_report(result, output_dir, name)
+    return html_report, json_report

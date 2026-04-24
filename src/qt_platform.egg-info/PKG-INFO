@@ -66,6 +66,26 @@ PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml ba
 - `history-sync` history 補齊方式
 - DB 備份與還原方式
 
+## Frontend Dev
+
+前端 UI 現在改成 `React + Vite + TypeScript`，本地開發建議直接前後端分開跑：
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Vite dev server 預設在 `http://127.0.0.1:5173`，會 proxy `/api/*` 和 `/ws/*` 到本地 `FastAPI`。
+若你要讓 `FastAPI` 直接提供 SPA 靜態檔，先執行：
+
+```bash
+cd frontend
+npm run build
+```
+
+build 完成後，`serve-option-power` / `serve-option-power-replay` 的 `/` 與 `/research` 會直接回傳 `frontend/dist`。
+
 ## CLI 指令說明
 
 ### `doctor`
@@ -152,6 +172,7 @@ PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml re
 - 備註:
   - 匯入器已支援 chunked upsert，適合大檔
   - `TWOTC` 會存成 `instrument_key=index:TWOTC`
+  - `MXF*` 會以 `symbol=MTX` 匯入，並依 `trading_day` 補上月契約 `contract_month`
 
 ```bash
 PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml import-csv-folder --database-url postgresql://postgres:postgres@localhost:5432/trading --folder tmp --pattern '*.csv' --chunk-size 10000

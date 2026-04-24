@@ -1,0 +1,47 @@
+.column {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.card {
+  padding: 20px;
+  border-radius: 24px;
+  border: 1px solid var(--color-border);
+  background: rgba(15, 23, 42, 0.74);
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-end;
+  margin-bottom: 12px;
+}
+
+.label {
+  margin: 0 0 4px;
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.title {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.chartBox {
+  width: 100%;
+}
+
+.legend {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+}
+
+.empty {
+  color: var(--color-text-muted);
+}

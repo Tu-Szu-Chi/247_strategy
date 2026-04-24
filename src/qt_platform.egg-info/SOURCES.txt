@@ -31,6 +31,7 @@ src/qt_platform/maintenance/service.py
 src/qt_platform/option_power/__init__.py
 src/qt_platform/option_power/aggregator.py
 src/qt_platform/option_power/domain.py
+src/qt_platform/option_power/replay.py
 src/qt_platform/option_power/service.py
 src/qt_platform/providers/__init__.py
 src/qt_platform/providers/base.py
@@ -58,7 +59,9 @@ tests/test_history_sync.py
 tests/test_live_recorder.py
 tests/test_maintenance_service.py
 tests/test_option_power_aggregator.py
+tests/test_option_power_replay.py
 tests/test_option_power_service.py
+tests/test_reporting_performance.py
 tests/test_session.py
 tests/test_shioaji_option_universe.py
 tests/test_shioaji_provider.py

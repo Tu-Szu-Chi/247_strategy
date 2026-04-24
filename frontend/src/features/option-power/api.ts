@@ -1,0 +1,84 @@
+import type {
+  ChartBarPoint,
+  IndicatorSeriesMap,
+  LiveMeta,
+  LiveSnapshotLatestResponse,
+  ReplaySession,
+  SnapshotLookupResponse,
+} from "./types";
+
+export class ApiError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
+async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(path, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...(init?.headers ?? {}),
+    },
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new ApiError(response.status, message || `${response.status} ${response.statusText}`);
+  }
+  return response.json() as Promise<T>;
+}
+
+export async function getLiveBundle(seriesNames: string[]) {
+  const names = encodeURIComponent(seriesNames.join(","));
+  const [meta, bars, series, latest] = await Promise.all([
+    fetchJson<LiveMeta>("/api/option-power/live/meta"),
+    fetchJson<ChartBarPoint[]>("/api/option-power/live/bars"),
+    fetchJson<IndicatorSeriesMap>(`/api/option-power/live/series?names=${names}`),
+    fetchJson<LiveSnapshotLatestResponse>("/api/option-power/live/snapshot/latest"),
+  ]);
+  return { meta, bars, series, latest };
+}
+
+export async function getReplayDefault(): Promise<ReplaySession> {
+  return fetchJson<ReplaySession>("/api/option-power/replay/default");
+}
+
+export async function createReplaySession(start: string, end: string): Promise<ReplaySession> {
+  const search = new URLSearchParams({ start, end });
+  return fetchJson<ReplaySession>(`/api/option-power/replay/sessions?${search.toString()}`, {
+    method: "POST",
+    body: JSON.stringify({ start, end }),
+  });
+}
+
+export async function getReplayBundle(sessionId: string, start: string, seriesNames: string[]) {
+  const names = encodeURIComponent(seriesNames.join(","));
+  const [bars, series, snapshot] = await Promise.all([
+    fetchJson<ChartBarPoint[]>(`/api/option-power/replay/sessions/${sessionId}/bars`),
+    fetchJson<IndicatorSeriesMap>(`/api/option-power/replay/sessions/${sessionId}/series?names=${names}`),
+    fetchJson<SnapshotLookupResponse>(
+      `/api/option-power/replay/sessions/${sessionId}/snapshot-at?ts=${encodeURIComponent(start)}`,
+    ),
+  ]);
+  return { bars, series, snapshot };
+}
+
+export async function getLiveSnapshotAt(ts: string): Promise<SnapshotLookupResponse> {
+  return fetchJson<SnapshotLookupResponse>(
+    `/api/option-power/live/snapshot-at?ts=${encodeURIComponent(ts)}`,
+  );
+}
+
+export async function getReplaySnapshotAt(
+  sessionId: string,
+  ts: string,
+): Promise<SnapshotLookupResponse> {
+  return fetchJson<SnapshotLookupResponse>(
+    `/api/option-power/replay/sessions/${sessionId}/snapshot-at?ts=${encodeURIComponent(ts)}`,
+  );
+}

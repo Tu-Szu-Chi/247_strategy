@@ -47,6 +47,34 @@ PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml ba
 - `history-sync` history 補齊方式
 - DB 備份與還原方式
 
+## Frontend Dev
+
+前端 UI 現在改成 `React + Vite + TypeScript`，本地開發建議直接前後端分開跑：
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Vite dev server 預設在 `http://127.0.0.1:5173`，會 proxy `/api/*` 和 `/ws/*` 到本地 `FastAPI`。
+若你要讓 `FastAPI` 直接提供 SPA 靜態檔，先執行：
+
+```bash
+cd frontend
+npm run build
+```
+
+build 完成後，`serve-option-power` / `serve-option-power-replay` 的 `/` 與 `/research` 會直接回傳 `frontend/dist`。
+
+現在 `serve-option-power` 也會一併掛上 replay API：
+
+- live data subscribe
+- live data record
+- 手動建立 replay session：`POST /api/option-power/replay/sessions`
+
+也就是說，若你的需求是同時看 `Research Live` 與 `Research Replay`，通常只需要啟動一個 `serve-option-power` process。
+
 ## CLI 指令說明
 
 ### `doctor`

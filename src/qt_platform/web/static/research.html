@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Option Power Research</title>
-    <link rel="stylesheet" href="/research.css?v=20260420e">
+    <link rel="stylesheet" href="/research.css?v=20260422b">
     <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
   </head>
   <body>
@@ -13,7 +13,7 @@
         <div>
           <p class="eyebrow">Research Replay</p>
           <h1>MTX + Option Power</h1>
-          <p class="subtitle">主圖看 MTX，副圖看 pressure，右側同步當下履約價結構。</p>
+          <p class="subtitle">主圖看 MTX，下方雙副圖同時比對 index、abs 或 slope，右側同步當下履約價結構。</p>
         </div>
         <div class="meta-card">
           <div><span>Mode</span><strong id="mode-label">-</strong></div>
@@ -30,13 +30,33 @@
         <label for="replay-end">End</label>
         <input id="replay-end" type="datetime-local">
         <button id="replay-load" type="button">Load Replay</button>
-        <label for="series-select">Indicator</label>
-        <select id="series-select">
+        <label for="primary-series-select">Primary</label>
+        <select id="primary-series-select">
           <option value="pressure_index_5m">pressure_index_5m</option>
           <option value="pressure_index">pressure_index</option>
           <option value="pressure_index_1m">pressure_index_1m</option>
+          <option value="pressure_index_5m_slope">pressure_index_5m_slope</option>
+          <option value="pressure_index_slope">pressure_index_slope</option>
+          <option value="pressure_index_1m_slope">pressure_index_1m_slope</option>
+          <option value="pressure_abs_5m">pressure_abs_5m</option>
+          <option value="pressure_abs">pressure_abs</option>
+          <option value="pressure_abs_1m">pressure_abs_1m</option>
           <option value="raw_pressure">raw_pressure</option>
           <option value="raw_pressure_1m">raw_pressure_1m</option>
+        </select>
+        <label for="secondary-series-select">Secondary</label>
+        <select id="secondary-series-select">
+          <option value="pressure_abs_1m">pressure_abs_1m</option>
+          <option value="pressure_abs">pressure_abs</option>
+          <option value="pressure_abs_5m">pressure_abs_5m</option>
+          <option value="pressure_index_1m_slope">pressure_index_1m_slope</option>
+          <option value="pressure_index_slope">pressure_index_slope</option>
+          <option value="pressure_index_5m_slope">pressure_index_5m_slope</option>
+          <option value="pressure_index_1m">pressure_index_1m</option>
+          <option value="pressure_index">pressure_index</option>
+          <option value="pressure_index_5m">pressure_index_5m</option>
+          <option value="raw_pressure_1m">raw_pressure_1m</option>
+          <option value="raw_pressure">raw_pressure</option>
         </select>
       </section>
 
@@ -47,8 +67,12 @@
             <div id="price-chart" class="chart-box"></div>
           </article>
           <article class="chart-card">
-            <div class="chart-title">Indicator</div>
-            <div id="indicator-chart" class="chart-box small"></div>
+            <div class="chart-title" id="primary-indicator-title">Primary Indicator</div>
+            <div id="primary-indicator-chart" class="chart-box small"></div>
+          </article>
+          <article class="chart-card">
+            <div class="chart-title" id="secondary-indicator-title">Secondary Indicator</div>
+            <div id="secondary-indicator-chart" class="chart-box small"></div>
           </article>
         </div>
 
@@ -70,11 +94,46 @@
               <span>1m Index</span>
               <strong id="pressure-index-1m">0</strong>
             </article>
+            <article class="pressure-card">
+              <span>5m Index</span>
+              <strong id="pressure-index-5m">0</strong>
+            </article>
+            <article class="pressure-card">
+              <span>Session Abs</span>
+              <strong id="pressure-abs">0</strong>
+            </article>
+            <article class="pressure-card">
+              <span>1m Abs</span>
+              <strong id="pressure-abs-1m">0</strong>
+            </article>
+            <article class="pressure-card">
+              <span>5m Abs</span>
+              <strong id="pressure-abs-5m">0</strong>
+            </article>
           </section>
 
           <section class="controls">
             <label for="expiry-select">Expiry</label>
             <select id="expiry-select"></select>
+          </section>
+
+          <section class="aggregate-grid">
+            <article class="pressure-card compact">
+              <span>Call Cum</span>
+              <strong id="call-cumulative-power">0</strong>
+            </article>
+            <article class="pressure-card compact">
+              <span>Put Cum</span>
+              <strong id="put-cumulative-power">0</strong>
+            </article>
+            <article class="pressure-card compact">
+              <span>Call 1m</span>
+              <strong id="call-power-1m">0</strong>
+            </article>
+            <article class="pressure-card compact">
+              <span>Put 1m</span>
+              <strong id="put-power-1m">0</strong>
+            </article>
           </section>
 
           <section class="chart-card snapshot-card">
@@ -88,6 +147,6 @@
         </aside>
       </section>
     </main>
-    <script src="/research.js?v=20260420e"></script>
+    <script src="/research.js?v=20260422b"></script>
   </body>
-  </html>
+</html>

@@ -339,6 +339,62 @@ class OptionPowerRuntimeServiceTest(unittest.TestCase):
         self.assertEqual(twii_bars[-1].instrument_key, "index:TWII")
         self.assertEqual(twii_bars[-1].build_source, "live_snapshot_agg")
 
+    def test_live_series_exposes_abs_and_slope_series(self) -> None:
+        service = OptionPowerRuntimeService(
+            provider=DummyProvider(),
+            store=DummyStore(),
+            option_root="AUTO",
+            expiry_count=2,
+            atm_window=20,
+            underlying_future_symbol="MXFR1",
+            call_put="both",
+            session_scope="day_and_night",
+            batch_size=500,
+            snapshot_interval_seconds=5.0,
+            log_callback=lambda payload: None,
+        )
+        service._snapshot_history.extend(
+            [
+                {
+                    "session_id": "test-run",
+                    "index": 0,
+                    "simulated_at": "2026-04-20T09:00:00",
+                    "snapshot": {
+                        "pressure_index": 5,
+                        "pressure_index_1m": 8,
+                        "pressure_index_5m": 3,
+                        "raw_pressure": 12,
+                        "raw_pressure_1m": 7,
+                        "pressure_abs": 20,
+                        "pressure_abs_1m": 10,
+                        "pressure_abs_5m": 14,
+                    },
+                },
+                {
+                    "session_id": "test-run",
+                    "index": 1,
+                    "simulated_at": "2026-04-20T09:00:05",
+                    "snapshot": {
+                        "pressure_index": 17,
+                        "pressure_index_1m": 11,
+                        "pressure_index_5m": 9,
+                        "raw_pressure": 18,
+                        "raw_pressure_1m": 9,
+                        "pressure_abs": 34,
+                        "pressure_abs_1m": 16,
+                        "pressure_abs_5m": 22,
+                    },
+                },
+            ]
+        )
+
+        series = service.live_series(["pressure_abs", "pressure_index_slope", "pressure_index_5m_slope"])
+
+        self.assertEqual(series["pressure_abs"][1]["value"], 34)
+        self.assertEqual(series["pressure_index_slope"][0]["value"], 0)
+        self.assertEqual(series["pressure_index_slope"][1]["value"], 12)
+        self.assertEqual(series["pressure_index_5m_slope"][1]["value"], 6)
+
 
 if __name__ == "__main__":
     unittest.main()

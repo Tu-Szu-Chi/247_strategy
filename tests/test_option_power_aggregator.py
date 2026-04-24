@@ -64,6 +64,9 @@ class OptionPowerAggregatorTest(unittest.TestCase):
         self.assertEqual(snapshot.raw_pressure_1m, 7)
         self.assertEqual(snapshot.pressure_index_1m, 54)
         self.assertEqual(snapshot.pressure_index_5m, 54)
+        self.assertEqual(snapshot.pressure_abs, 13)
+        self.assertEqual(snapshot.pressure_abs_1m, 13)
+        self.assertEqual(snapshot.pressure_abs_5m, 13)
 
     def test_snapshot_evicts_old_rolling_events(self) -> None:
         aggregator = OptionPowerAggregator(option_root="TXO")
@@ -234,6 +237,9 @@ class OptionPowerAggregatorTest(unittest.TestCase):
         self.assertEqual(snapshot.raw_pressure_1m, 15)
         self.assertEqual(snapshot.pressure_index_1m, 61)
         self.assertEqual(snapshot.pressure_index_5m, 61)
+        self.assertEqual(snapshot.pressure_abs, 23)
+        self.assertEqual(snapshot.pressure_abs_1m, 23)
+        self.assertEqual(snapshot.pressure_abs_5m, 23)
 
 
 if __name__ == "__main__":

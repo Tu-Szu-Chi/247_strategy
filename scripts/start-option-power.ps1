@@ -1,6 +1,7 @@
 param(
     [string]$ConfigPath = "config/config.yaml",
     [string]$UnderlyingFutureSymbol = "MXFR1",
+    [string]$ReplayUnderlyingSymbol = "MTX",
     [int]$ExpiryCount = 2,
     [int]$AtmWindow = 20,
     [string]$CallPut = "both",
@@ -44,6 +45,7 @@ $CliArgs = @(
     "--expiry-count", $ExpiryCount,
     "--atm-window", $AtmWindow,
     "--underlying-future-symbol", $UnderlyingFutureSymbol,
+    "--replay-underlying-symbol", $ReplayUnderlyingSymbol,
     "--call-put", $CallPut,
     "--session-scope", $SessionScope,
     "--host", $ListenHost,
@@ -66,6 +68,7 @@ if ($DatabaseUrl) {
         "--expiry-count", $ExpiryCount,
         "--atm-window", $AtmWindow,
         "--underlying-future-symbol", $UnderlyingFutureSymbol,
+        "--replay-underlying-symbol", $ReplayUnderlyingSymbol,
         "--call-put", $CallPut,
         "--session-scope", $SessionScope,
         "--host", $ListenHost,
@@ -79,15 +82,17 @@ if ($DatabaseUrl) {
     }
 }
 
-Write-Host "Starting option power live web..." -ForegroundColor Cyan
+Write-Host "Starting option power web..." -ForegroundColor Cyan
 Write-Host "Repo root: $RepoRoot"
 Write-Host "Config: $ConfigFullPath"
-Write-Host "Underlying future symbol: $UnderlyingFutureSymbol"
+Write-Host "Live underlying future symbol: $UnderlyingFutureSymbol"
+Write-Host "Replay underlying symbol: $ReplayUnderlyingSymbol"
 Write-Host "Option roots: AUTO nearest $ExpiryCount"
 Write-Host "ATM window: $AtmWindow"
 Write-Host "Host: $ListenHost"
 Write-Host "Port: $Port"
-Write-Host "Research URL: http://$ListenHost`:$Port/"
+Write-Host "Research Replay URL: http://$ListenHost`:$Port/research/replay"
+Write-Host "Research Live URL: http://$ListenHost`:$Port/research/live"
 Write-Host "Legacy URL: http://$ListenHost`:$Port/legacy-option-power"
 Write-Host "Log file: $LogFullPath"
 

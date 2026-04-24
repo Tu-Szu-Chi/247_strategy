@@ -22,6 +22,7 @@ class ServeOptionPowerTest(unittest.TestCase):
             session_scope="day_and_night",
             batch_size=500,
             snapshot_interval_seconds=5.0,
+            replay_underlying_symbol="MTX",
             log_file=None,
             ready_timeout_seconds=15.0,
             host="127.0.0.1",
@@ -39,11 +40,13 @@ class ServeOptionPowerTest(unittest.TestCase):
 
         with patch("qt_platform.cli.main.ShioajiLiveProvider"), patch(
             "qt_platform.cli.main.build_bar_repository"
-        ), patch(
+        ) as build_store, patch(
             "qt_platform.cli.main.OptionPowerRuntimeService", return_value=runtime
         ), patch(
+            "qt_platform.cli.main.OptionPowerReplayService"
+        ) as replay_service, patch(
             "qt_platform.cli.main.build_option_power_app", return_value=object()
-        ), patch(
+        ) as build_app, patch(
             "qt_platform.cli.main._emit_runtime_status"
         ), patch.dict(
             sys.modules, {"uvicorn": types.SimpleNamespace(run=uvicorn_run)}
@@ -51,6 +54,15 @@ class ServeOptionPowerTest(unittest.TestCase):
             _serve_option_power(args, settings)
 
         self.assertEqual(uvicorn_run.call_args.kwargs["access_log"], False)
+        replay_service.assert_called_once_with(
+            store=build_store.return_value,
+            option_root="AUTO",
+            expiry_count=2,
+            underlying_symbol="MTX",
+            snapshot_interval_seconds=5.0,
+        )
+        self.assertIs(build_app.call_args.kwargs["runtime_service"], runtime)
+        self.assertIs(build_app.call_args.kwargs["replay_service"], replay_service.return_value)
 
     def test_serve_option_power_allows_runtime_retry_states(self) -> None:
         args = SimpleNamespace(
@@ -66,6 +78,7 @@ class ServeOptionPowerTest(unittest.TestCase):
             session_scope="day_and_night",
             batch_size=500,
             snapshot_interval_seconds=5.0,
+            replay_underlying_symbol="MTX",
             log_file=None,
             ready_timeout_seconds=15.0,
             host="127.0.0.1",
@@ -85,6 +98,8 @@ class ServeOptionPowerTest(unittest.TestCase):
             "qt_platform.cli.main.build_bar_repository"
         ), patch(
             "qt_platform.cli.main.OptionPowerRuntimeService", return_value=runtime
+        ), patch(
+            "qt_platform.cli.main.OptionPowerReplayService"
         ), patch(
             "qt_platform.cli.main.build_option_power_app", return_value=object()
         ), patch(

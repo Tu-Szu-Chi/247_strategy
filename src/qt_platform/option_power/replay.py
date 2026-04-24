@@ -161,6 +161,9 @@ class OptionPowerReplayService:
                 "raw_pressure_1m": 0,
                 "pressure_index_1m": 0,
                 "pressure_index_5m": 0,
+                "pressure_abs": 0,
+                "pressure_abs_1m": 0,
+                "pressure_abs_5m": 0,
                 "expiries": [],
                 "contract_count": 0,
                 "status": "replay_not_loaded",
@@ -181,6 +184,9 @@ class OptionPowerReplayService:
                 "raw_pressure_1m": 0,
                 "pressure_index_1m": 0,
                 "pressure_index_5m": 0,
+                "pressure_abs": 0,
+                "pressure_abs_1m": 0,
+                "pressure_abs_5m": 0,
                 "expiries": [],
                 "contract_count": 0,
                 "status": "replay_empty",
@@ -311,12 +317,29 @@ def _build_indicator_series(snapshot_times: list[str], snapshots: list[dict]) ->
         "pressure_index",
         "raw_pressure_1m",
         "pressure_index_1m",
+        "pressure_abs",
+        "pressure_abs_1m",
+        "pressure_abs_5m",
     ]
     payload: dict[str, list[dict]] = {name: [] for name in series_names}
     for ts, snapshot in zip(snapshot_times, snapshots):
         for name in series_names:
             payload[name].append({"time": ts, "value": snapshot.get(name, 0)})
+    payload["pressure_index_slope"] = _build_slope_series(payload["pressure_index"])
+    payload["pressure_index_1m_slope"] = _build_slope_series(payload["pressure_index_1m"])
+    payload["pressure_index_5m_slope"] = _build_slope_series(payload["pressure_index_5m"])
     return payload
+
+
+def _build_slope_series(series: list[dict]) -> list[dict]:
+    points: list[dict] = []
+    previous_value: float | None = None
+    for item in series:
+        value = float(item.get("value", 0) or 0)
+        slope = 0 if previous_value is None else round(value - previous_value, 2)
+        points.append({"time": item["time"], "value": slope})
+        previous_value = value
+    return points
 
 
 def _resolve_replay_reference_price(

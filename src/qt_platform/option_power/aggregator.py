@@ -207,6 +207,9 @@ class OptionPowerAggregator:
                 raw_pressure_1m=pressure_metrics["raw_pressure_1m"],
                 pressure_index_1m=pressure_metrics["pressure_index_1m"],
                 pressure_index_5m=pressure_metrics["pressure_index_5m"],
+                pressure_abs=pressure_metrics["pressure_abs"],
+                pressure_abs_1m=pressure_metrics["pressure_abs_1m"],
+                pressure_abs_5m=pressure_metrics["pressure_abs_5m"],
                 expiries=expiry_snapshots,
                 contract_count=contract_count,
                 status=status,
@@ -266,6 +269,9 @@ def _compute_pressure_metrics(
             "raw_pressure_1m": 0,
             "pressure_index_1m": 0,
             "pressure_index_5m": 0,
+            "pressure_abs": 0,
+            "pressure_abs_1m": 0,
+            "pressure_abs_5m": 0,
         }
 
     weighted_components: list[tuple[_ContractState, float]] = []
@@ -334,6 +340,9 @@ def _compute_pressure_metrics(
         "raw_pressure_1m": round(rolling_1m_raw_score_sum),
         "pressure_index_1m": _normalized_pressure(rolling_1m_index_score_sum, rolling_1m_index_abs_sum),
         "pressure_index_5m": _normalized_pressure(rolling_5m_index_score_sum, rolling_5m_index_abs_sum),
+        "pressure_abs": round(cumulative_index_abs_sum),
+        "pressure_abs_1m": round(rolling_1m_index_abs_sum),
+        "pressure_abs_5m": round(rolling_5m_index_abs_sum),
     }
 
 

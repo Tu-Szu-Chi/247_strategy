@@ -33,7 +33,7 @@ from qt_platform.contracts import (
 )
 from qt_platform.maintenance.service import MaintenanceService
 from qt_platform.providers.finmind import FinMindAdapter
-from qt_platform.reporting.performance import write_html_report
+from qt_platform.reporting.performance import write_backtest_report_bundle
 from qt_platform.session import (
     is_in_activation_scope,
     is_in_session_scope,
@@ -151,6 +151,7 @@ def main() -> None:
     serve_option_power.add_argument("--port", type=int, default=8000)
     serve_option_power.add_argument("--snapshot-interval-seconds", type=float, default=5.0)
     serve_option_power.add_argument("--ready-timeout-seconds", type=float, default=15.0)
+    serve_option_power.add_argument("--replay-underlying-symbol", default="MTX")
     serve_option_power.add_argument("--log-file", default="logs/serve-option-power.log")
 
     serve_option_power_replay = subparsers.add_parser("serve-option-power-replay")
@@ -224,9 +225,14 @@ def _backtest(args: argparse.Namespace, settings: Settings) -> None:
         strategy=strategy,
         config=BacktestConfig(),
     )
-    report = write_html_report(result, _report_dir(args, settings), f"{args.symbol}-backtest")
+    report, report_json = write_backtest_report_bundle(
+        result,
+        _report_dir(args, settings),
+        f"{args.symbol}-backtest",
+    )
     print(f"ending_cash={result.ending_cash:.2f}")
     print(f"report={report}")
+    print(f"report_json={report_json}")
 
 
 def _build_strategy(args: argparse.Namespace):
@@ -815,6 +821,13 @@ def _serve_option_power(args: argparse.Namespace, settings: Settings) -> None:
         snapshot_interval_seconds=args.snapshot_interval_seconds,
         log_callback=lambda payload: _emit_runtime_status(payload, args.log_file),
     )
+    replay = OptionPowerReplayService(
+        store=store,
+        option_root=args.option_root,
+        expiry_count=args.expiry_count,
+        underlying_symbol=args.replay_underlying_symbol,
+        snapshot_interval_seconds=args.snapshot_interval_seconds,
+    )
     run_id = _new_live_run_id()
     runtime.start(run_id=run_id)
     if not runtime.wait_until_ready(timeout=args.ready_timeout_seconds):
@@ -822,7 +835,7 @@ def _serve_option_power(args: argparse.Namespace, settings: Settings) -> None:
     if runtime.status in {"error", "completed", "paused_for_usage_limit"}:
         raise RuntimeError(runtime.error_message or f"Option power runtime failed with status={runtime.status}.")
 
-    app = build_option_power_app(runtime)
+    app = build_option_power_app(runtime_service=runtime, replay_service=replay)
     _emit_runtime_status(
         {
             "status": "web_ready",

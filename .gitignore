@@ -24,5 +24,4 @@ reports/
 .env
 Sinopac.pfx
 config/config.yaml
-config/config.yaml
 tmp/

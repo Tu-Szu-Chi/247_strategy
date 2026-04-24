@@ -176,12 +176,31 @@ h1 {
   color: var(--bear);
 }
 
+.pressure-neutral {
+  color: var(--text);
+}
+
 .controls {
   padding: 10px 14px;
 }
 
 .controls select {
   margin-left: 10px;
+}
+
+.aggregate-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.pressure-card.compact {
+  padding: 10px 12px;
+}
+
+.pressure-card.compact strong {
+  margin-top: 6px;
+  font-size: 22px;
 }
 
 .chart-header {

@@ -7,27 +7,75 @@ from pathlib import Path
 
 def build_option_power_app(runtime_service=None, replay_service=None):
     try:
-        from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-        from fastapi.responses import FileResponse, JSONResponse
-        from pydantic import BaseModel
+        from fastapi import Body, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+        from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+        from fastapi.staticfiles import StaticFiles
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
             "FastAPI is required for serve-option-power. Install with: pip install -e .[web]"
         ) from exc
 
     static_dir = Path(__file__).resolve().parent / "static"
+    frontend_dist_dir = Path(__file__).resolve().parents[3] / "frontend" / "dist"
+    frontend_index = frontend_dist_dir / "index.html"
     app = FastAPI(title="Option Power Demo")
+
+    if (frontend_dist_dir / "assets").exists():
+        app.mount("/assets", StaticFiles(directory=frontend_dist_dir / "assets"), name="frontend-assets")
+
+    def _frontend_shell() -> HTMLResponse | FileResponse:
+        if frontend_index.exists():
+            return FileResponse(frontend_index)
+        return HTMLResponse(
+            """
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>qt-platform frontend</title>
+    <style>
+      body { font-family: sans-serif; margin: 3rem; background: #0f172a; color: #e2e8f0; }
+      code { background: rgba(148, 163, 184, 0.18); padding: 0.2rem 0.4rem; border-radius: 0.35rem; }
+      a { color: #7dd3fc; }
+    </style>
+  </head>
+  <body>
+    <h1>Frontend build not found.</h1>
+    <p>Run <code>cd frontend && npm install && npm run dev</code> for local development.</p>
+    <p>Run <code>cd frontend && npm run build</code> if you want FastAPI to serve the built SPA.</p>
+    <p>Legacy pages remain available at <a href="/legacy-research">/legacy-research</a> and <a href="/legacy-option-power">/legacy-option-power</a>.</p>
+  </body>
+</html>
+            """.strip()
+        )
 
     @app.get("/")
     async def root():
-        return FileResponse(static_dir / "research.html")
+        return _frontend_shell()
+
+    @app.get("/research")
+    async def research():
+        return _frontend_shell()
+
+    @app.get("/option-power")
+    async def option_power():
+        return _frontend_shell()
+
+    @app.get("/portfolio")
+    async def portfolio():
+        return _frontend_shell()
+
+    @app.get("/reports/{report_id}")
+    async def report_detail(report_id: str):
+        return _frontend_shell()
 
     @app.get("/legacy-option-power")
     async def legacy_option_power():
         return FileResponse(static_dir / "option_power.html")
 
-    @app.get("/research")
-    async def research():
+    @app.get("/legacy-research")
+    async def legacy_research():
         return FileResponse(static_dir / "research.html")
 
     @app.get("/option_power.css")
@@ -67,10 +115,6 @@ def build_option_power_app(runtime_service=None, replay_service=None):
         except WebSocketDisconnect:
             return
 
-    class ReplayRequest(BaseModel):
-        start: str
-        end: str
-
     @app.get("/api/option-power/replay/default")
     async def replay_default():
         if replay_service is None:
@@ -81,13 +125,23 @@ def build_option_power_app(runtime_service=None, replay_service=None):
         return JSONResponse(metadata)
 
     @app.post("/api/option-power/replay/sessions")
-    async def create_replay_session(payload: ReplayRequest):
+    async def create_replay_session(
+        payload: dict | None = Body(None),
+        start: str | None = Query(None),
+        end: str | None = Query(None),
+    ):
         if replay_service is None:
             raise HTTPException(status_code=404, detail="Replay service is not enabled.")
+        payload_start = payload.get("start") if payload else None
+        payload_end = payload.get("end") if payload else None
+        resolved_start = payload_start or start
+        resolved_end = payload_end or end
+        if not resolved_start or not resolved_end:
+            raise HTTPException(status_code=400, detail="Replay payload must include start and end.")
         try:
             metadata = replay_service.create_session(
-                start=datetime.fromisoformat(payload.start),
-                end=datetime.fromisoformat(payload.end),
+                start=datetime.fromisoformat(resolved_start),
+                end=datetime.fromisoformat(resolved_end),
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

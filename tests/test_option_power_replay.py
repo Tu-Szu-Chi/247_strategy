@@ -162,10 +162,19 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
         self.assertEqual(len(bars), 1)
         self.assertEqual(bars[0]["close"], 19450.0)
 
-        series = service.get_series(metadata["session_id"], ["pressure_index", "pressure_index_1m", "pressure_index_5m"])
-        self.assertEqual(sorted(series.keys()), ["pressure_index", "pressure_index_1m", "pressure_index_5m"])
+        series = service.get_series(
+            metadata["session_id"],
+            ["pressure_index", "pressure_index_1m", "pressure_index_5m", "pressure_abs", "pressure_index_slope"],
+        )
+        self.assertEqual(
+            sorted(series.keys()),
+            ["pressure_abs", "pressure_index", "pressure_index_1m", "pressure_index_5m", "pressure_index_slope"],
+        )
         self.assertEqual(len(series["pressure_index"]), 3)
         self.assertEqual(series["pressure_index_5m"][1]["value"], 100)
+        self.assertEqual(series["pressure_abs"][1]["value"], 17)
+        self.assertEqual(series["pressure_index_slope"][0]["value"], 0)
+        self.assertEqual(series["pressure_index_slope"][1]["value"], 100)
 
         snapshot_at = service.get_snapshot_at(metadata["session_id"], base_ts + timedelta(seconds=6))
         self.assertIsNotNone(snapshot_at)
