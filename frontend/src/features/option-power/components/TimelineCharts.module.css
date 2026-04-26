@@ -1,12 +1,12 @@
 .column {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
 }
 
 .card {
-  padding: 20px;
-  border-radius: 24px;
+  padding: 16px 16px 12px;
+  border-radius: 20px;
   border: 1px solid var(--color-border);
   background: rgba(15, 23, 42, 0.74);
 }
@@ -16,7 +16,7 @@
   justify-content: space-between;
   gap: 12px;
   align-items: flex-end;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
 }
 
 .label {
@@ -29,7 +29,7 @@
 
 .title {
   margin: 0;
-  font-size: 1rem;
+  font-size: 0.98rem;
 }
 
 .chartBox {
@@ -39,9 +39,32 @@
 .legend {
   margin: 0;
   color: var(--color-text-muted);
-  font-size: 0.8rem;
+  font-size: 0.76rem;
+  text-align: right;
 }
 
 .empty {
   color: var(--color-text-muted);
+}
+
+.seriesLegend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-top: 10px;
+}
+
+.legendItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-text-muted);
+  font-size: 0.76rem;
+}
+
+.legendSwatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  flex: 0 0 auto;
 }

@@ -75,6 +75,8 @@ build 完成後，`serve-option-power` / `serve-option-power-replay` 的 `/` 與
 
 也就是說，若你的需求是同時看 `Research Live` 與 `Research Replay`，通常只需要啟動一個 `serve-option-power` process。
 
+舊版純 HTML/JS option power 頁面已移除，UI 以 `frontend/` 內的 React app 為唯一入口。
+
 ## CLI 指令說明
 
 ### `doctor`

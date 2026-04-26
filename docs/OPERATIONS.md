@@ -256,7 +256,7 @@ psql postgresql://postgres:postgres@localhost:5432/trading < trading.sql
 - `MXFR1` 作為 live underlying future，寫入後 symbol 正規化為 `MTX`
 - live data + research chart UI
 - 網址：`http://127.0.0.1:8000/`
-- 舊版頁面：`http://127.0.0.1:8000/legacy-option-power`
+- UI 入口：`http://127.0.0.1:8000/research/live`、`http://127.0.0.1:8000/research/replay`
 
 若要補 history，改用：
 

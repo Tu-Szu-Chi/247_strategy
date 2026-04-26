@@ -14,6 +14,34 @@ export type ChartSeriesPoint = {
 
 export type IndicatorInterval = "5s" | "30s" | "1m" | "5m";
 
+export type RegimeLabel =
+  | "trend_up"
+  | "trend_down"
+  | "reversal_up"
+  | "reversal_down"
+  | "chop"
+  | "transition"
+  | "no_data"
+  | string;
+
+export type RegimeSnapshot = {
+  generated_at: string;
+  session: string;
+  close: number | null;
+  session_vwap: number | null;
+  vwap_distance_bps: number;
+  directional_efficiency_15m: number;
+  vwap_cross_count_15m: number;
+  tick_imbalance_5m: number;
+  trade_intensity_5m: number;
+  trade_intensity_ratio_30m: number;
+  range_ratio_5m_30m: number;
+  trend_score: number;
+  chop_score: number;
+  reversal_risk: number;
+  regime_label: RegimeLabel;
+};
+
 export type OptionPowerContract = {
   instrument_key: string;
   symbol: string;
@@ -46,12 +74,9 @@ export type OptionPowerSnapshot = {
   underlying_reference_price: number | null;
   raw_pressure: number;
   pressure_index: number;
-  raw_pressure_1m: number;
-  pressure_index_1m: number;
-  pressure_index_5m: number;
-  pressure_abs: number;
-  pressure_abs_1m: number;
-  pressure_abs_5m: number;
+  raw_pressure_weighted: number;
+  pressure_index_weighted: number;
+  regime?: RegimeSnapshot | null;
   expiries: OptionPowerExpiry[];
   contract_count: number;
   status: string;
@@ -68,6 +93,8 @@ export type ReplaySession = {
   underlying_symbol: string;
   selected_option_roots: string[];
   snapshot_count: number;
+  available_series?: string[];
+  regime_schema?: Array<Record<string, string>>;
 };
 
 export type SnapshotLookupResponse = {

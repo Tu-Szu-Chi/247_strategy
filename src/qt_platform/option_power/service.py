@@ -157,17 +157,10 @@ class OptionPowerRuntimeService:
                     item for item in self.aggregator.option_root.split(",") if item
                 ],
                 "available_series": [
-                    "pressure_index_5m",
                     "pressure_index",
-                    "pressure_index_1m",
                     "raw_pressure",
-                    "raw_pressure_1m",
-                    "pressure_abs",
-                    "pressure_abs_1m",
-                    "pressure_abs_5m",
-                    "pressure_index_slope",
-                    "pressure_index_1m_slope",
-                    "pressure_index_5m_slope",
+                    "pressure_index_weighted",
+                    "raw_pressure_weighted",
                 ],
             }
 
@@ -188,13 +181,9 @@ class OptionPowerRuntimeService:
         base_series: dict[str, list[dict[str, Any]]] = {}
         for name in (
             "pressure_index",
-            "pressure_index_1m",
-            "pressure_index_5m",
             "raw_pressure",
-            "raw_pressure_1m",
-            "pressure_abs",
-            "pressure_abs_1m",
-            "pressure_abs_5m",
+            "pressure_index_weighted",
+            "raw_pressure_weighted",
         ):
             base_series[name] = [
                 {"time": item["simulated_at"], "value": item["snapshot"].get(name, 0)}
@@ -204,12 +193,6 @@ class OptionPowerRuntimeService:
         for name in names:
             if name in base_series:
                 payload[name] = base_series[name]
-            elif name == "pressure_index_slope":
-                payload[name] = _build_slope_series(base_series["pressure_index"])
-            elif name == "pressure_index_1m_slope":
-                payload[name] = _build_slope_series(base_series["pressure_index_1m"])
-            elif name == "pressure_index_5m_slope":
-                payload[name] = _build_slope_series(base_series["pressure_index_5m"])
             else:
                 payload[name] = []
         return payload
@@ -650,15 +633,6 @@ def _bar_state_to_chart_dict(state: _MinuteBarState | None) -> dict[str, Any] | 
     }
 
 
-def _build_slope_series(series: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    points: list[dict[str, Any]] = []
-    previous_value: float | None = None
-    for item in series:
-        value = float(item.get("value", 0) or 0)
-        slope = 0 if previous_value is None else round(value - previous_value, 2)
-        points.append({"time": item["time"], "value": slope})
-        previous_value = value
-    return points
 
 
 def _canonical_underlying_symbol(value: str) -> str:

@@ -15,7 +15,6 @@ def build_option_power_app(runtime_service=None, replay_service=None):
             "FastAPI is required for serve-option-power. Install with: pip install -e .[web]"
         ) from exc
 
-    static_dir = Path(__file__).resolve().parent / "static"
     frontend_dist_dir = Path(__file__).resolve().parents[3] / "frontend" / "dist"
     frontend_index = frontend_dist_dir / "index.html"
     app = FastAPI(title="Option Power Demo")
@@ -44,7 +43,6 @@ def build_option_power_app(runtime_service=None, replay_service=None):
     <h1>Frontend build not found.</h1>
     <p>Run <code>cd frontend && npm install && npm run dev</code> for local development.</p>
     <p>Run <code>cd frontend && npm run build</code> if you want FastAPI to serve the built SPA.</p>
-    <p>Legacy pages remain available at <a href="/legacy-research">/legacy-research</a> and <a href="/legacy-option-power">/legacy-option-power</a>.</p>
   </body>
 </html>
             """.strip()
@@ -69,30 +67,6 @@ def build_option_power_app(runtime_service=None, replay_service=None):
     @app.get("/reports/{report_id}")
     async def report_detail(report_id: str):
         return _frontend_shell()
-
-    @app.get("/legacy-option-power")
-    async def legacy_option_power():
-        return FileResponse(static_dir / "option_power.html")
-
-    @app.get("/legacy-research")
-    async def legacy_research():
-        return FileResponse(static_dir / "research.html")
-
-    @app.get("/option_power.css")
-    async def css():
-        return FileResponse(static_dir / "option_power.css")
-
-    @app.get("/option_power.js")
-    async def js():
-        return FileResponse(static_dir / "option_power.js")
-
-    @app.get("/research.css")
-    async def research_css():
-        return FileResponse(static_dir / "research.css")
-
-    @app.get("/research.js")
-    async def research_js():
-        return FileResponse(static_dir / "research.js")
 
     @app.get("/api/option-power/snapshot")
     async def snapshot():

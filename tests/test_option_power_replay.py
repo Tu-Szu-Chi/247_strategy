@@ -145,18 +145,29 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
 
         self.assertEqual(metadata["selected_option_roots"], ["TX4", "TXX"])
         self.assertEqual(metadata["snapshot_count"], 3)
+        self.assertIn("regime_schema", metadata)
+        self.assertTrue(any(field["name"] == "trend_score" for field in metadata["regime_schema"]))
+        self.assertIn("regime_state", metadata["available_series"])
+        self.assertIn("structure_state", metadata["available_series"])
 
         default_snapshot = service.current_snapshot()
         self.assertEqual(default_snapshot["underlying_reference_price"], 19400.0)
         self.assertEqual(default_snapshot["underlying_reference_source"], "twii")
         self.assertEqual(default_snapshot["raw_pressure"], 0)
         self.assertEqual(default_snapshot["pressure_index"], 0)
+        self.assertEqual(default_snapshot["raw_pressure_weighted"], 0)
+        self.assertEqual(default_snapshot["pressure_index_weighted"], 0)
+        self.assertIn("regime", default_snapshot)
+        self.assertIn("regime_label", default_snapshot["regime"])
 
         payload = service.get_snapshot(metadata["session_id"], 1)
         self.assertIsNotNone(payload)
         self.assertEqual(payload["index"], 1)
-        self.assertEqual(payload["snapshot"]["raw_pressure"], 18)
-        self.assertEqual(payload["snapshot"]["raw_pressure_1m"], 18)
+        self.assertEqual(payload["snapshot"]["raw_pressure"], 17)
+        self.assertEqual(payload["snapshot"]["raw_pressure_weighted"], 18)
+        self.assertIn("trend_score", payload["snapshot"]["regime"])
+        self.assertIn("chop_score", payload["snapshot"]["regime"])
+        self.assertIn("reversal_risk", payload["snapshot"]["regime"])
 
         bars = service.get_bars(metadata["session_id"])
         self.assertEqual(len(bars), 1)
@@ -164,17 +175,33 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
 
         series = service.get_series(
             metadata["session_id"],
-            ["pressure_index", "pressure_index_1m", "pressure_index_5m", "pressure_abs", "pressure_index_slope"],
+            [
+                "pressure_index",
+                "raw_pressure",
+                "pressure_index_weighted",
+                "raw_pressure_weighted",
+                "regime_state",
+                "structure_state",
+            ],
         )
         self.assertEqual(
             sorted(series.keys()),
-            ["pressure_abs", "pressure_index", "pressure_index_1m", "pressure_index_5m", "pressure_index_slope"],
+            [
+                "pressure_index",
+                "pressure_index_weighted",
+                "raw_pressure",
+                "raw_pressure_weighted",
+                "regime_state",
+                "structure_state",
+            ],
         )
         self.assertEqual(len(series["pressure_index"]), 3)
-        self.assertEqual(series["pressure_index_5m"][1]["value"], 100)
-        self.assertEqual(series["pressure_abs"][1]["value"], 17)
-        self.assertEqual(series["pressure_index_slope"][0]["value"], 0)
-        self.assertEqual(series["pressure_index_slope"][1]["value"], 100)
+        self.assertEqual(series["raw_pressure"][1]["value"], 17)
+        self.assertEqual(series["pressure_index"][1]["value"], 100)
+        self.assertEqual(series["raw_pressure_weighted"][1]["value"], 18)
+        self.assertEqual(series["pressure_index_weighted"][1]["value"], 100)
+        self.assertEqual(len(series["regime_state"]), 3)
+        self.assertEqual(len(series["structure_state"]), 3)
 
         snapshot_at = service.get_snapshot_at(metadata["session_id"], base_ts + timedelta(seconds=6))
         self.assertIsNotNone(snapshot_at)

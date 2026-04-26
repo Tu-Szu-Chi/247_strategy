@@ -339,7 +339,7 @@ class OptionPowerRuntimeServiceTest(unittest.TestCase):
         self.assertEqual(twii_bars[-1].instrument_key, "index:TWII")
         self.assertEqual(twii_bars[-1].build_source, "live_snapshot_agg")
 
-    def test_live_series_exposes_abs_and_slope_series(self) -> None:
+    def test_live_series_exposes_base_and_weighted_series(self) -> None:
         service = OptionPowerRuntimeService(
             provider=DummyProvider(),
             store=DummyStore(),
@@ -361,13 +361,9 @@ class OptionPowerRuntimeServiceTest(unittest.TestCase):
                     "simulated_at": "2026-04-20T09:00:00",
                     "snapshot": {
                         "pressure_index": 5,
-                        "pressure_index_1m": 8,
-                        "pressure_index_5m": 3,
                         "raw_pressure": 12,
-                        "raw_pressure_1m": 7,
-                        "pressure_abs": 20,
-                        "pressure_abs_1m": 10,
-                        "pressure_abs_5m": 14,
+                        "pressure_index_weighted": 4,
+                        "raw_pressure_weighted": 11,
                     },
                 },
                 {
@@ -376,24 +372,22 @@ class OptionPowerRuntimeServiceTest(unittest.TestCase):
                     "simulated_at": "2026-04-20T09:00:05",
                     "snapshot": {
                         "pressure_index": 17,
-                        "pressure_index_1m": 11,
-                        "pressure_index_5m": 9,
                         "raw_pressure": 18,
-                        "raw_pressure_1m": 9,
-                        "pressure_abs": 34,
-                        "pressure_abs_1m": 16,
-                        "pressure_abs_5m": 22,
+                        "pressure_index_weighted": 14,
+                        "raw_pressure_weighted": 16,
                     },
                 },
             ]
         )
 
-        series = service.live_series(["pressure_abs", "pressure_index_slope", "pressure_index_5m_slope"])
+        series = service.live_series(
+            ["pressure_index", "raw_pressure", "pressure_index_weighted", "raw_pressure_weighted"]
+        )
 
-        self.assertEqual(series["pressure_abs"][1]["value"], 34)
-        self.assertEqual(series["pressure_index_slope"][0]["value"], 0)
-        self.assertEqual(series["pressure_index_slope"][1]["value"], 12)
-        self.assertEqual(series["pressure_index_5m_slope"][1]["value"], 6)
+        self.assertEqual(series["pressure_index"][1]["value"], 17)
+        self.assertEqual(series["raw_pressure"][1]["value"], 18)
+        self.assertEqual(series["pressure_index_weighted"][1]["value"], 14)
+        self.assertEqual(series["raw_pressure_weighted"][1]["value"], 16)
 
 
 if __name__ == "__main__":

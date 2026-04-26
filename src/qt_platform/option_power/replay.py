@@ -3,11 +3,13 @@ from __future__ import annotations
 from bisect import bisect_left
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from math import ceil
 from threading import Lock
 from uuid import uuid4
 
 from qt_platform.domain import Bar, CanonicalTick
 from qt_platform.option_power.aggregator import OptionPowerAggregator
+from qt_platform.regime import MtxRegimeAnalyzer, regime_schema_dicts
 from qt_platform.session import classify_session
 from qt_platform.storage.base import BarRepository
 
@@ -53,6 +55,7 @@ class ReplaySession:
             "snapshot_count": len(self.snapshots),
             "snapshot_times": self.snapshot_times,
             "available_series": sorted(self.indicator_series.keys()),
+            "regime_schema": regime_schema_dicts(),
             "bar_count": len(self.bars),
         }
 
@@ -158,12 +161,9 @@ class OptionPowerReplayService:
                 "underlying_reference_source": None,
                 "raw_pressure": 0,
                 "pressure_index": 0,
-                "raw_pressure_1m": 0,
-                "pressure_index_1m": 0,
-                "pressure_index_5m": 0,
-                "pressure_abs": 0,
-                "pressure_abs_1m": 0,
-                "pressure_abs_5m": 0,
+                "raw_pressure_weighted": 0,
+                "pressure_index_weighted": 0,
+                "regime": None,
                 "expiries": [],
                 "contract_count": 0,
                 "status": "replay_not_loaded",
@@ -181,12 +181,9 @@ class OptionPowerReplayService:
                 "underlying_reference_source": None,
                 "raw_pressure": 0,
                 "pressure_index": 0,
-                "raw_pressure_1m": 0,
-                "pressure_index_1m": 0,
-                "pressure_index_5m": 0,
-                "pressure_abs": 0,
-                "pressure_abs_1m": 0,
-                "pressure_abs_5m": 0,
+                "raw_pressure_weighted": 0,
+                "pressure_index_weighted": 0,
+                "regime": None,
                 "expiries": [],
                 "contract_count": 0,
                 "status": "replay_empty",
@@ -227,11 +224,17 @@ class OptionPowerReplayService:
         snapshot_datetimes: list[datetime] = []
         snapshot_times: list[str] = []
         latest_future_reference_price: float | None = None
+        latest_day_indicator_price: float | None = None
+        day_indicator_index = 0
         tick_index = 0
         boundary = start
         interval = timedelta(seconds=max(self.snapshot_interval_seconds, 1.0))
         session_id = f"replay-{datetime.now().strftime('%Y%m%dT%H%M%S')}-{uuid4().hex[:8]}"
         day_indicator_bars = self.store.list_bars("1m", DAY_INDICATOR_SYMBOL, start, end)
+        underlying_bars = self.store.list_bars("1m", self.underlying_symbol, start, end)
+        underlying_tick_index = 0
+        underlying_bar_index = 0
+        regime = MtxRegimeAnalyzer()
 
         while boundary <= end:
             while tick_index < len(replay_ticks) and replay_ticks[tick_index].ts <= boundary:
@@ -242,10 +245,21 @@ class OptionPowerReplayService:
                     aggregator.ingest_tick(tick)
                 tick_index += 1
 
+            while underlying_tick_index < len(underlying_ticks) and underlying_ticks[underlying_tick_index].ts <= boundary:
+                regime.ingest_tick(underlying_ticks[underlying_tick_index])
+                underlying_tick_index += 1
+
+            while underlying_bar_index < len(underlying_bars) and underlying_bars[underlying_bar_index].ts <= boundary:
+                regime.ingest_bar(underlying_bars[underlying_bar_index])
+                underlying_bar_index += 1
+
+            while day_indicator_index < len(day_indicator_bars) and day_indicator_bars[day_indicator_index].ts <= boundary:
+                latest_day_indicator_price = day_indicator_bars[day_indicator_index].close
+                day_indicator_index += 1
+
             reference_price, reference_source = _resolve_replay_reference_price(
-                boundary=boundary,
                 session=classify_session(boundary),
-                day_indicator_bars=day_indicator_bars,
+                latest_day_indicator_price=latest_day_indicator_price,
                 latest_future_reference_price=latest_future_reference_price,
                 underlying_symbol=self.underlying_symbol,
             )
@@ -256,13 +270,14 @@ class OptionPowerReplayService:
                 underlying_reference_price=reference_price,
                 underlying_reference_source=reference_source,
                 status="replay_ready",
+                regime=regime.snapshot(boundary),
             ).to_dict()
             snapshots.append(snapshot)
             snapshot_datetimes.append(boundary)
             snapshot_times.append(boundary.isoformat())
             boundary += interval
 
-        bars = [_bar_to_chart_dict(bar) for bar in self.store.list_bars("1m", self.underlying_symbol, start, end)]
+        bars = [_bar_to_chart_dict(bar) for bar in underlying_bars]
         indicator_series = _build_indicator_series(snapshot_times, snapshots)
 
         return ReplaySession(
@@ -312,60 +327,99 @@ def _contract_seeds(ticks: list[CanonicalTick]) -> list[CanonicalTick]:
 
 def _build_indicator_series(snapshot_times: list[str], snapshots: list[dict]) -> dict[str, list[dict]]:
     series_names = [
-        "pressure_index_5m",
-        "raw_pressure",
         "pressure_index",
-        "raw_pressure_1m",
-        "pressure_index_1m",
-        "pressure_abs",
-        "pressure_abs_1m",
-        "pressure_abs_5m",
+        "raw_pressure",
+        "pressure_index_weighted",
+        "raw_pressure_weighted",
+        "regime_state",
+        "structure_state",
+        "vwap_distance_bps",
+        "directional_efficiency_15m",
+        "tick_imbalance_5m",
+        "trade_intensity_ratio_30m",
+        "range_ratio_5m_30m",
     ]
     payload: dict[str, list[dict]] = {name: [] for name in series_names}
+    drive_points: list[tuple[datetime, float]] = []
+    expansion_points: list[tuple[datetime, float]] = []
+    sticky_structure_state = 0
     for ts, snapshot in zip(snapshot_times, snapshots):
+        ts_dt = datetime.fromisoformat(ts)
+        regime = snapshot.get("regime") or {}
+        drive_value = float(regime.get("directional_efficiency_15m", 0) or 0) * float(regime.get("tick_imbalance_5m", 0) or 0)
+        expansion_value = float(regime.get("range_ratio_5m_30m", 0) or 0)
+        drive_points.append((ts_dt, drive_value))
+        expansion_points.append((ts_dt, expansion_value))
         for name in series_names:
-            payload[name].append({"time": ts, "value": snapshot.get(name, 0)})
-    payload["pressure_index_slope"] = _build_slope_series(payload["pressure_index"])
-    payload["pressure_index_1m_slope"] = _build_slope_series(payload["pressure_index_1m"])
-    payload["pressure_index_5m_slope"] = _build_slope_series(payload["pressure_index_5m"])
+            if name in snapshot:
+                value = snapshot.get(name, 0)
+            else:
+                if name == "regime_state":
+                    value = _regime_state_value(regime.get("regime_label"))
+                elif name == "structure_state":
+                    candidate = _structure_state_value(ts_dt, drive_points, expansion_points)
+                    if candidate != 0:
+                        sticky_structure_state = candidate
+                    value = sticky_structure_state
+                else:
+                    value = regime.get(name, 0)
+            payload[name].append({"time": ts, "value": value})
     return payload
 
 
-def _build_slope_series(series: list[dict]) -> list[dict]:
-    points: list[dict] = []
-    previous_value: float | None = None
-    for item in series:
-        value = float(item.get("value", 0) or 0)
-        slope = 0 if previous_value is None else round(value - previous_value, 2)
-        points.append({"time": item["time"], "value": slope})
-        previous_value = value
-    return points
+def _regime_state_value(label: str | None) -> int:
+    if label == "trend_up" or label == "reversal_up":
+        return 1
+    if label == "trend_down" or label == "reversal_down":
+        return -1
+    return 0
+
+
+def _structure_state_value(
+    now: datetime,
+    drive_points: list[tuple[datetime, float]],
+    expansion_points: list[tuple[datetime, float]],
+) -> int:
+    cutoff = now - timedelta(minutes=30)
+    rolling_drive = [abs(value) for ts, value in drive_points if ts >= cutoff]
+    rolling_expansion = [value for ts, value in expansion_points if ts >= cutoff]
+    if not rolling_drive or not rolling_expansion:
+        return 0
+
+    drive_threshold = max(_quantile(rolling_drive, 0.65), 0.08)
+    expansion_threshold = max(_quantile(rolling_expansion, 0.60), 0.12)
+    current_drive = drive_points[-1][1]
+    current_expansion = expansion_points[-1][1]
+    if current_expansion <= expansion_threshold:
+        return 0
+    if current_drive > drive_threshold:
+        return 1
+    if current_drive < -drive_threshold:
+        return -1
+    return 0
+
+
+def _quantile(values: list[float], quantile: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    index = max(0, min(len(ordered) - 1, ceil(quantile * len(ordered)) - 1))
+    return ordered[index]
 
 
 def _resolve_replay_reference_price(
     *,
-    boundary: datetime,
     session: str,
-    day_indicator_bars: list[Bar],
+    latest_day_indicator_price: float | None,
     latest_future_reference_price: float | None,
     underlying_symbol: str,
 ) -> tuple[float | None, str | None]:
     if session == "day":
-        day_price = _latest_bar_close_before(day_indicator_bars, boundary)
-        if day_price is not None:
-            return day_price, DAY_INDICATOR_SYMBOL.lower()
+        if latest_day_indicator_price is not None:
+            return latest_day_indicator_price, DAY_INDICATOR_SYMBOL.lower()
     if latest_future_reference_price is not None:
         return latest_future_reference_price, underlying_symbol.lower()
     return None, None
-
-
-def _latest_bar_close_before(bars: list[Bar], boundary: datetime) -> float | None:
-    latest_close = None
-    for bar in bars:
-        if bar.ts > boundary:
-            break
-        latest_close = bar.close
-    return latest_close
 
 
 def _bar_to_chart_dict(bar: Bar) -> dict:

@@ -61,12 +61,8 @@ class OptionPowerAggregatorTest(unittest.TestCase):
         self.assertEqual(contract.unknown_volume, 2)
         self.assertEqual(snapshot.raw_pressure, 7)
         self.assertEqual(snapshot.pressure_index, 54)
-        self.assertEqual(snapshot.raw_pressure_1m, 7)
-        self.assertEqual(snapshot.pressure_index_1m, 54)
-        self.assertEqual(snapshot.pressure_index_5m, 54)
-        self.assertEqual(snapshot.pressure_abs, 13)
-        self.assertEqual(snapshot.pressure_abs_1m, 13)
-        self.assertEqual(snapshot.pressure_abs_5m, 13)
+        self.assertEqual(snapshot.raw_pressure_weighted, 7)
+        self.assertEqual(snapshot.pressure_index_weighted, 50)
 
     def test_snapshot_evicts_old_rolling_events(self) -> None:
         aggregator = OptionPowerAggregator(option_root="TXO")
@@ -232,14 +228,10 @@ class OptionPowerAggregatorTest(unittest.TestCase):
             status="running",
         )
 
-        self.assertEqual(snapshot.raw_pressure, 15)
+        self.assertEqual(snapshot.raw_pressure, 14)
         self.assertEqual(snapshot.pressure_index, 61)
-        self.assertEqual(snapshot.raw_pressure_1m, 15)
-        self.assertEqual(snapshot.pressure_index_1m, 61)
-        self.assertEqual(snapshot.pressure_index_5m, 61)
-        self.assertEqual(snapshot.pressure_abs, 23)
-        self.assertEqual(snapshot.pressure_abs_1m, 23)
-        self.assertEqual(snapshot.pressure_abs_5m, 23)
+        self.assertEqual(snapshot.raw_pressure_weighted, 15)
+        self.assertEqual(snapshot.pressure_index_weighted, 60)
 
 
 if __name__ == "__main__":

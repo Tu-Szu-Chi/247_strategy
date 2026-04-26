@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
+from qt_platform.regime import RegimeFeatureSnapshot
+
 
 @dataclass(frozen=True)
 class OptionContractSnapshot:
@@ -47,19 +49,17 @@ class OptionPowerSnapshot:
     underlying_reference_source: str | None
     raw_pressure: int
     pressure_index: int
-    raw_pressure_1m: int
-    pressure_index_1m: int
-    pressure_index_5m: int
-    pressure_abs: int
-    pressure_abs_1m: int
-    pressure_abs_5m: int
+    raw_pressure_weighted: int
+    pressure_index_weighted: int
     expiries: list[OptionExpirySnapshot]
     contract_count: int
     status: str
+    regime: RegimeFeatureSnapshot | None = None
     stop_reason: str | None = None
     warning: str | None = None
 
     def to_dict(self) -> dict:
         payload = asdict(self)
         payload["expiries"] = [expiry.to_dict() for expiry in self.expiries]
+        payload["regime"] = self.regime.to_dict() if self.regime else None
         return payload

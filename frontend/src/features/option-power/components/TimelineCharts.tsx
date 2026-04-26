@@ -1,16 +1,16 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import {
   ColorType,
+  HistogramData,
+  LineStyle,
   createChart,
   type CandlestickData,
-  type HistogramData,
   type IChartApi,
   type ISeriesApi,
   type LineData,
   type MouseEventParams,
   type Time,
 } from "lightweight-charts";
-import { prettySeriesName } from "../series";
 import type { ChartBarPoint, ChartSeriesPoint } from "../types";
 import styles from "./TimelineCharts.module.css";
 
@@ -34,126 +34,279 @@ const DISPLAY_TICK = new Intl.DateTimeFormat("zh-TW", {
   hour12: false,
 });
 
+export type IndicatorPanelSeries = {
+  id: string;
+  label: string;
+  points: ChartSeriesPoint[];
+  color: string;
+  dashed?: boolean;
+  kind?: "line" | "histogram";
+  priceScaleId?: "left" | "right";
+};
+
 type TimelineChartsProps = {
   bars: ChartBarPoint[];
-  primarySeries: ChartSeriesPoint[];
-  secondarySeries: ChartSeriesPoint[];
+  pressureSeries: IndicatorPanelSeries[];
+  rawPressureSeries: IndicatorPanelSeries[];
+  structureSeries: IndicatorPanelSeries[];
+  biasSeries: IndicatorPanelSeries[];
+  signalSeries: IndicatorPanelSeries[];
+  contextSeries: IndicatorPanelSeries[];
   mode: "live" | "replay";
-  primarySeriesName: string;
-  secondarySeriesName: string;
   onCursorTimeChange: (ts: string | null) => void;
 };
 
+type PanelId = "price" | "pressure" | "regime" | "structure" | "bias" | "signal" | "context";
+
+const PANEL_SPECS: Array<{
+  id: PanelId;
+  slot: "price" | "indicator";
+  label: string;
+  title: string;
+  legend: string;
+  height: number;
+}> = [
+  {
+    id: "price",
+    slot: "price",
+    label: "Primary",
+    title: "MTX Price",
+    legend: "MA10 / MA30 / MA60 + volume",
+    height: 360,
+  },
+  {
+    id: "pressure",
+    slot: "indicator",
+    label: "Pressure",
+    title: "Pressure Index + Regime",
+    legend: "index + weighted + state band",
+    height: 132,
+  },
+  {
+    id: "regime",
+    slot: "indicator",
+    label: "Pressure Raw",
+    title: "Raw Pressure",
+    legend: "raw + weighted",
+    height: 120,
+  },
+  {
+    id: "structure",
+    slot: "indicator",
+    label: "Structure",
+    title: "Structure State",
+    legend: "push up / balanced / push down",
+    height: 120,
+  },
+  {
+    id: "signal",
+    slot: "indicator",
+    label: "Signal",
+    title: "Signal State",
+    legend: "confirm / try / none / reverse / leave",
+    height: 120,
+  },
+  {
+    id: "bias",
+    slot: "indicator",
+    label: "Bias",
+    title: "Bias Signal",
+    legend: "long / neutral / short",
+    height: 120,
+  },
+  {
+    id: "context",
+    slot: "indicator",
+    label: "Context",
+    title: "VWAP Distance",
+    legend: "distance from session vwap",
+    height: 120,
+  },
+];
+
 export function TimelineCharts({
   bars,
-  primarySeries,
-  secondarySeries,
+  pressureSeries,
+  rawPressureSeries,
+  structureSeries,
+  biasSeries,
+  signalSeries,
+  contextSeries,
   mode,
-  primarySeriesName,
-  secondarySeriesName,
   onCursorTimeChange,
 }: TimelineChartsProps) {
-  const priceRef = useRef<HTMLDivElement | null>(null);
-  const primaryRef = useRef<HTMLDivElement | null>(null);
-  const secondaryRef = useRef<HTMLDivElement | null>(null);
-  const chartsRef = useRef<{
-    price: IChartApi | null;
-    primary: IChartApi | null;
-    secondary: IChartApi | null;
-  }>({ price: null, primary: null, secondary: null });
-  const seriesRef = useRef<{
+  const panelData = useMemo<Record<Exclude<PanelId, "price">, IndicatorPanelSeries[]>>(
+    () => ({
+      pressure: pressureSeries,
+      regime: rawPressureSeries,
+      structure: structureSeries,
+      bias: biasSeries,
+      signal: signalSeries,
+      context: contextSeries,
+    }),
+    [biasSeries, contextSeries, pressureSeries, rawPressureSeries, signalSeries, structureSeries],
+  );
+
+  const containerRefs = useRef<Record<PanelId, HTMLDivElement | null>>({
+    price: null,
+    pressure: null,
+    regime: null,
+    structure: null,
+    bias: null,
+    signal: null,
+    context: null,
+  });
+  const chartsRef = useRef<Record<PanelId, IChartApi | null>>({
+    price: null,
+    pressure: null,
+    regime: null,
+    structure: null,
+    bias: null,
+    signal: null,
+    context: null,
+  });
+  const indicatorSeriesRef = useRef<Record<string, ISeriesApi<"Line">>>({});
+  const indicatorHistogramRef = useRef<Record<string, ISeriesApi<"Histogram">>>({});
+  const priceSeriesRef = useRef<{
     candle: ISeriesApi<"Candlestick"> | null;
     volume: ISeriesApi<"Histogram"> | null;
     ma10: ISeriesApi<"Line"> | null;
     ma30: ISeriesApi<"Line"> | null;
     ma60: ISeriesApi<"Line"> | null;
-    primary: ISeriesApi<"Line"> | null;
-    secondary: ISeriesApi<"Line"> | null;
   }>({
     candle: null,
     volume: null,
     ma10: null,
     ma30: null,
     ma60: null,
-    primary: null,
-    secondary: null,
+  });
+  const representativeSeriesRef = useRef<Record<PanelId, ISeriesApi<"Line"> | ISeriesApi<"Histogram"> | ISeriesApi<"Candlestick"> | null>>({
+    price: null,
+    pressure: null,
+    regime: null,
+    structure: null,
+    bias: null,
+    signal: null,
+    context: null,
   });
   const fittedRef = useRef(false);
   const syncingRangeRef = useRef(false);
   const syncingCrosshairRef = useRef(false);
-  const hasRenderableDataRef = useRef(false);
-  const dataRef = useRef<{
-    bars: Map<number, CandlestickData>;
-    primary: Map<number, LineData>;
-    secondary: Map<number, LineData>;
-  }>({
-    bars: new Map(),
-    primary: new Map(),
-    secondary: new Map(),
+  const dataRef = useRef<Record<string, Map<number, LineData | CandlestickData>>>({
+    price: new Map(),
+    pressure: new Map(),
+    regime: new Map(),
+    structure: new Map(),
+    bias: new Map(),
+    signal: new Map(),
+    context: new Map(),
   });
 
   useEffect(() => {
-    if (!priceRef.current || !primaryRef.current || !secondaryRef.current) {
+    const hasAllContainers = PANEL_SPECS.every((panel) => containerRefs.current[panel.id]);
+    if (!hasAllContainers) {
       return;
     }
 
-    const priceChart = createConfiguredChart(priceRef.current, 420);
-    const primaryChart = createConfiguredChart(primaryRef.current, 180);
-    const secondaryChart = createConfiguredChart(secondaryRef.current, 180);
+    const charts = PANEL_SPECS.reduce<Record<PanelId, IChartApi>>((accumulator, panel) => {
+      const container = containerRefs.current[panel.id];
+      if (!container) {
+        throw new Error(`Missing chart container for ${panel.id}`);
+      }
+      accumulator[panel.id] = createConfiguredChart(container, panel.height);
+      return accumulator;
+    }, {} as Record<PanelId, IChartApi>);
 
-    const candle = priceChart.addCandlestickSeries({
+    const candle = charts.price.addCandlestickSeries({
       upColor: "#f87171",
       downColor: "#4ade80",
       borderVisible: false,
       wickUpColor: "#f87171",
       wickDownColor: "#4ade80",
-      priceScaleId: "price",
+      priceScaleId: "right",
       priceLineVisible: false,
     });
-    const volume = priceChart.addHistogramSeries({
+    const volume = charts.price.addHistogramSeries({
       priceScaleId: "volume",
       priceLineVisible: false,
       lastValueVisible: false,
       base: 0,
     });
-    const ma10 = priceChart.addLineSeries({
+    const ma10 = charts.price.addLineSeries({
       color: "#fbbf24",
-      priceScaleId: "price",
+      priceScaleId: "right",
       lineWidth: 2,
       crosshairMarkerVisible: false,
       priceLineVisible: false,
       lastValueVisible: false,
     });
-    const ma30 = priceChart.addLineSeries({
+    const ma30 = charts.price.addLineSeries({
       color: "#7dd3fc",
-      priceScaleId: "price",
+      priceScaleId: "right",
       lineWidth: 2,
       crosshairMarkerVisible: false,
       priceLineVisible: false,
       lastValueVisible: false,
     });
-    const ma60 = priceChart.addLineSeries({
+    const ma60 = charts.price.addLineSeries({
       color: "#c084fc",
-      priceScaleId: "price",
+      priceScaleId: "right",
       lineWidth: 2,
       crosshairMarkerVisible: false,
       priceLineVisible: false,
       lastValueVisible: false,
-    });
-    const primary = primaryChart.addLineSeries({
-      color: "#fbbf24",
-      lineWidth: 2,
-      crosshairMarkerVisible: true,
-      priceLineVisible: false,
-    });
-    const secondary = secondaryChart.addLineSeries({
-      color: "#7dd3fc",
-      lineWidth: 2,
-      crosshairMarkerVisible: true,
-      priceLineVisible: false,
     });
 
-    const allCharts = [priceChart, primaryChart, secondaryChart];
+    charts.price.priceScale("right").applyOptions({
+      visible: true,
+      scaleMargins: {
+        top: 0.08,
+        bottom: 0.24,
+      },
+    });
+    charts.price.priceScale("volume").applyOptions({
+      scaleMargins: {
+        top: 0.8,
+        bottom: 0.02,
+      },
+    });
+
+    const indicatorSeries: Record<string, ISeriesApi<"Line">> = {};
+    const indicatorHistograms: Record<string, ISeriesApi<"Histogram">> = {};
+    for (const panel of PANEL_SPECS) {
+      if (panel.id === "price") {
+        continue;
+      }
+      for (const series of panelData[panel.id]) {
+        if (series.kind === "histogram") {
+          indicatorHistograms[series.id] = charts[panel.id].addHistogramSeries({
+            priceScaleId: series.priceScaleId ?? "right",
+            priceLineVisible: false,
+            lastValueVisible: false,
+            base: 0,
+          });
+          continue;
+        }
+        indicatorSeries[series.id] = charts[panel.id].addLineSeries({
+          color: series.color,
+          lineWidth: 2,
+          lineStyle: series.dashed ? LineStyle.Dashed : LineStyle.Solid,
+          crosshairMarkerVisible: !series.dashed,
+          priceLineVisible: false,
+          lastValueVisible: !series.dashed,
+          priceScaleId: series.priceScaleId ?? "right",
+        });
+      }
+      if (panelData[panel.id].some((series) => series.priceScaleId === "left")) {
+        charts[panel.id].priceScale("left").applyOptions({
+          visible: true,
+          borderColor: "rgba(148, 163, 184, 0.16)",
+          autoScale: true,
+        });
+      }
+    }
+
+    const allCharts = PANEL_SPECS.map((panel) => charts[panel.id]);
     for (const sourceChart of allCharts) {
       sourceChart.timeScale().subscribeVisibleTimeRangeChange((range) => {
         if (!range || syncingRangeRef.current) {
@@ -165,7 +318,7 @@ export function TimelineCharts({
             try {
               targetChart.timeScale().setVisibleRange(range);
             } catch (_error) {
-              // Lightweight Charts can throw during bootstrap when sibling charts have no data yet.
+              // ignore bootstrap sync errors
             }
           }
         }
@@ -173,47 +326,13 @@ export function TimelineCharts({
       });
     }
 
-    chartsRef.current = {
-      price: priceChart,
-      primary: primaryChart,
-      secondary: secondaryChart,
-    };
-    priceChart.priceScale("price").applyOptions({
-      scaleMargins: {
-        top: 0.08,
-        bottom: 0.24,
-      },
-    });
-    priceChart.priceScale("volume").applyOptions({
-      scaleMargins: {
-        top: 0.8,
-        bottom: 0.02,
-      },
-    });
-
-    seriesRef.current = { candle, volume, ma10, ma30, ma60, primary, secondary };
-
-    const chartDescriptors = [
-      { chart: priceChart, kind: "price" as const },
-      { chart: primaryChart, kind: "primary" as const },
-      { chart: secondaryChart, kind: "secondary" as const },
-    ];
-
-    for (const descriptor of chartDescriptors) {
-      descriptor.chart.subscribeCrosshairMove((param) => {
+    for (const panel of PANEL_SPECS) {
+      charts[panel.id].subscribeCrosshairMove((param) => {
         handleCrosshairMove(
-          descriptor.kind,
+          panel.id,
           param,
-          {
-            price: priceChart,
-            primary: primaryChart,
-            secondary: secondaryChart,
-          },
-          {
-            candle,
-            primary,
-            secondary,
-          },
+          charts,
+          representativeSeriesRef.current,
           dataRef.current,
           syncingCrosshairRef,
           onCursorTimeChange,
@@ -222,113 +341,189 @@ export function TimelineCharts({
     }
 
     const resizeObserver = new ResizeObserver(() => {
-      if (priceRef.current) {
-        priceChart.applyOptions({ width: priceRef.current.clientWidth });
-      }
-      if (primaryRef.current) {
-        primaryChart.applyOptions({ width: primaryRef.current.clientWidth });
-      }
-      if (secondaryRef.current) {
-        secondaryChart.applyOptions({ width: secondaryRef.current.clientWidth });
+      for (const panel of PANEL_SPECS) {
+        const container = containerRefs.current[panel.id];
+        if (container) {
+          charts[panel.id].applyOptions({ width: container.clientWidth });
+        }
       }
     });
-    resizeObserver.observe(priceRef.current);
-    resizeObserver.observe(primaryRef.current);
-    resizeObserver.observe(secondaryRef.current);
+    for (const panel of PANEL_SPECS) {
+      const container = containerRefs.current[panel.id];
+      if (container) {
+        resizeObserver.observe(container);
+      }
+    }
+
+    chartsRef.current = charts;
+    priceSeriesRef.current = { candle, volume, ma10, ma30, ma60 };
+    indicatorSeriesRef.current = indicatorSeries;
+    indicatorHistogramRef.current = indicatorHistograms;
 
     return () => {
       resizeObserver.disconnect();
-      priceChart.remove();
-      primaryChart.remove();
-      secondaryChart.remove();
-      chartsRef.current = { price: null, primary: null, secondary: null };
-      seriesRef.current = { candle: null, volume: null, ma10: null, ma30: null, ma60: null, primary: null, secondary: null };
+      for (const chart of allCharts) {
+        chart.remove();
+      }
+      chartsRef.current = {
+        price: null,
+        pressure: null,
+        regime: null,
+        structure: null,
+        bias: null,
+        signal: null,
+        context: null,
+      };
+      indicatorSeriesRef.current = {};
+      indicatorHistogramRef.current = {};
+      priceSeriesRef.current = {
+        candle: null,
+        volume: null,
+        ma10: null,
+        ma30: null,
+        ma60: null,
+      };
+      representativeSeriesRef.current = {
+        price: null,
+        pressure: null,
+        regime: null,
+        structure: null,
+        bias: null,
+        signal: null,
+        context: null,
+      };
       fittedRef.current = false;
-      hasRenderableDataRef.current = false;
     };
-  }, [onCursorTimeChange]);
+  }, [onCursorTimeChange, panelData]);
 
   useEffect(() => {
-    const { price, primary, secondary } = chartsRef.current;
-    const { candle, volume, ma10, ma30, ma60, primary: primaryLine, secondary: secondaryLine } = seriesRef.current;
-    if (!price || !primary || !secondary || !candle || !volume || !ma10 || !ma30 || !ma60 || !primaryLine || !secondaryLine) {
+    const { candle, volume, ma10, ma30, ma60 } = priceSeriesRef.current;
+    if (!candle || !volume || !ma10 || !ma30 || !ma60) {
       return;
     }
 
     const normalizedBars = bars.map(normalizeBar).filter(Boolean) as CandlestickData[];
     const normalizedVolume = bars.map(normalizeVolume).filter(Boolean) as HistogramData[];
-    const normalizedPrimarySeries = primarySeries.map(normalizeLine).filter(Boolean) as LineData[];
-    const normalizedSecondarySeries = secondarySeries.map(normalizeLine).filter(Boolean) as LineData[];
-    dataRef.current = {
-      bars: new Map(normalizedBars.map((item) => [Number(item.time), item])),
-      primary: new Map(normalizedPrimarySeries.map((item) => [Number(item.time), item])),
-      secondary: new Map(normalizedSecondarySeries.map((item) => [Number(item.time), item])),
-    };
-    const hasRenderableData =
-      normalizedBars.length > 0 || normalizedPrimarySeries.length > 0 || normalizedSecondarySeries.length > 0;
 
     candle.setData(normalizedBars);
     volume.setData(normalizedVolume);
     ma10.setData(buildMovingAverageSeries(normalizedBars, 10));
     ma30.setData(buildMovingAverageSeries(normalizedBars, 30));
     ma60.setData(buildMovingAverageSeries(normalizedBars, 60));
-    primaryLine.setData(normalizedPrimarySeries);
-    secondaryLine.setData(normalizedSecondarySeries);
+    dataRef.current.price = new Map(normalizedBars.map((item) => [Number(item.time), item]));
+    representativeSeriesRef.current.price = candle;
 
+      for (const panel of PANEL_SPECS) {
+        if (panel.id === "price") {
+          continue;
+        }
+      let representativeSet = false;
+      const mergedData = new Map<number, LineData>();
+      for (const series of panelData[panel.id]) {
+        if (series.kind === "histogram") {
+          const target = indicatorHistogramRef.current[series.id];
+          if (!target) {
+            continue;
+          }
+          const normalized = series.points.map(normalizeHistogramBand).filter(Boolean) as HistogramData[];
+          target.setData(normalized);
+          for (const item of normalized) {
+            if (!mergedData.has(Number(item.time))) {
+              mergedData.set(Number(item.time), {
+                time: item.time,
+                value: Number(item.value),
+              });
+            }
+          }
+          if (!representativeSet && normalized.length > 0) {
+            representativeSeriesRef.current[panel.id] = target;
+            representativeSet = true;
+          }
+          continue;
+        }
+        const target = indicatorSeriesRef.current[series.id];
+        if (!target) {
+          continue;
+        }
+        const normalized = series.points.map(normalizeLine).filter(Boolean) as LineData[];
+        target.setData(normalized);
+        for (const item of normalized) {
+          if (!mergedData.has(Number(item.time))) {
+            mergedData.set(Number(item.time), item);
+          }
+        }
+        if (!representativeSet && normalized.length > 0) {
+          representativeSeriesRef.current[panel.id] = target;
+          representativeSet = true;
+        }
+      }
+      dataRef.current[panel.id] = mergedData;
+      if (!representativeSet) {
+        representativeSeriesRef.current[panel.id] = null;
+      }
+    }
+
+    const hasRenderableData = normalizedBars.length > 0 || PANEL_SPECS.some((panel) => {
+      if (panel.id === "price") {
+        return false;
+      }
+      return panelData[panel.id].some((series) => series.points.length > 0);
+    });
     if (!hasRenderableData) {
-      hasRenderableDataRef.current = false;
       fittedRef.current = false;
       return;
     }
 
-    if (!fittedRef.current || !hasRenderableDataRef.current) {
-      price.timeScale().fitContent();
-      primary.timeScale().fitContent();
-      secondary.timeScale().fitContent();
+    if (!fittedRef.current) {
+      for (const panel of PANEL_SPECS) {
+        chartsRef.current[panel.id]?.timeScale().fitContent();
+      }
       fittedRef.current = true;
-      hasRenderableDataRef.current = true;
       return;
     }
 
     if (mode === "live") {
-      price.timeScale().scrollToRealTime();
-      primary.timeScale().scrollToRealTime();
-      secondary.timeScale().scrollToRealTime();
+      for (const panel of PANEL_SPECS) {
+        chartsRef.current[panel.id]?.timeScale().scrollToRealTime();
+      }
     }
-  }, [bars, mode, primarySeries, secondarySeries]);
+  }, [bars, mode, panelData]);
 
   return (
     <div className={styles.column}>
-      <article className={styles.card}>
-        <div className={styles.header}>
-          <div>
-            <p className={styles.label}>Primary</p>
-            <h3 className={styles.title}>MTX Price</h3>
+      {PANEL_SPECS.map((panel) => (
+        <article key={panel.id} className={styles.card}>
+          <div className={styles.header}>
+            <div>
+              <p className={styles.label}>{panel.label}</p>
+              <h3 className={styles.title}>{panel.title}</h3>
+            </div>
+            <p className={styles.legend}>{panel.legend}</p>
           </div>
-          <p className={styles.legend}>MA10 / MA30 / MA60</p>
-        </div>
-        <div ref={priceRef} className={styles.chartBox} />
-      </article>
-
-      <article className={styles.card}>
-        <div className={styles.header}>
-          <div>
-            <p className={styles.label}>Primary Indicator</p>
-            <h3 className={styles.title}>{prettySeriesName(primarySeriesName)}</h3>
-          </div>
-        </div>
-        <div ref={primaryRef} className={styles.chartBox} />
-      </article>
-
-      <article className={styles.card}>
-        <div className={styles.header}>
-          <div>
-            <p className={styles.label}>Secondary Indicator</p>
-            <h3 className={styles.title}>{prettySeriesName(secondarySeriesName)}</h3>
-          </div>
-        </div>
-        <div ref={secondaryRef} className={styles.chartBox} />
-      </article>
+          <div
+            ref={(node) => {
+              containerRefs.current[panel.id] = node;
+            }}
+            className={styles.chartBox}
+          />
+          {panel.id === "price" ? null : (
+            <div className={styles.seriesLegend}>
+              {panelData[panel.id].map((series) => (
+                <span key={series.id} className={styles.legendItem}>
+                  <span
+                    className={styles.legendSwatch}
+                    style={{
+                      backgroundColor: series.color,
+                      opacity: series.dashed ? 0.45 : 1,
+                    }}
+                  />
+                  {series.label}
+                </span>
+              ))}
+            </div>
+          )}
+        </article>
+      ))}
     </div>
   );
 }
@@ -350,7 +545,11 @@ function createConfiguredChart(container: HTMLDivElement, height: number) {
       vertLine: { color: "rgba(245,158,11,0.4)", width: 1 },
       horzLine: { color: "rgba(245,158,11,0.25)", width: 1 },
     },
-    rightPriceScale: { borderColor: "rgba(148, 163, 184, 0.16)" },
+    rightPriceScale: {
+      visible: true,
+      borderColor: "rgba(148, 163, 184, 0.16)",
+      autoScale: true,
+    },
     localization: {
       timeFormatter: (time: Time) => formatChartTime(time, DISPLAY_DATE_TIME),
     },
@@ -414,6 +613,23 @@ function normalizeVolume(item: ChartBarPoint): HistogramData | null {
   };
 }
 
+function normalizeHistogramBand(item: ChartSeriesPoint): HistogramData | null {
+  const time = toUnixSeconds(item.time);
+  const value = Number(item.value);
+  if (Number.isNaN(time) || Number.isNaN(value)) {
+    return null;
+  }
+  return {
+    time: time as Time,
+    value,
+    color: value > 0
+      ? "rgba(248, 113, 113, 0.28)"
+      : value < 0
+        ? "rgba(168, 85, 247, 0.28)"
+        : "rgba(148, 163, 184, 0.16)",
+  };
+}
+
 function buildMovingAverageSeries(bars: CandlestickData[], period: number): LineData[] {
   const points: LineData[] = [];
   let rollingSum = 0;
@@ -468,23 +684,11 @@ function formatChartTime(time: Time, formatter: Intl.DateTimeFormat) {
 }
 
 function handleCrosshairMove(
-  source: "price" | "primary" | "secondary",
+  source: PanelId,
   param: MouseEventParams<Time>,
-  charts: {
-    price: IChartApi;
-    primary: IChartApi;
-    secondary: IChartApi;
-  },
-  series: {
-    candle: ISeriesApi<"Candlestick">;
-    primary: ISeriesApi<"Line">;
-    secondary: ISeriesApi<"Line">;
-  },
-  data: {
-    bars: Map<number, CandlestickData>;
-    primary: Map<number, LineData>;
-    secondary: Map<number, LineData>;
-  },
+  charts: Record<PanelId, IChartApi>,
+  representatives: Record<PanelId, ISeriesApi<"Line"> | ISeriesApi<"Histogram"> | ISeriesApi<"Candlestick"> | null>,
+  data: Record<string, Map<number, LineData | CandlestickData>>,
   syncingCrosshairRef: { current: boolean },
   onCursorTimeChange: (ts: string | null) => void,
 ) {
@@ -494,9 +698,9 @@ function handleCrosshairMove(
   if (!param.time) {
     syncingCrosshairRef.current = true;
     try {
-      charts.price.clearCrosshairPosition();
-      charts.primary.clearCrosshairPosition();
-      charts.secondary.clearCrosshairPosition();
+      for (const panel of PANEL_SPECS) {
+        charts[panel.id].clearCrosshairPosition();
+      }
       onCursorTimeChange(null);
     } finally {
       syncingCrosshairRef.current = false;
@@ -512,18 +716,20 @@ function handleCrosshairMove(
   syncingCrosshairRef.current = true;
   try {
     onCursorTimeChange(toIsoTime(param.time));
-    const priceBar = data.bars.get(time);
-    const primaryPoint = data.primary.get(time);
-    const secondaryPoint = data.secondary.get(time);
-
-    if (source !== "price" && priceBar) {
-      charts.price.setCrosshairPosition(Number(priceBar.close), priceBar.time, series.candle);
-    }
-    if (source !== "primary" && primaryPoint) {
-      charts.primary.setCrosshairPosition(Number(primaryPoint.value), primaryPoint.time, series.primary);
-    }
-    if (source !== "secondary" && secondaryPoint) {
-      charts.secondary.setCrosshairPosition(Number(secondaryPoint.value), secondaryPoint.time, series.secondary);
+    for (const panel of PANEL_SPECS) {
+      if (panel.id === source) {
+        continue;
+      }
+      const point = data[panel.id].get(time);
+      const series = representatives[panel.id];
+      if (!point || !series) {
+        continue;
+      }
+      if ("close" in point) {
+        charts[panel.id].setCrosshairPosition(Number(point.close), point.time, series);
+      } else {
+        charts[panel.id].setCrosshairPosition(Number(point.value), point.time, series);
+      }
     }
   } finally {
     syncingCrosshairRef.current = false;

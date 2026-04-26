@@ -1,32 +1,19 @@
 import type { ChartSeriesPoint, IndicatorInterval, OptionPowerContract } from "./types";
 
 export const PRIMARY_SERIES_OPTIONS = [
-  "pressure_index_5m",
   "pressure_index",
-  "pressure_index_1m",
-  "pressure_index_5m_slope",
-  "pressure_index_slope",
-  "pressure_index_1m_slope",
-  "pressure_abs_5m",
-  "pressure_abs",
-  "pressure_abs_1m",
   "raw_pressure",
-  "raw_pressure_1m",
+  "trend_score",
+  "chop_score",
+  "reversal_risk",
+  "vwap_distance_bps",
+  "directional_efficiency_15m",
+  "tick_imbalance_5m",
+  "trade_intensity_ratio_30m",
+  "range_ratio_5m_30m",
 ] as const;
 
-export const SECONDARY_SERIES_OPTIONS = [
-  "pressure_abs_1m",
-  "pressure_abs",
-  "pressure_abs_5m",
-  "pressure_index_1m_slope",
-  "pressure_index_slope",
-  "pressure_index_5m_slope",
-  "pressure_index_1m",
-  "pressure_index",
-  "pressure_index_5m",
-  "raw_pressure_1m",
-  "raw_pressure",
-] as const;
+export const SECONDARY_SERIES_OPTIONS = PRIMARY_SERIES_OPTIONS;
 
 export const INDICATOR_INTERVAL_OPTIONS: IndicatorInterval[] = ["5s", "30s", "1m", "5m"];
 
@@ -56,10 +43,35 @@ export function resampleSeries(points: ChartSeriesPoint[], interval: IndicatorIn
 }
 
 export function prettySeriesName(name: string) {
+  if (name === "pressure_index") {
+    return "PRESSURE INDEX";
+  }
+  if (name === "raw_pressure") {
+    return "RAW PRESSURE";
+  }
+  if (name === "trend_score") {
+    return "TREND SCORE";
+  }
+  if (name === "chop_score") {
+    return "CHOP SCORE";
+  }
+  if (name === "reversal_risk") {
+    return "REVERSAL RISK";
+  }
   return String(name || "")
     .split("_")
     .map((part) => part.toUpperCase())
     .join(" ");
+}
+
+export function weightedSeriesName(name: string) {
+  if (name === "pressure_index") {
+    return "pressure_index_weighted";
+  }
+  if (name === "raw_pressure") {
+    return "raw_pressure_weighted";
+  }
+  return null;
 }
 
 export function summarizeContractsBySide(contracts: OptionPowerContract[]) {

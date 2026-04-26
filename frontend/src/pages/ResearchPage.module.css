@@ -133,13 +133,7 @@
 .metricGrid {
   display: grid;
   gap: 12px;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
-.sidePanel {
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .aggregateGrid {
@@ -149,9 +143,20 @@
 }
 
 .workspace {
+  display: block;
+}
+
+.insights {
   display: grid;
-  grid-template-columns: minmax(0, 1.3fr) minmax(320px, 0.9fr);
+  grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.8fr);
   gap: 20px;
+}
+
+.expirySection {
+  padding: 20px;
+  border-radius: 22px;
+  border: 1px solid var(--color-border);
+  background: rgba(8, 15, 32, 0.52);
 }
 
 .error {
@@ -164,12 +169,8 @@
 
 @media (max-width: 1100px) {
   .hero,
-  .workspace {
+  .insights {
     grid-template-columns: 1fr;
-  }
-
-  .metricGrid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
