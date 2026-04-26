@@ -52,11 +52,14 @@ type TimelineChartsProps = {
   biasSeries: IndicatorPanelSeries[];
   signalSeries: IndicatorPanelSeries[];
   contextSeries: IndicatorPanelSeries[];
+  trendQualitySeries: IndicatorPanelSeries[];
+  cvdSeries: IndicatorPanelSeries[];
+  rangeStateSeries: IndicatorPanelSeries[];
   mode: "live" | "replay";
   onCursorTimeChange: (ts: string | null) => void;
 };
 
-type PanelId = "price" | "pressure" | "regime" | "structure" | "bias" | "signal" | "context";
+type PanelId = "price" | "pressure" | "regime" | "bias" | "signal" | "structure" | "context" | "trendQuality" | "cvd" | "rangeState";
 
 const PANEL_SPECS: Array<{
   id: PanelId;
@@ -91,11 +94,11 @@ const PANEL_SPECS: Array<{
     height: 120,
   },
   {
-    id: "structure",
+    id: "bias",
     slot: "indicator",
-    label: "Structure",
-    title: "Structure State",
-    legend: "push up / balanced / push down",
+    label: "Bias",
+    title: "Bias Signal",
+    legend: "long / neutral / short",
     height: 120,
   },
   {
@@ -103,15 +106,15 @@ const PANEL_SPECS: Array<{
     slot: "indicator",
     label: "Signal",
     title: "Signal State",
-    legend: "confirm / try / none / reverse / leave",
+    legend: "long / neutral / short",
     height: 120,
   },
   {
-    id: "bias",
+    id: "structure",
     slot: "indicator",
-    label: "Bias",
-    title: "Bias Signal",
-    legend: "long / neutral / short",
+    label: "Structure",
+    title: "Structure State",
+    legend: "push up / balanced / push down",
     height: 120,
   },
   {
@@ -121,6 +124,30 @@ const PANEL_SPECS: Array<{
     title: "VWAP Distance",
     legend: "distance from session vwap",
     height: 120,
+  },
+  {
+    id: "trendQuality",
+    slot: "indicator",
+    label: "Trend",
+    title: "Trend Quality",
+    legend: "quality line + bias state",
+    height: 132,
+  },
+  {
+    id: "cvd",
+    slot: "indicator",
+    label: "Flow",
+    title: "Flow Impulse",
+    legend: "impulse line + flow state",
+    height: 132,
+  },
+  {
+    id: "rangeState",
+    slot: "indicator",
+    label: "Range",
+    title: "Range State",
+    legend: "compressed / normal / expanding",
+    height: 132,
   },
 ];
 
@@ -132,6 +159,9 @@ export function TimelineCharts({
   biasSeries,
   signalSeries,
   contextSeries,
+  trendQualitySeries,
+  cvdSeries,
+  rangeStateSeries,
   mode,
   onCursorTimeChange,
 }: TimelineChartsProps) {
@@ -139,12 +169,15 @@ export function TimelineCharts({
     () => ({
       pressure: pressureSeries,
       regime: rawPressureSeries,
-      structure: structureSeries,
       bias: biasSeries,
       signal: signalSeries,
+      structure: structureSeries,
       context: contextSeries,
+      trendQuality: trendQualitySeries,
+      cvd: cvdSeries,
+      rangeState: rangeStateSeries,
     }),
-    [biasSeries, contextSeries, pressureSeries, rawPressureSeries, signalSeries, structureSeries],
+    [biasSeries, contextSeries, cvdSeries, pressureSeries, rangeStateSeries, rawPressureSeries, signalSeries, structureSeries, trendQualitySeries],
   );
 
   const containerRefs = useRef<Record<PanelId, HTMLDivElement | null>>({
@@ -155,6 +188,9 @@ export function TimelineCharts({
     bias: null,
     signal: null,
     context: null,
+    trendQuality: null,
+    cvd: null,
+    rangeState: null,
   });
   const chartsRef = useRef<Record<PanelId, IChartApi | null>>({
     price: null,
@@ -164,6 +200,9 @@ export function TimelineCharts({
     bias: null,
     signal: null,
     context: null,
+    trendQuality: null,
+    cvd: null,
+    rangeState: null,
   });
   const indicatorSeriesRef = useRef<Record<string, ISeriesApi<"Line">>>({});
   const indicatorHistogramRef = useRef<Record<string, ISeriesApi<"Histogram">>>({});
@@ -188,6 +227,9 @@ export function TimelineCharts({
     bias: null,
     signal: null,
     context: null,
+    trendQuality: null,
+    cvd: null,
+    rangeState: null,
   });
   const fittedRef = useRef(false);
   const syncingRangeRef = useRef(false);
@@ -200,6 +242,9 @@ export function TimelineCharts({
     bias: new Map(),
     signal: new Map(),
     context: new Map(),
+    trendQuality: new Map(),
+    cvd: new Map(),
+    rangeState: new Map(),
   });
 
   useEffect(() => {
@@ -373,6 +418,9 @@ export function TimelineCharts({
         bias: null,
         signal: null,
         context: null,
+        trendQuality: null,
+        cvd: null,
+        rangeState: null,
       };
       indicatorSeriesRef.current = {};
       indicatorHistogramRef.current = {};
@@ -391,6 +439,9 @@ export function TimelineCharts({
         bias: null,
         signal: null,
         context: null,
+        trendQuality: null,
+        cvd: null,
+        rangeState: null,
       };
       fittedRef.current = false;
     };
@@ -490,9 +541,12 @@ export function TimelineCharts({
   }, [bars, mode, panelData]);
 
   return (
-    <div className={styles.column}>
+    <div className={styles.grid}>
       {PANEL_SPECS.map((panel) => (
-        <article key={panel.id} className={styles.card}>
+        <article
+          key={panel.id}
+          className={`${styles.card} ${panel.slot === "price" ? styles.priceCard : styles.indicatorCard}`}
+        >
           <div className={styles.header}>
             <div>
               <p className={styles.label}>{panel.label}</p>

@@ -8,7 +8,7 @@ param(
     [string]$SessionScope = "day_and_night",
     [string]$ListenHost = "127.0.0.1",
     [int]$Port = 8000,
-    [double]$SnapshotIntervalSeconds = 5.0,
+    [double]$SnapshotIntervalSeconds = 10.0,
     [double]$ReadyTimeoutSeconds = 15.0,
     [string]$LogFile = "logs/serve-option-power.log",
     [string]$DatabaseUrl = "",

@@ -1,6 +1,6 @@
-.column {
-  display: flex;
-  flex-direction: column;
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
 }
 
@@ -9,6 +9,14 @@
   border-radius: 20px;
   border: 1px solid var(--color-border);
   background: rgba(15, 23, 42, 0.74);
+}
+
+.priceCard {
+  grid-column: 1 / -1;
+}
+
+.indicatorCard {
+  min-width: 0;
 }
 
 .header {
@@ -67,4 +75,14 @@
   height: 10px;
   border-radius: 999px;
   flex: 0 0 auto;
+}
+
+@media (max-width: 860px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .priceCard {
+    grid-column: auto;
+  }
 }

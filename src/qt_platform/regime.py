@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
+from math import log10
 from math import copysign
 
 from qt_platform.domain import Bar, CanonicalTick
@@ -21,6 +22,20 @@ class RegimeFeatureSnapshot:
     trade_intensity_5m: int
     trade_intensity_ratio_30m: float
     range_ratio_5m_30m: float
+    adx_14: float
+    plus_di_14: float
+    minus_di_14: float
+    di_bias_14: float
+    choppiness_14: float
+    compression_score: int
+    expansion_score: int
+    compression_expansion_state: str
+    session_cvd: float
+    cvd_5m_delta: float
+    cvd_15m_delta: float
+    cvd_5m_slope: float
+    price_cvd_divergence_15m: str
+    cvd_price_alignment: str
     trend_score: int
     chop_score: int
     reversal_risk: int
@@ -109,6 +124,90 @@ REGIME_SCHEMA: tuple[RegimeSchemaField, ...] = (
         interpretation="越大代表短時間內價格開始擴張，可能正在發動。",
     ),
     RegimeSchemaField(
+        name="adx_14",
+        dtype="float",
+        description="最近 14 根 1m bar 的 ADX。",
+        interpretation="越高代表最近價格推進越集中在同一方向，但通常會慢半拍。",
+    ),
+    RegimeSchemaField(
+        name="plus_di_14",
+        dtype="float",
+        description="ADX 計算中的 +DI。",
+        interpretation="越高代表多方推進力越強。",
+    ),
+    RegimeSchemaField(
+        name="minus_di_14",
+        dtype="float",
+        description="ADX 計算中的 -DI。",
+        interpretation="越高代表空方推進力越強。",
+    ),
+    RegimeSchemaField(
+        name="di_bias_14",
+        dtype="float",
+        description="+DI 減去 -DI 的差值。",
+        interpretation="正值偏多，負值偏空，絕對值越大代表方向越明顯。",
+    ),
+    RegimeSchemaField(
+        name="choppiness_14",
+        dtype="float",
+        description="最近 14 根 1m bar 的 Choppiness Index。",
+        interpretation="越高越像來回震盪，越低越像單向推進。",
+    ),
+    RegimeSchemaField(
+        name="compression_score",
+        dtype="int",
+        description="短線波動是否處於壓縮狀態的 0~100 分數。",
+        interpretation="越高代表短線區間越窄，較可能正在等待擴張。",
+    ),
+    RegimeSchemaField(
+        name="expansion_score",
+        dtype="int",
+        description="短線波動是否從壓縮轉為擴張的 0~100 分數。",
+        interpretation="越高代表短線 range 正在放大。",
+    ),
+    RegimeSchemaField(
+        name="compression_expansion_state",
+        dtype="string",
+        description="compressed / expanding / expanded / normal。",
+        interpretation="用來快速辨識現在屬於壓縮、發動、已擴張，或一般狀態。",
+    ),
+    RegimeSchemaField(
+        name="session_cvd",
+        dtype="float",
+        description="同一盤別從開盤累積到目前的 signed volume。",
+        interpretation="越大代表本盤主動買量累積越多，越小代表主動賣量累積越多。",
+    ),
+    RegimeSchemaField(
+        name="cvd_5m_delta",
+        dtype="float",
+        description="最近 5 分鐘 CVD 變化量。",
+        interpretation="正值表示近端主動買量增加，負值表示近端主動賣量增加。",
+    ),
+    RegimeSchemaField(
+        name="cvd_15m_delta",
+        dtype="float",
+        description="最近 15 分鐘 CVD 變化量。",
+        interpretation="用來和價格位移對照，觀察是否同向。",
+    ),
+    RegimeSchemaField(
+        name="cvd_5m_slope",
+        dtype="float",
+        description="最近 5 分鐘每筆有效 tick 平均帶來的 CVD 變化。",
+        interpretation="絕對值越大，代表近端成交更集中在單一方向。",
+    ),
+    RegimeSchemaField(
+        name="price_cvd_divergence_15m",
+        dtype="string",
+        description="none / bullish / bearish。",
+        interpretation="價格與 CVD 在最近 15 分鐘是否出現方向背離。",
+    ),
+    RegimeSchemaField(
+        name="cvd_price_alignment",
+        dtype="string",
+        description="aligned_up / aligned_down / diverged / neutral。",
+        interpretation="用來快速辨識價格與 CVD 是否在互相確認。",
+    ),
+    RegimeSchemaField(
         name="trend_score",
         dtype="int",
         description="綜合效率、VWAP 偏離、tick imbalance、成交節奏後的 0~100 趨勢分數。",
@@ -152,6 +251,8 @@ class _TickState:
     session: str
     signed_size: float
     direction: int
+    price: float
+    session_cvd: float
 
 
 class MtxRegimeAnalyzer:
@@ -159,6 +260,7 @@ class MtxRegimeAnalyzer:
         self._session = "unknown"
         self._cum_pv = 0.0
         self._cum_volume = 0.0
+        self._session_cvd = 0.0
         self._bars: deque[_BarState] = deque()
         self._ticks: deque[_TickState] = deque()
 
@@ -193,8 +295,11 @@ class MtxRegimeAnalyzer:
                 session=tick.session,
                 signed_size=signed_size,
                 direction=direction,
+                price=float(tick.price),
+                session_cvd=self._session_cvd + signed_size,
             )
         )
+        self._session_cvd += signed_size
         self._evict_old(tick.ts)
 
     def snapshot(self, now: datetime) -> RegimeFeatureSnapshot:
@@ -213,6 +318,20 @@ class MtxRegimeAnalyzer:
                 trade_intensity_5m=0,
                 trade_intensity_ratio_30m=0.0,
                 range_ratio_5m_30m=0.0,
+                adx_14=0.0,
+                plus_di_14=0.0,
+                minus_di_14=0.0,
+                di_bias_14=0.0,
+                choppiness_14=0.0,
+                compression_score=0,
+                expansion_score=0,
+                compression_expansion_state="normal",
+                session_cvd=0.0,
+                cvd_5m_delta=0.0,
+                cvd_15m_delta=0.0,
+                cvd_5m_slope=0.0,
+                price_cvd_divergence_15m="none",
+                cvd_price_alignment="neutral",
                 trend_score=0,
                 chop_score=0,
                 reversal_risk=0,
@@ -222,7 +341,9 @@ class MtxRegimeAnalyzer:
         bars_15m = self._bars_since(now - timedelta(minutes=15))
         bars_5m = self._bars_since(now - timedelta(minutes=5))
         bars_30m = self._bars_since(now - timedelta(minutes=30))
+        bars_60m = self._bars_since(now - timedelta(minutes=60))
         ticks_5m = self._ticks_since(now - timedelta(minutes=5))
+        ticks_15m = self._ticks_since(now - timedelta(minutes=15))
         ticks_30m = self._ticks_since(now - timedelta(minutes=30))
 
         session_vwap = latest_bar.session_vwap
@@ -237,6 +358,25 @@ class MtxRegimeAnalyzer:
         trade_intensity_5m = len(ticks_5m)
         trade_intensity_ratio_30m = _trade_intensity_ratio(ticks_5m, ticks_30m)
         range_ratio_5m_30m = _range_ratio(bars_5m, bars_30m)
+        adx_14, plus_di_14, minus_di_14, di_bias_14 = _adx_metrics(self._bars_since(now - timedelta(minutes=20)), 14)
+        choppiness_14 = _choppiness(bars_15m, 14)
+        compression_score, expansion_score, compression_expansion_state = _compression_expansion_metrics(
+            bars_5m=bars_5m,
+            bars_30m=bars_30m,
+            bars_60m=bars_60m,
+        )
+        session_cvd = self._session_cvd
+        cvd_5m_delta = _cvd_delta(ticks_5m)
+        cvd_15m_delta = _cvd_delta(ticks_15m)
+        cvd_5m_slope = _cvd_slope(ticks_5m)
+        price_cvd_divergence_15m = _price_cvd_divergence(
+            bars_15m=bars_15m,
+            cvd_15m_delta=cvd_15m_delta,
+        )
+        cvd_price_alignment = _cvd_price_alignment(
+            bars_5m=bars_5m,
+            cvd_5m_delta=cvd_5m_delta,
+        )
 
         trend_score = _trend_score(
             directional_efficiency_15m=directional_efficiency_15m,
@@ -274,6 +414,20 @@ class MtxRegimeAnalyzer:
             trade_intensity_5m=trade_intensity_5m,
             trade_intensity_ratio_30m=round(trade_intensity_ratio_30m, 3),
             range_ratio_5m_30m=round(range_ratio_5m_30m, 4),
+            adx_14=round(adx_14, 3),
+            plus_di_14=round(plus_di_14, 3),
+            minus_di_14=round(minus_di_14, 3),
+            di_bias_14=round(di_bias_14, 3),
+            choppiness_14=round(choppiness_14, 3),
+            compression_score=compression_score,
+            expansion_score=expansion_score,
+            compression_expansion_state=compression_expansion_state,
+            session_cvd=round(session_cvd, 3),
+            cvd_5m_delta=round(cvd_5m_delta, 3),
+            cvd_15m_delta=round(cvd_15m_delta, 3),
+            cvd_5m_slope=round(cvd_5m_slope, 4),
+            price_cvd_divergence_15m=price_cvd_divergence_15m,
+            cvd_price_alignment=cvd_price_alignment,
             trend_score=trend_score,
             chop_score=chop_score,
             reversal_risk=reversal_risk,
@@ -292,11 +446,12 @@ class MtxRegimeAnalyzer:
         self._session = session
         self._cum_pv = 0.0
         self._cum_volume = 0.0
+        self._session_cvd = 0.0
         self._bars.clear()
         self._ticks.clear()
 
     def _evict_old(self, now: datetime) -> None:
-        cutoff = now - timedelta(minutes=30)
+        cutoff = now - timedelta(minutes=60)
         while self._bars and self._bars[0].ts < cutoff:
             self._bars.popleft()
         while self._ticks and self._ticks[0].ts < cutoff:
@@ -313,6 +468,19 @@ def regime_schema_dicts() -> list[dict]:
     return [field.to_dict() for field in REGIME_SCHEMA]
 
 
+def _true_ranges(bars: list[_BarState]) -> list[float]:
+    values: list[float] = []
+    for index in range(1, len(bars)):
+        current = bars[index]
+        previous = bars[index - 1]
+        values.append(max(
+            current.high - current.low,
+            abs(current.high - previous.close),
+            abs(current.low - previous.close),
+        ))
+    return values
+
+
 def _directional_efficiency(bars: list[_BarState]) -> float:
     if len(bars) < 2:
         return 0.0
@@ -321,6 +489,59 @@ def _directional_efficiency(bars: list[_BarState]) -> float:
     if total_range <= 0:
         return 0.0
     return _clamp(move / total_range)
+
+
+def _adx_metrics(bars: list[_BarState], window: int) -> tuple[float, float, float, float]:
+    if len(bars) < 2:
+        return 0.0, 0.0, 0.0, 0.0
+    dx_values: list[float] = []
+    last_plus_di = 0.0
+    last_minus_di = 0.0
+    start_index = max(window, 1)
+    for end in range(start_index + 1, len(bars) + 1):
+        subset = bars[max(0, end - window - 1):end]
+        plus_dm = 0.0
+        minus_dm = 0.0
+        tr_sum = 0.0
+        for index in range(1, len(subset)):
+            current = subset[index]
+            previous = subset[index - 1]
+            up_move = current.high - previous.high
+            down_move = previous.low - current.low
+            plus_dm += up_move if up_move > down_move and up_move > 0 else 0.0
+            minus_dm += down_move if down_move > up_move and down_move > 0 else 0.0
+            tr_sum += max(
+                current.high - current.low,
+                abs(current.high - previous.close),
+                abs(current.low - previous.close),
+            )
+        if tr_sum <= 0:
+            dx_values.append(0.0)
+            continue
+        last_plus_di = (plus_dm / tr_sum) * 100.0
+        last_minus_di = (minus_dm / tr_sum) * 100.0
+        denominator = last_plus_di + last_minus_di
+        dx_values.append(0.0 if denominator <= 0 else (abs(last_plus_di - last_minus_di) / denominator) * 100.0)
+    if not dx_values:
+        return 0.0, 0.0, 0.0, 0.0
+    adx = sum(dx_values[-window:]) / min(len(dx_values), window)
+    return adx, last_plus_di, last_minus_di, last_plus_di - last_minus_di
+
+
+def _choppiness(bars: list[_BarState], window: int) -> float:
+    if len(bars) < 2:
+        return 0.0
+    subset = bars[-window:] if len(bars) >= window else bars
+    if len(subset) < 2:
+        return 0.0
+    total_range = max(bar.high for bar in subset) - min(bar.low for bar in subset)
+    if total_range <= 0:
+        return 100.0
+    tr_sum = sum(_true_ranges(subset))
+    if tr_sum <= 0:
+        return 0.0
+    period = max(len(subset) - 1, 2)
+    return _clamp((log10(tr_sum / total_range) / log10(period)) if total_range > 0 else 0.0, 0.0, 1.0) * 100.0
 
 
 def _vwap_cross_count(bars: list[_BarState]) -> int:
@@ -367,6 +588,92 @@ def _range_ratio(short_bars: list[_BarState], long_bars: list[_BarState]) -> flo
     if long_range <= 0:
         return 0.0
     return _clamp(short_range / long_range)
+
+
+def _range_width_bps(bars: list[_BarState]) -> float:
+    if not bars:
+        return 0.0
+    high = max(bar.high for bar in bars)
+    low = min(bar.low for bar in bars)
+    midpoint = (high + low) / 2.0
+    if midpoint <= 0:
+        return 0.0
+    return ((high - low) / midpoint) * 10000.0
+
+
+def _rolling_range_bps_history(bars: list[_BarState], window: int) -> list[float]:
+    history: list[float] = []
+    for end in range(window, len(bars) + 1):
+        history.append(_range_width_bps(bars[end - window:end]))
+    return history
+
+
+def _compression_expansion_metrics(
+    *,
+    bars_5m: list[_BarState],
+    bars_30m: list[_BarState],
+    bars_60m: list[_BarState],
+) -> tuple[int, int, str]:
+    current_5m_bps = _range_width_bps(bars_5m)
+    history = _rolling_range_bps_history(bars_60m, 5)
+    percentile = _percentile_rank(history, current_5m_bps)
+    compression_score = round(_clamp((0.35 - percentile) / 0.35) * 100)
+    expansion_score = round(_clamp((percentile - 0.45) / 0.55) * 100)
+    ratio = _range_ratio(bars_5m, bars_30m)
+    if percentile <= 0.25:
+        state = "compressed"
+    elif percentile >= 0.85:
+        state = "expanded"
+    elif percentile >= 0.60 and ratio >= 0.22:
+        state = "expanding"
+    else:
+        state = "normal"
+    return compression_score, expansion_score, state
+
+
+def _cvd_delta(ticks: list[_TickState]) -> float:
+    if not ticks:
+        return 0.0
+    return ticks[-1].session_cvd - ticks[0].session_cvd
+
+
+def _cvd_slope(ticks: list[_TickState]) -> float:
+    effective = [tick for tick in ticks if tick.direction != 0]
+    if not effective:
+        return 0.0
+    return _cvd_delta(effective) / len(effective)
+
+
+def _price_cvd_divergence(*, bars_15m: list[_BarState], cvd_15m_delta: float) -> str:
+    if len(bars_15m) < 2:
+        return "none"
+    price_move = bars_15m[-1].close - bars_15m[0].close
+    if abs(price_move) < 8 or abs(cvd_15m_delta) < 20:
+        return "none"
+    price_direction = _signed_direction(price_move)
+    cvd_direction = _signed_direction(cvd_15m_delta)
+    if price_direction > 0 and cvd_direction < 0:
+        return "bearish"
+    if price_direction < 0 and cvd_direction > 0:
+        return "bullish"
+    return "none"
+
+
+def _cvd_price_alignment(*, bars_5m: list[_BarState], cvd_5m_delta: float) -> str:
+    if len(bars_5m) < 2:
+        return "neutral"
+    price_move = bars_5m[-1].close - bars_5m[0].close
+    if abs(price_move) < 4 and abs(cvd_5m_delta) < 10:
+        return "neutral"
+    price_direction = _signed_direction(price_move)
+    cvd_direction = _signed_direction(cvd_5m_delta)
+    if price_direction > 0 and cvd_direction > 0:
+        return "aligned_up"
+    if price_direction < 0 and cvd_direction < 0:
+        return "aligned_down"
+    if price_direction != 0 and cvd_direction != 0 and price_direction != cvd_direction:
+        return "diverged"
+    return "neutral"
 
 
 def _trend_score(
@@ -480,6 +787,13 @@ def _signed_direction(value: float) -> int:
     if abs(value) < 1e-9:
         return 0
     return int(copysign(1, value))
+
+
+def _percentile_rank(values: list[float], current: float) -> float:
+    if not values:
+        return 0.0
+    less_or_equal = sum(1 for value in values if value <= current)
+    return _clamp(less_or_equal / len(values))
 
 
 def _clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:

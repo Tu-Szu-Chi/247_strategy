@@ -9,8 +9,11 @@ class DummyStore:
     def __init__(self, ticks, bars=None):
         self.ticks = ticks
         self.bars = bars or []
+        self.list_ticks_for_symbols_calls = 0
+        self.list_bars_calls = 0
 
     def list_ticks_for_symbols(self, symbols, start, end):
+        self.list_ticks_for_symbols_calls += 1
         selected = []
         allowed = set(symbols)
         for tick in self.ticks:
@@ -22,6 +25,7 @@ class DummyStore:
         return sorted(selected, key=lambda item: (item.ts, item.instrument_key or "", item.price, item.size, item.source))
 
     def list_bars(self, timeframe, symbol, start, end):
+        self.list_bars_calls += 1
         selected = []
         for bar in self.bars:
             if bar.symbol != symbol:
@@ -149,6 +153,9 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
         self.assertTrue(any(field["name"] == "trend_score" for field in metadata["regime_schema"]))
         self.assertIn("regime_state", metadata["available_series"])
         self.assertIn("structure_state", metadata["available_series"])
+        self.assertIn("adx_14", metadata["available_series"])
+        self.assertIn("session_cvd", metadata["available_series"])
+        self.assertIn("compression_score", metadata["available_series"])
 
         default_snapshot = service.current_snapshot()
         self.assertEqual(default_snapshot["underlying_reference_price"], 19400.0)
@@ -168,6 +175,9 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
         self.assertIn("trend_score", payload["snapshot"]["regime"])
         self.assertIn("chop_score", payload["snapshot"]["regime"])
         self.assertIn("reversal_risk", payload["snapshot"]["regime"])
+        self.assertIn("adx_14", payload["snapshot"]["regime"])
+        self.assertIn("compression_expansion_state", payload["snapshot"]["regime"])
+        self.assertIn("session_cvd", payload["snapshot"]["regime"])
 
         bars = service.get_bars(metadata["session_id"])
         self.assertEqual(len(bars), 1)
@@ -182,16 +192,22 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
                 "raw_pressure_weighted",
                 "regime_state",
                 "structure_state",
+                "adx_14",
+                "session_cvd",
+                "compression_score",
             ],
         )
         self.assertEqual(
             sorted(series.keys()),
             [
+                "adx_14",
+                "compression_score",
                 "pressure_index",
                 "pressure_index_weighted",
                 "raw_pressure",
                 "raw_pressure_weighted",
                 "regime_state",
+                "session_cvd",
                 "structure_state",
             ],
         )
@@ -202,10 +218,77 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
         self.assertEqual(series["pressure_index_weighted"][1]["value"], 100)
         self.assertEqual(len(series["regime_state"]), 3)
         self.assertEqual(len(series["structure_state"]), 3)
+        self.assertEqual(len(series["adx_14"]), 3)
+        self.assertEqual(len(series["session_cvd"]), 3)
 
         snapshot_at = service.get_snapshot_at(metadata["session_id"], base_ts + timedelta(seconds=6))
         self.assertIsNotNone(snapshot_at)
         self.assertEqual(snapshot_at["index"], 1)
+
+    def test_create_session_reuses_covering_session(self) -> None:
+        base_ts = datetime(2026, 4, 16, 9, 0, 0)
+        store = DummyStore(
+            [
+                _tick(
+                    ts=base_ts,
+                    symbol="MTX",
+                    price=19450.0,
+                    size=1,
+                    instrument_key="MTX202605",
+                ),
+                _tick(
+                    ts=base_ts + timedelta(seconds=1),
+                    symbol="TXX",
+                    price=120.0,
+                    size=10,
+                    instrument_key="TXX20260419400C",
+                    contract_month="202604",
+                    strike_price=19400.0,
+                    call_put="call",
+                    tick_direction="up",
+                ),
+            ],
+            bars=[
+                Bar(
+                    ts=base_ts,
+                    trading_day=date(2026, 4, 16),
+                    symbol="MTX",
+                    contract_month="202605",
+                    session="day",
+                    open=19440.0,
+                    high=19460.0,
+                    low=19430.0,
+                    close=19450.0,
+                    volume=1200.0,
+                    open_interest=None,
+                    source="stub_replay",
+                    instrument_key="MTX202605",
+                ),
+            ],
+        )
+        service = OptionPowerReplayService(
+            store=store,
+            option_root="AUTO",
+            expiry_count=2,
+            underlying_symbol="MTX",
+            snapshot_interval_seconds=5.0,
+        )
+
+        full = service.create_session(
+            start=base_ts,
+            end=base_ts + timedelta(minutes=30),
+            set_as_default=True,
+        )
+        self.assertEqual(store.list_ticks_for_symbols_calls, 1)
+        self.assertEqual(store.list_bars_calls, 2)
+
+        subset = service.create_session(
+            start=base_ts + timedelta(minutes=5),
+            end=base_ts + timedelta(minutes=10),
+        )
+        self.assertEqual(subset["session_id"], full["session_id"])
+        self.assertEqual(store.list_ticks_for_symbols_calls, 1)
+        self.assertEqual(store.list_bars_calls, 2)
 
 
 if __name__ == "__main__":

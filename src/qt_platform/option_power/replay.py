@@ -86,12 +86,41 @@ class OptionPowerReplayService:
         end: datetime,
         set_as_default: bool = False,
     ) -> dict:
+        with self._lock:
+            existing = self._find_covering_session_locked(start=start, end=end)
+            if existing is not None:
+                if set_as_default or self._default_session_id is None:
+                    self._default_session_id = existing.session_id
+                return existing.metadata()
+
         replay_session = self._build_session(start=start, end=end)
         with self._lock:
+            existing = self._find_covering_session_locked(start=start, end=end)
+            if existing is not None:
+                if set_as_default or self._default_session_id is None:
+                    self._default_session_id = existing.session_id
+                return existing.metadata()
             self._sessions[replay_session.session_id] = replay_session
             if set_as_default or self._default_session_id is None:
                 self._default_session_id = replay_session.session_id
         return replay_session.metadata()
+
+    def _find_covering_session_locked(self, *, start: datetime, end: datetime) -> ReplaySession | None:
+        covering = [
+            session
+            for session in self._sessions.values()
+            if session.start <= start and session.end >= end
+        ]
+        if not covering:
+            return None
+        return min(
+            covering,
+            key=lambda session: (
+                (session.end - session.start).total_seconds(),
+                session.start,
+                session.session_id,
+            ),
+        )
 
     def get_session_metadata(self, session_id: str) -> dict | None:
         session = self._sessions.get(session_id)
@@ -338,6 +367,20 @@ def _build_indicator_series(snapshot_times: list[str], snapshots: list[dict]) ->
         "tick_imbalance_5m",
         "trade_intensity_ratio_30m",
         "range_ratio_5m_30m",
+        "adx_14",
+        "plus_di_14",
+        "minus_di_14",
+        "di_bias_14",
+        "choppiness_14",
+        "compression_score",
+        "expansion_score",
+        "compression_expansion_state",
+        "session_cvd",
+        "cvd_5m_delta",
+        "cvd_15m_delta",
+        "cvd_5m_slope",
+        "cvd_price_alignment",
+        "price_cvd_divergence_15m",
     ]
     payload: dict[str, list[dict]] = {name: [] for name in series_names}
     drive_points: list[tuple[datetime, float]] = []
@@ -361,6 +404,12 @@ def _build_indicator_series(snapshot_times: list[str], snapshots: list[dict]) ->
                     if candidate != 0:
                         sticky_structure_state = candidate
                     value = sticky_structure_state
+                elif name == "compression_expansion_state":
+                    value = _compression_expansion_state_value(regime.get("compression_expansion_state"))
+                elif name == "cvd_price_alignment":
+                    value = _cvd_price_alignment_value(regime.get("cvd_price_alignment"))
+                elif name == "price_cvd_divergence_15m":
+                    value = _price_cvd_divergence_value(regime.get("price_cvd_divergence_15m"))
                 else:
                     value = regime.get(name, 0)
             payload[name].append({"time": ts, "value": value})
@@ -395,6 +444,34 @@ def _structure_state_value(
     if current_drive > drive_threshold:
         return 1
     if current_drive < -drive_threshold:
+        return -1
+    return 0
+
+
+def _compression_expansion_state_value(state: str | None) -> int:
+    if state == "compressed":
+        return -1
+    if state == "expanding":
+        return 1
+    if state == "expanded":
+        return 2
+    return 0
+
+
+def _cvd_price_alignment_value(state: str | None) -> int:
+    if state == "aligned_up":
+        return 1
+    if state == "aligned_down":
+        return -1
+    if state == "diverged":
+        return 2
+    return 0
+
+
+def _price_cvd_divergence_value(state: str | None) -> int:
+    if state == "bullish":
+        return 1
+    if state == "bearish":
         return -1
     return 0
 
