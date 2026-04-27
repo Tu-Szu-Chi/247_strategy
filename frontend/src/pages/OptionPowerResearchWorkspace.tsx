@@ -180,6 +180,17 @@ export function OptionPowerResearchWorkspace({
     ],
     [activeSeries, indicatorInterval],
   );
+  const chopPanelSeries = useMemo<IndicatorPanelSeries[]>(
+    () => [
+      {
+        id: "chop_score",
+        label: "Chop Score",
+        points: resampleSeries(activeSeries.chop_score ?? [], indicatorInterval),
+        color: "#f472b6",
+      },
+    ],
+    [activeSeries, indicatorInterval],
+  );
   const contextPanelSeries = useMemo<IndicatorPanelSeries[]>(
     () => [
       {
@@ -390,6 +401,7 @@ export function OptionPowerResearchWorkspace({
           bars={activeBars}
           pressureSeries={pressurePanelSeries}
           rawPressureSeries={rawPressurePanelSeries}
+          chopSeries={chopPanelSeries}
           structureSeries={structurePanelSeries}
           biasSeries={biasPanelSeries}
           signalSeries={signalPanelSeries}
@@ -408,7 +420,6 @@ export function OptionPowerResearchWorkspace({
           <MetricCard label="Intensity 30m" value={formatIntensity(regime?.trade_intensity_ratio_30m ?? 0)} tone={intensityTone(regime?.trade_intensity_ratio_30m ?? 0)} />
           <MetricCard label="Regime" value={formatRegimeLabel(regime?.regime_label ?? "no_data")} tone={regimeTone(regime?.regime_label ?? "no_data")} />
           <MetricCard label="Trend Score" value={formatSigned(regime?.trend_score ?? 0)} tone={toneOf(regime?.trend_score ?? 0)} />
-          <MetricCard label="Chop Score" value={formatSigned(regime?.chop_score ?? 0)} tone={toneOf(-(regime?.chop_score ?? 0))} />
           <MetricCard label="Reversal Risk" value={formatSigned(regime?.reversal_risk ?? 0)} tone={toneOf(-(regime?.reversal_risk ?? 0))} />
           <MetricCard label="VWAP Dist" value={formatSignedFloat(regime?.vwap_distance_bps ?? 0, " bps")} tone={toneOf(regime?.vwap_distance_bps ?? 0)} />
           <MetricCard label="Pressure Index" value={formatSigned(snapshot?.pressure_index ?? 0)} tone={sessionTone} />

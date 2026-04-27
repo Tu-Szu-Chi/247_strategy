@@ -59,7 +59,7 @@ type TimelineChartsProps = {
   onCursorTimeChange: (ts: string | null) => void;
 };
 
-type PanelId = "price" | "pressure" | "regime" | "bias" | "signal" | "structure" | "context" | "trendQuality" | "cvd" | "rangeState";
+type PanelId = "price" | "pressure" | "regime" | "bias" | "signal" | "chop" | "structure" | "context" | "trendQuality" | "cvd" | "rangeState";
 
 const PANEL_SPECS: Array<{
   id: PanelId;
@@ -110,6 +110,14 @@ const PANEL_SPECS: Array<{
     height: 120,
   },
   {
+    id: "chop",
+    slot: "indicator",
+    label: "Chop",
+    title: "Chop Score",
+    legend: "chop intensity",
+    height: 120,
+  },
+  {
     id: "structure",
     slot: "indicator",
     label: "Structure",
@@ -155,6 +163,7 @@ export function TimelineCharts({
   bars,
   pressureSeries,
   rawPressureSeries,
+  chopSeries,
   structureSeries,
   biasSeries,
   signalSeries,
@@ -171,19 +180,21 @@ export function TimelineCharts({
       regime: rawPressureSeries,
       bias: biasSeries,
       signal: signalSeries,
+      chop: chopSeries,
       structure: structureSeries,
       context: contextSeries,
       trendQuality: trendQualitySeries,
       cvd: cvdSeries,
       rangeState: rangeStateSeries,
     }),
-    [biasSeries, contextSeries, cvdSeries, pressureSeries, rangeStateSeries, rawPressureSeries, signalSeries, structureSeries, trendQualitySeries],
+    [biasSeries, chopSeries, contextSeries, cvdSeries, pressureSeries, rangeStateSeries, rawPressureSeries, signalSeries, structureSeries, trendQualitySeries],
   );
 
   const containerRefs = useRef<Record<PanelId, HTMLDivElement | null>>({
     price: null,
     pressure: null,
     regime: null,
+    chop: null,
     structure: null,
     bias: null,
     signal: null,
@@ -196,6 +207,7 @@ export function TimelineCharts({
     price: null,
     pressure: null,
     regime: null,
+    chop: null,
     structure: null,
     bias: null,
     signal: null,
@@ -223,6 +235,7 @@ export function TimelineCharts({
     price: null,
     pressure: null,
     regime: null,
+    chop: null,
     structure: null,
     bias: null,
     signal: null,
@@ -238,6 +251,7 @@ export function TimelineCharts({
     price: new Map(),
     pressure: new Map(),
     regime: new Map(),
+    chop: new Map(),
     structure: new Map(),
     bias: new Map(),
     signal: new Map(),
@@ -414,6 +428,7 @@ export function TimelineCharts({
         price: null,
         pressure: null,
         regime: null,
+        chop: null,
         structure: null,
         bias: null,
         signal: null,
@@ -435,6 +450,7 @@ export function TimelineCharts({
         price: null,
         pressure: null,
         regime: null,
+        chop: null,
         structure: null,
         bias: null,
         signal: null,
