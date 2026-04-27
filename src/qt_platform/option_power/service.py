@@ -14,6 +14,8 @@ from qt_platform.features import compute_minute_force_feature_series
 from qt_platform.live.recorder import aggregate_ticks_to_bars
 from qt_platform.live.shioaji_provider import ShioajiLiveProvider, _contract_month
 from qt_platform.option_power.aggregator import OptionPowerAggregator
+from qt_platform.option_power.replay import _build_indicator_series
+from qt_platform.regime import MtxRegimeAnalyzer, regime_schema_dicts
 from qt_platform.session import (
     classify_session,
     is_in_activation_scope,
@@ -98,6 +100,7 @@ class OptionPowerRuntimeService:
         self.error_message: str | None = None
 
         self.aggregator = OptionPowerAggregator(option_root=option_root)
+        self.regime = MtxRegimeAnalyzer()
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
         self._stopped = threading.Event()
@@ -134,6 +137,7 @@ class OptionPowerRuntimeService:
             underlying_reference_price=self.underlying_reference_price,
             underlying_reference_source=self.underlying_reference_source,
             status=self.status,
+            regime=self.regime.snapshot(datetime.now()),
             stop_reason=self.stop_reason,
             warning=self.warning or self.error_message,
         )
@@ -143,26 +147,23 @@ class OptionPowerRuntimeService:
         with self._history_lock:
             first_ts = self._snapshot_history[0]["simulated_at"] if self._snapshot_history else None
             last_ts = self._snapshot_history[-1]["simulated_at"] if self._snapshot_history else None
-            return {
-                "mode": "live",
-                "run_id": self.run_id,
-                "status": self.status,
-                "option_root": self.aggregator.option_root,
-                "underlying_symbol": _canonical_underlying_symbol(self.underlying_future_symbol),
-                "snapshot_count": len(self._snapshot_history),
-                "bar_count": len(self._bars_history),
-                "start": first_ts,
-                "end": last_ts,
-                "selected_option_roots": [
-                    item for item in self.aggregator.option_root.split(",") if item
-                ],
-                "available_series": [
-                    "pressure_index",
-                    "raw_pressure",
-                    "pressure_index_weighted",
-                    "raw_pressure_weighted",
-                ],
-            }
+        available_series = sorted(self.live_series(["__all__"]).keys())
+        return {
+            "mode": "live",
+            "run_id": self.run_id,
+            "status": self.status,
+            "option_root": self.aggregator.option_root,
+            "underlying_symbol": _canonical_underlying_symbol(self.underlying_future_symbol),
+            "snapshot_count": len(self._snapshot_history),
+            "bar_count": len(self._bars_history),
+            "start": first_ts,
+            "end": last_ts,
+            "selected_option_roots": [
+                item for item in self.aggregator.option_root.split(",") if item
+            ],
+            "available_series": available_series,
+            "regime_schema": regime_schema_dicts(),
+        }
 
     def live_bars(self) -> list[dict[str, Any]]:
         with self._history_lock:
@@ -178,23 +179,14 @@ class OptionPowerRuntimeService:
     def live_series(self, names: list[str]) -> dict[str, list[dict[str, Any]]]:
         with self._history_lock:
             history = list(self._snapshot_history)
-        base_series: dict[str, list[dict[str, Any]]] = {}
-        for name in (
-            "pressure_index",
-            "raw_pressure",
-            "pressure_index_weighted",
-            "raw_pressure_weighted",
-        ):
-            base_series[name] = [
-                {"time": item["simulated_at"], "value": item["snapshot"].get(name, 0)}
-                for item in history
-            ]
+        snapshot_times = [item["simulated_at"] for item in history]
+        snapshots = [item["snapshot"] for item in history]
+        full_series = _build_indicator_series(snapshot_times, snapshots)
+        if names == ["__all__"]:
+            return full_series
         payload: dict[str, list[dict[str, Any]]] = {}
         for name in names:
-            if name in base_series:
-                payload[name] = base_series[name]
-            else:
-                payload[name] = []
+            payload[name] = full_series.get(name, [])
         return payload
 
     def live_snapshot_at(self, ts: datetime) -> dict[str, Any] | None:
@@ -438,6 +430,7 @@ class OptionPowerRuntimeService:
         )
 
     def _reset_live_cache(self) -> None:
+        self.regime = MtxRegimeAnalyzer()
         with self._history_lock:
             self._snapshot_history.clear()
             self._bars_history.clear()
@@ -447,6 +440,7 @@ class OptionPowerRuntimeService:
             self._next_snapshot_at = None
 
     def _ingest_underlying_tick(self, tick: CanonicalTick) -> None:
+        self.regime.ingest_tick(tick)
         minute_ts = tick.ts.replace(second=0, microsecond=0)
         with self._history_lock:
             if self._open_bar_state is None or self._open_bar_state.minute_ts != minute_ts:
@@ -470,6 +464,7 @@ class OptionPowerRuntimeService:
                     up_ticks=1.0 if tick.tick_direction == "up" else 0.0,
                     down_ticks=1.0 if tick.tick_direction == "down" else 0.0,
                 )
+                self.regime.ingest_bar(_bar_state_to_domain_bar(self._open_bar_state))
                 return
 
             state = self._open_bar_state
@@ -481,6 +476,7 @@ class OptionPowerRuntimeService:
                 state.up_ticks += 1
             elif tick.tick_direction == "down":
                 state.down_ticks += 1
+            self.regime.ingest_bar(_bar_state_to_domain_bar(state))
 
     def _append_closed_bar(self, state: _MinuteBarState) -> None:
         bar = _bar_state_to_chart_dict(state)
@@ -530,6 +526,7 @@ class OptionPowerRuntimeService:
                 underlying_reference_price=self.underlying_reference_price,
                 underlying_reference_source=self.underlying_reference_source,
                 status=self.status,
+                regime=self.regime.snapshot(self._next_snapshot_at),
                 stop_reason=self.stop_reason,
                 warning=self.warning or self.error_message,
             ).to_dict()
@@ -631,6 +628,29 @@ def _bar_state_to_chart_dict(state: _MinuteBarState | None) -> dict[str, Any] | 
         "close": state.close,
         "volume": state.volume,
     }
+
+
+def _bar_state_to_domain_bar(state: _MinuteBarState) -> Bar:
+    return Bar(
+        ts=state.minute_ts,
+        trading_day=state.trading_day,
+        symbol=state.symbol,
+        instrument_key=state.instrument_key,
+        contract_month=state.contract_month,
+        strike_price=state.strike_price,
+        call_put=state.call_put,
+        session=state.session,
+        open=state.open,
+        high=state.high,
+        low=state.low,
+        close=state.close,
+        volume=state.volume,
+        open_interest=None,
+        source=state.source,
+        up_ticks=state.up_ticks,
+        down_ticks=state.down_ticks,
+        build_source="live_snapshot_agg",
+    )
 
 
 

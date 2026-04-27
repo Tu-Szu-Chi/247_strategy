@@ -268,6 +268,10 @@ class MtxRegimeAnalyzer:
         if bar.session not in {"day", "night"}:
             return
         self._reset_if_session_changed(bar.session)
+        if self._bars and self._bars[-1].ts == bar.ts and self._bars[-1].session == bar.session:
+            previous = self._bars.pop()
+            self._cum_pv -= previous.close * previous.volume
+            self._cum_volume -= previous.volume
         self._cum_pv += bar.close * bar.volume
         self._cum_volume += bar.volume
         self._bars.append(
