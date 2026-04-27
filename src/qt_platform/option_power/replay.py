@@ -362,6 +362,7 @@ def _build_indicator_series(snapshot_times: list[str], snapshots: list[dict]) ->
         "raw_pressure_weighted",
         "regime_state",
         "structure_state",
+        "chop_score",
         "vwap_distance_bps",
         "directional_efficiency_15m",
         "tick_imbalance_5m",
