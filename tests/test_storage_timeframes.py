@@ -1,8 +1,9 @@
+import sqlite3
 import unittest
 from datetime import datetime
 from tempfile import TemporaryDirectory
 
-from qt_platform.domain import Bar
+from qt_platform.domain import Bar, CanonicalTick
 from qt_platform.storage.bar_store import SQLiteBarStore
 
 
@@ -69,3 +70,63 @@ class StorageTimeframesTest(unittest.TestCase):
 
         self.assertEqual(len(rows), 2)
         self.assertEqual({row.instrument_key for row in rows}, {"TXO:202404W1:18000:call", "TXO:202404W1:18100:put"})
+
+    def test_tick_symbol_stats_and_query_indexes_are_available(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            db_path = f"{temp_dir}/bars.db"
+            store = SQLiteBarStore(db_path)
+            store.append_ticks(
+                [
+                    CanonicalTick(
+                        ts=datetime(2026, 4, 16, 9, 0, 0),
+                        trading_day=datetime(2026, 4, 16).date(),
+                        symbol="TX4",
+                        instrument_key="TX420260419500C",
+                        contract_month="202604",
+                        strike_price=19500.0,
+                        call_put="call",
+                        session="day",
+                        price=100.0,
+                        size=1.0,
+                        source="test",
+                    ),
+                    CanonicalTick(
+                        ts=datetime(2026, 4, 16, 9, 0, 1),
+                        trading_day=datetime(2026, 4, 16).date(),
+                        symbol="TX4",
+                        instrument_key="TX420260419600P",
+                        contract_month="202605",
+                        strike_price=19600.0,
+                        call_put="put",
+                        session="day",
+                        price=90.0,
+                        size=2.0,
+                        source="test",
+                    ),
+                    CanonicalTick(
+                        ts=datetime(2026, 4, 16, 9, 0, 2),
+                        trading_day=datetime(2026, 4, 16).date(),
+                        symbol="MTX",
+                        instrument_key="MTX202605",
+                        contract_month="202605",
+                        strike_price=None,
+                        call_put=None,
+                        session="day",
+                        price=19520.0,
+                        size=1.0,
+                        source="test",
+                    ),
+                ]
+            )
+
+            stats = store.list_tick_symbol_stats(
+                ["TX4", "MTX"],
+                datetime(2026, 4, 16, 9, 0, 0),
+                datetime(2026, 4, 16, 9, 1, 0),
+            )
+            with sqlite3.connect(db_path) as conn:
+                index_rows = conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'").fetchall()
+
+        self.assertEqual(stats, [{"symbol": "TX4", "first_contract_month": "202604", "tick_count": 2}])
+        self.assertIn("idx_raw_ticks_symbol_ts", {row[0] for row in index_rows})
+        self.assertIn("idx_bars_1m_symbol_ts", {row[0] for row in index_rows})

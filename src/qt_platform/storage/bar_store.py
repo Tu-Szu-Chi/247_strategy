@@ -325,6 +325,39 @@ class SQLiteBarStore(BarRepository):
             rows = cursor.fetchall()
         return [self._row_to_tick(row) for row in rows]
 
+    def list_tick_symbol_stats(
+        self,
+        symbols: list[str],
+        start: datetime,
+        end: datetime,
+    ) -> list[dict]:
+        if not symbols:
+            return []
+        placeholders = ",".join("?" for _ in symbols)
+        with sqlite3.connect(self.path) as conn:
+            cursor = conn.execute(
+                f"""
+                SELECT symbol, MIN(contract_month), COUNT(*)
+                FROM raw_ticks
+                WHERE symbol IN ({placeholders})
+                  AND ts >= ?
+                  AND ts <= ?
+                  AND strike_price IS NOT NULL
+                  AND call_put IS NOT NULL
+                GROUP BY symbol
+                """,
+                [*symbols, start.isoformat(), end.isoformat()],
+            )
+            rows = cursor.fetchall()
+        return [
+            {
+                "symbol": row[0],
+                "first_contract_month": row[1] or "999999",
+                "tick_count": int(row[2]),
+            }
+            for row in rows
+        ]
+
     def upsert_minute_force_features(self, features: Iterable[MinuteForceFeatures]) -> int:
         rows = [self._feature_to_row(feature) for feature in features]
         if not rows:
@@ -520,6 +553,7 @@ class SQLiteBarStore(BarRepository):
                 except sqlite3.OperationalError as exc:
                     if "duplicate column name" not in str(exc).lower():
                         raise
+            _ensure_indexes(conn)
 
     @staticmethod
     def _bar_to_row(bar: Bar) -> dict:
@@ -676,6 +710,16 @@ def _has_primary_key(conn: sqlite3.Connection, table: str, expected_columns: tup
             pk_columns.append((pk_position, row[1]))
     ordered = tuple(name for _, name in sorted(pk_columns))
     return ordered == expected_columns
+
+
+def _ensure_indexes(conn: sqlite3.Connection) -> None:
+    for ddl in (
+        "CREATE INDEX IF NOT EXISTS idx_bars_1m_symbol_ts ON bars_1m(symbol, ts)",
+        "CREATE INDEX IF NOT EXISTS idx_bars_1d_symbol_ts ON bars_1d(symbol, ts)",
+        "CREATE INDEX IF NOT EXISTS idx_raw_ticks_symbol_ts ON raw_ticks(symbol, ts)",
+        "CREATE INDEX IF NOT EXISTS idx_minute_force_features_1m_symbol_ts ON minute_force_features_1m(symbol, ts)",
+    ):
+        conn.execute(ddl)
 
 
 def _column_names(conn: sqlite3.Connection, table: str) -> set[str]:

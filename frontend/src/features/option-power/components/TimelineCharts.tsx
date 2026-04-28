@@ -60,6 +60,7 @@ type TimelineChartsProps = {
   visiblePanelIds?: PanelId[];
   mode: "live" | "replay";
   onCursorTimeChange: (ts: string | null) => void;
+  onVisibleRangeChange?: (start: string, end: string) => void;
   viewKey?: string;
 };
 
@@ -187,6 +188,7 @@ export function TimelineCharts({
   visiblePanelIds,
   mode,
   onCursorTimeChange,
+  onVisibleRangeChange,
   viewKey,
 }: TimelineChartsProps) {
   const panelData = useMemo<Record<Exclude<PanelId, "price">, IndicatorPanelSeries[]>>(
@@ -205,13 +207,31 @@ export function TimelineCharts({
     }),
     [biasSeries, chopSeries, contextSeries, cvdSeries, ivSkewSeries, pressureSeries, rangeStateSeries, rawPressureSeries, signalSeries, structureSeries, trendQualitySeries],
   );
+  const visiblePanelKey = visiblePanelIds?.join(",") ?? "";
   const visiblePanels = useMemo(() => {
     if (!visiblePanelIds?.length) {
       return PANEL_SPECS;
     }
     const allowed = new Set(visiblePanelIds);
     return PANEL_SPECS.filter((panel) => allowed.has(panel.id));
-  }, [visiblePanelIds]);
+  }, [visiblePanelKey]);
+  const panelConfigKey = useMemo(
+    () => JSON.stringify(
+      visiblePanels.map((panel) => ({
+        id: panel.id,
+        series: panel.id === "price"
+          ? []
+          : panelData[panel.id].map((series) => ({
+              id: series.id,
+              kind: series.kind ?? "line",
+              color: series.color,
+              dashed: Boolean(series.dashed),
+              priceScaleId: series.priceScaleId ?? "right",
+            })),
+      })),
+    ),
+    [panelData, visiblePanels],
+  );
 
   const containerRefs = useRef<Record<PanelId, HTMLDivElement | null>>({
     price: null,
@@ -273,6 +293,8 @@ export function TimelineCharts({
   const fittedRef = useRef(false);
   const syncingRangeRef = useRef(false);
   const syncingCrosshairRef = useRef(false);
+  const visibleRangeTimeoutRef = useRef<number | null>(null);
+  const onVisibleRangeChangeRef = useRef(onVisibleRangeChange);
   const dataRef = useRef<Record<string, Map<number, LineData | CandlestickData>>>({
     price: new Map(),
     pressure: new Map(),
@@ -287,6 +309,10 @@ export function TimelineCharts({
     rangeState: new Map(),
     ivSkew: new Map(),
   });
+
+  useEffect(() => {
+    onVisibleRangeChangeRef.current = onVisibleRangeChange;
+  }, [onVisibleRangeChange]);
 
   useEffect(() => {
     const hasAllContainers = visiblePanels.every((panel) => containerRefs.current[panel.id]);
@@ -422,6 +448,16 @@ export function TimelineCharts({
           }
         }
         syncingRangeRef.current = false;
+        if (mode === "replay" && onVisibleRangeChangeRef.current && range.from && range.to) {
+          if (visibleRangeTimeoutRef.current !== null) {
+            window.clearTimeout(visibleRangeTimeoutRef.current);
+          }
+          const start = toIsoTime(range.from as Time);
+          const end = toIsoTime(range.to as Time);
+          visibleRangeTimeoutRef.current = window.setTimeout(() => {
+            onVisibleRangeChangeRef.current?.(start, end);
+          }, 180);
+        }
       });
     }
 
@@ -478,6 +514,10 @@ export function TimelineCharts({
     indicatorHistogramRef.current = indicatorHistograms;
 
     return () => {
+      if (visibleRangeTimeoutRef.current !== null) {
+        window.clearTimeout(visibleRangeTimeoutRef.current);
+        visibleRangeTimeoutRef.current = null;
+      }
       resizeObserver.disconnect();
       for (const chart of allCharts) {
         chart.remove();
@@ -521,7 +561,7 @@ export function TimelineCharts({
       };
       fittedRef.current = false;
     };
-  }, [onCursorTimeChange, panelData, visiblePanels]);
+  }, [mode, onCursorTimeChange, panelConfigKey, visiblePanels]);
 
   useEffect(() => {
     fittedRef.current = false;

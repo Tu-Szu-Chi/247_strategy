@@ -145,12 +145,10 @@ export type ReplaySession = {
   snapshot_count: number;
   available_series?: string[];
   regime_schema?: Array<Record<string, string>>;
-};
-
-export type SnapshotLookupResponse = {
-  index?: number;
-  simulated_at?: string;
-  snapshot: OptionPowerSnapshot;
+  bar_count?: number | null;
+  cache_mode?: "memory" | string;
+  loaded_window_count?: number;
+  supports_windowed_loading?: boolean;
 };
 
 export type LiveMeta = {

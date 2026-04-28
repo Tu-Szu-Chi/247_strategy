@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { MetricCard } from "../features/option-power/components/MetricCard";
-import { SnapshotLadder } from "../features/option-power/components/SnapshotLadder";
 import {
   TimelineCharts,
   type IndicatorPanelSeries,
@@ -13,7 +12,6 @@ import {
 import { selectExpiry } from "../features/option-power/selectors";
 import { useOptionPowerLive } from "../features/option-power/useOptionPowerLive";
 import { useOptionPowerReplay } from "../features/option-power/useOptionPowerReplay";
-import { useSnapshotAtCursor } from "../features/option-power/useSnapshotAtCursor";
 import type { IndicatorInterval, OptionPowerSnapshot } from "../features/option-power/types";
 import styles from "./ResearchPage.module.css";
 
@@ -35,6 +33,7 @@ export function OptionPowerResearchWorkspace({
   const [selectedExpiry, setSelectedExpiry] = useState("");
   const [snapshot, setSnapshot] = useState<OptionPowerSnapshot | null>(null);
   const [cursorTime, setCursorTime] = useState("-");
+  const [cursorIsoTime, setCursorIsoTime] = useState<string | null>(null);
   const [replayStart, setReplayStart] = useState("");
   const [replayEnd, setReplayEnd] = useState("");
   const [pageError, setPageError] = useState<string | null>(null);
@@ -78,13 +77,8 @@ export function OptionPowerResearchWorkspace({
       setSnapshot(live.snapshot);
       return;
     }
-    if (replay.snapshot?.snapshot) {
-      setSnapshot(replay.snapshot.snapshot);
-      if (replay.snapshot.simulated_at) {
-        setCursorTime(formatDateTime(replay.snapshot.simulated_at));
-      }
-    }
-  }, [live.snapshot, mode, replay.snapshot]);
+    setSnapshot(null);
+  }, [live.snapshot, mode]);
 
   useEffect(() => {
     if (mode === "replay" && replay.session) {
@@ -95,6 +89,7 @@ export function OptionPowerResearchWorkspace({
 
   useEffect(() => {
     if (snapshot?.generated_at) {
+      setCursorIsoTime(snapshot.generated_at);
       setCursorTime(formatDateTime(snapshot.generated_at));
     }
   }, [snapshot?.generated_at]);
@@ -114,21 +109,24 @@ export function OptionPowerResearchWorkspace({
     setPageError(replay.error);
   }, [live.error, mode, replay.error]);
 
-  const handleSnapshotUpdate = useCallback((nextSnapshot: OptionPowerSnapshot) => {
-    setSnapshot(nextSnapshot);
-  }, []);
-
-  const handleCursorTime = useCallback((ts: string) => {
+  const handleCursorTime = useCallback((ts: string | null) => {
+    if (!ts) {
+      setCursorIsoTime(null);
+      setCursorTime("-");
+      return;
+    }
+    setCursorIsoTime(ts);
     setCursorTime(formatDateTime(ts));
   }, []);
 
-  const requestSnapshotAt = useSnapshotAtCursor({
-    enabled: mode === "replay" || mode === "live",
-    mode,
-    replaySessionId: replay.session?.session_id ?? null,
-    onSnapshot: handleSnapshotUpdate,
-    onCursorTime: handleCursorTime,
-  });
+  const handleVisibleRangeChange = useCallback((start: string, end: string) => {
+    if (mode !== "replay") {
+      return;
+    }
+    void replay.ensureWindowForVisibleRange(start, end).catch(() => {
+      return;
+    });
+  }, [mode, replay]);
 
   const activeBars = mode === "live" ? live.bars : replay.bars;
   const activeSeries = mode === "live" ? live.series : replay.series;
@@ -319,20 +317,49 @@ export function OptionPowerResearchWorkspace({
     () => summarizeContractsBySide(selectedContracts),
     [selectedContracts],
   );
-  const structureState = useMemo(
-    () => seriesValueAt(activeSeries.structure_state ?? [], snapshot?.generated_at ?? null),
-    [activeSeries.structure_state, snapshot?.generated_at],
-  );
-  const sessionTone = toneOf(snapshot?.pressure_index ?? 0);
-  const weightedTone = toneOf(snapshot?.pressure_index_weighted ?? 0);
+  const metricTime = mode === "replay"
+    ? cursorIsoTime ?? latestSeriesTime(activeSeries)
+    : snapshot?.generated_at ?? null;
+  const pressureIndexValue = mode === "live"
+    ? snapshot?.pressure_index ?? 0
+    : seriesValueAt(activeSeries.pressure_index ?? [], metricTime);
+  const pressureIndexWeightedValue = mode === "live"
+    ? snapshot?.pressure_index_weighted ?? 0
+    : seriesValueAt(activeSeries.pressure_index_weighted ?? [], metricTime);
+  const rawPressureValue = mode === "live"
+    ? snapshot?.raw_pressure ?? 0
+    : seriesValueAt(activeSeries.raw_pressure ?? [], metricTime);
+  const rawPressureWeightedValue = mode === "live"
+    ? snapshot?.raw_pressure_weighted ?? 0
+    : seriesValueAt(activeSeries.raw_pressure_weighted ?? [], metricTime);
+  const ivSkewValue = mode === "live"
+    ? snapshot?.iv_surface?.skew ?? 0
+    : seriesValueAt(activeSeries.iv_skew ?? [], metricTime);
+  const sessionTone = toneOf(pressureIndexValue);
+  const weightedTone = toneOf(pressureIndexWeightedValue);
   const headingEyebrow = mode === "live" ? "Research Live" : "Research Replay";
   const headingSubtitle = mode === "live"
     ? "Live 先聚焦核心訊號，暫時停掉較重的主圖、trend、context 與 option power 分布區塊。"
     : "主圖固定看 MTX，下方多副圖一次展開 pressure、regime 與 market structure，先專注觀察整體節奏。";
   const regime = snapshot?.regime ?? null;
+  const intensityValue = mode === "live"
+    ? regime?.trade_intensity_ratio_30b ?? 0
+    : seriesValueAt(activeSeries.trade_intensity_ratio_30b ?? [], metricTime);
+  const regimeLabel = mode === "live"
+    ? regime?.regime_label ?? "no_data"
+    : regimeLabelFromState(seriesValueAt(activeSeries.regime_state ?? [], metricTime));
+  const trendScoreValue = mode === "live"
+    ? regime?.trend_score ?? 0
+    : seriesValueAt(activeSeries.trend_score ?? [], metricTime);
+  const reversalRiskValue = mode === "live"
+    ? regime?.reversal_risk ?? 0
+    : seriesValueAt(activeSeries.reversal_risk ?? [], metricTime);
+  const vwapDistanceValue = mode === "live"
+    ? regime?.vwap_distance_bps ?? 0
+    : seriesValueAt(activeSeries.vwap_distance_bps ?? [], metricTime);
   const signalState = useMemo(
-    () => signalStateMeta(seriesValueAt(signalPanelSeries[0]?.points ?? [], snapshot?.generated_at ?? null)),
-    [signalPanelSeries, snapshot?.generated_at],
+    () => signalStateMeta(seriesValueAt(signalPanelSeries[0]?.points ?? [], metricTime)),
+    [signalPanelSeries, metricTime],
   );
 
   async function handleReplayLoad() {
@@ -470,51 +497,44 @@ export function OptionPowerResearchWorkspace({
               : undefined
           }
           mode={mode}
-          onCursorTimeChange={requestSnapshotAt}
-          viewKey={mode === "replay" ? `${replay.windowStart ?? ""}:${replay.windowEnd ?? ""}` : mode}
+          onCursorTimeChange={handleCursorTime}
+          onVisibleRangeChange={handleVisibleRangeChange}
+          viewKey={mode === "replay" ? replay.session?.session_id ?? "replay" : mode}
         />
       </section>
 
       <section className={styles.insights}>
         <section className={styles.metricGrid}>
           <MetricCard label="Signal State" value={signalState.label} tone={signalState.tone} />
-          <MetricCard label="Intensity 30b" value={formatIntensity(regime?.trade_intensity_ratio_30b ?? 0)} tone={intensityTone(regime?.trade_intensity_ratio_30b ?? 0)} />
-          <MetricCard label="Regime" value={formatRegimeLabel(regime?.regime_label ?? "no_data")} tone={regimeTone(regime?.regime_label ?? "no_data")} />
-          <MetricCard label="Trend Score" value={formatSigned(regime?.trend_score ?? 0)} tone={toneOf(regime?.trend_score ?? 0)} />
-          <MetricCard label="Reversal Risk" value={formatSigned(regime?.reversal_risk ?? 0)} tone={toneOf(-(regime?.reversal_risk ?? 0))} />
-          <MetricCard label="VWAP Dist" value={formatSignedFloat(regime?.vwap_distance_bps ?? 0, " bps")} tone={toneOf(regime?.vwap_distance_bps ?? 0)} />
-          <MetricCard label="Pressure Index" value={formatSigned(snapshot?.pressure_index ?? 0)} tone={sessionTone} />
-          <MetricCard label="IV Skew" value={formatVolPoints(snapshot?.iv_surface?.skew ?? 0)} tone={toneOf(snapshot?.iv_surface?.skew ?? 0)} />
+          <MetricCard label="Intensity 30b" value={formatIntensity(intensityValue)} tone={intensityTone(intensityValue)} />
+          <MetricCard label="Regime" value={formatRegimeLabel(regimeLabel)} tone={regimeTone(regimeLabel)} />
+          <MetricCard label="Trend Score" value={formatSigned(trendScoreValue)} tone={toneOf(trendScoreValue)} />
+          <MetricCard label="Reversal Risk" value={formatSigned(reversalRiskValue)} tone={toneOf(-reversalRiskValue)} />
+          <MetricCard label="VWAP Dist" value={formatSignedFloat(vwapDistanceValue, " bps")} tone={toneOf(vwapDistanceValue)} />
+          <MetricCard label="Pressure Index" value={formatSigned(pressureIndexValue)} tone={sessionTone} />
+          <MetricCard label="IV Skew" value={formatVolPoints(ivSkewValue)} tone={toneOf(ivSkewValue)} />
           <MetricCard
             label="Index Weighted"
-            value={formatSigned(snapshot?.pressure_index_weighted ?? 0)}
+            value={formatSigned(pressureIndexWeightedValue)}
             tone={weightedTone}
           />
-          <MetricCard label="Raw Pressure" value={formatSigned(snapshot?.raw_pressure ?? 0)} tone={toneOf(snapshot?.raw_pressure ?? 0)} />
+          <MetricCard label="Raw Pressure" value={formatSigned(rawPressureValue)} tone={toneOf(rawPressureValue)} />
           <MetricCard
             label="Raw Weighted"
-            value={formatSigned(snapshot?.raw_pressure_weighted ?? 0)}
-            tone={toneOf(snapshot?.raw_pressure_weighted ?? 0)}
+            value={formatSigned(rawPressureWeightedValue)}
+            tone={toneOf(rawPressureWeightedValue)}
           />
         </section>
 
-        <section className={styles.aggregateGrid}>
-          <MetricCard label="Call Cum" value={formatSigned(contractTotals.call.cumulative_power)} tone={toneOf(contractTotals.call.cumulative_power)} />
-          <MetricCard label="Put Cum" value={formatSigned(contractTotals.put.cumulative_power)} tone={toneOf(contractTotals.put.cumulative_power)} />
-          <MetricCard label="Call 1m" value={formatSigned(contractTotals.call.power_1m_delta)} tone={toneOf(contractTotals.call.power_1m_delta)} />
-          <MetricCard label="Put 1m" value={formatSigned(contractTotals.put.power_1m_delta)} tone={toneOf(contractTotals.put.power_1m_delta)} />
-        </section>
+        {mode === "live" ? (
+          <section className={styles.aggregateGrid}>
+            <MetricCard label="Call Cum" value={formatSigned(contractTotals.call.cumulative_power)} tone={toneOf(contractTotals.call.cumulative_power)} />
+            <MetricCard label="Put Cum" value={formatSigned(contractTotals.put.cumulative_power)} tone={toneOf(contractTotals.put.cumulative_power)} />
+            <MetricCard label="Call 1m" value={formatSigned(contractTotals.call.power_1m_delta)} tone={toneOf(contractTotals.call.power_1m_delta)} />
+            <MetricCard label="Put 1m" value={formatSigned(contractTotals.put.power_1m_delta)} tone={toneOf(contractTotals.put.power_1m_delta)} />
+          </section>
+        ) : null}
       </section>
-
-      {mode === "live" ? null : (
-        <section className={styles.expirySection}>
-          <SnapshotLadder
-            snapshot={snapshot}
-            selectedExpiry={selectedExpiry}
-            onExpiryChange={setSelectedExpiry}
-          />
-        </section>
-      )}
     </section>
   );
 }
@@ -654,11 +674,33 @@ function seriesValueAt(
   points: { time: string; value: number }[],
   targetTime: string | null,
 ) {
-  if (!targetTime) {
+  if (!points.length) {
     return 0;
   }
-  const target = points.find((point) => point.time === targetTime);
-  return Number(target?.value ?? 0);
+  if (!targetTime) {
+    return Number(points[points.length - 1]?.value ?? 0);
+  }
+  const targetMs = new Date(targetTime).getTime();
+  if (Number.isNaN(targetMs)) {
+    return Number(points[points.length - 1]?.value ?? 0);
+  }
+  let selected = points[0];
+  let selectedMs = new Date(selected.time).getTime();
+  for (const point of points) {
+    const pointMs = new Date(point.time).getTime();
+    if (Number.isNaN(pointMs)) {
+      continue;
+    }
+    if (pointMs > targetMs) {
+      break;
+    }
+    selected = point;
+    selectedMs = pointMs;
+  }
+  if (selectedMs > targetMs) {
+    return Number(points[0]?.value ?? 0);
+  }
+  return Number(selected.value ?? 0);
 }
 
 function signalStateMeta(value: number) {
@@ -669,6 +711,31 @@ function signalStateMeta(value: number) {
     return { label: "SHORT", tone: "negative" as const };
   }
   return { label: "-", tone: "neutral" as const };
+}
+
+function latestSeriesTime(activeSeries: Record<string, { time: string; value: number }[]>) {
+  let latest: string | null = null;
+  let latestMs = Number.NEGATIVE_INFINITY;
+  for (const points of Object.values(activeSeries)) {
+    for (const point of points) {
+      const pointMs = new Date(point.time).getTime();
+      if (!Number.isNaN(pointMs) && pointMs > latestMs) {
+        latest = point.time;
+        latestMs = pointMs;
+      }
+    }
+  }
+  return latest;
+}
+
+function regimeLabelFromState(value: number) {
+  if (value > 0) {
+    return "trend_up";
+  }
+  if (value < 0) {
+    return "trend_down";
+  }
+  return "no_data";
 }
 
 function deriveSignalSeries(

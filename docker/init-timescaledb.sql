@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS bars_1m (
 );
 
 SELECT create_hypertable('bars_1m', 'ts', if_not_exists => TRUE);
+CREATE INDEX IF NOT EXISTS idx_bars_1m_symbol_ts ON bars_1m (symbol, ts);
 
 CREATE TABLE IF NOT EXISTS bars_1d (
     ts TIMESTAMPTZ NOT NULL,
@@ -47,6 +48,7 @@ CREATE TABLE IF NOT EXISTS bars_1d (
 );
 
 SELECT create_hypertable('bars_1d', 'ts', if_not_exists => TRUE);
+CREATE INDEX IF NOT EXISTS idx_bars_1d_symbol_ts ON bars_1d (symbol, ts);
 
 CREATE TABLE IF NOT EXISTS sync_state (
     source TEXT NOT NULL,
@@ -79,6 +81,7 @@ CREATE TABLE IF NOT EXISTS raw_ticks (
 );
 
 SELECT create_hypertable('raw_ticks', 'ts', if_not_exists => TRUE);
+CREATE INDEX IF NOT EXISTS idx_raw_ticks_symbol_ts ON raw_ticks (symbol, ts);
 
 CREATE TABLE IF NOT EXISTS minute_force_features_1m (
     ts TIMESTAMPTZ NOT NULL,
@@ -101,6 +104,7 @@ CREATE TABLE IF NOT EXISTS minute_force_features_1m (
 );
 
 SELECT create_hypertable('minute_force_features_1m', 'ts', if_not_exists => TRUE);
+CREATE INDEX IF NOT EXISTS idx_minute_force_features_1m_symbol_ts ON minute_force_features_1m (symbol, ts);
 
 CREATE TABLE IF NOT EXISTS live_run_metadata (
     run_id TEXT PRIMARY KEY,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from bisect import bisect_left
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from math import ceil
 from threading import Lock
@@ -38,11 +38,9 @@ class ReplaySession:
     option_root: str
     underlying_symbol: str
     selected_option_roots: list[str]
-    bars: list[dict]
-    indicator_series: dict[str, list[dict]]
-    snapshot_datetimes: list[datetime]
-    snapshot_times: list[str]
-    snapshots: list[dict]
+    snapshot_count: int
+    available_series: list[str]
+    window_cache: OrderedDict[tuple, dict] = field(default_factory=OrderedDict)
 
     def metadata(self) -> dict:
         return {
@@ -53,11 +51,13 @@ class ReplaySession:
             "option_root": self.option_root,
             "underlying_symbol": self.underlying_symbol,
             "selected_option_roots": self.selected_option_roots,
-            "snapshot_count": len(self.snapshots),
-            "snapshot_times": self.snapshot_times,
-            "available_series": sorted(self.indicator_series.keys()),
+            "snapshot_count": self.snapshot_count,
+            "available_series": sorted(self.available_series),
             "regime_schema": regime_schema_dicts(),
-            "bar_count": len(self.bars),
+            "bar_count": None,
+            "cache_mode": "memory",
+            "loaded_window_count": len(self.window_cache),
+            "supports_windowed_loading": True,
         }
 
 
@@ -79,6 +79,7 @@ class OptionPowerReplayService:
         self._lock = Lock()
         self._sessions: dict[str, ReplaySession] = {}
         self._default_session_id: str | None = None
+        self._max_cached_windows = 24
 
     def create_session(
         self,
@@ -138,13 +139,19 @@ class OptionPowerReplayService:
         session = self._sessions.get(session_id)
         if session is None:
             return None
-        if index < 0 or index >= len(session.snapshots):
+        if index < 0 or index >= session.snapshot_count:
+            return None
+        snapshot_at = session.start + timedelta(seconds=max(session.snapshot_interval_seconds, 1.0) * index)
+        if snapshot_at > session.end:
+            snapshot_at = session.end
+        payload = self.get_snapshot_at(session_id, snapshot_at)
+        if payload is None:
             return None
         return {
             "session_id": session_id,
             "index": index,
-            "simulated_at": session.snapshot_times[index],
-            "snapshot": session.snapshots[index],
+            "simulated_at": payload["simulated_at"],
+            "snapshot": payload["snapshot"],
         }
 
     def get_bars(
@@ -157,9 +164,15 @@ class OptionPowerReplayService:
         session = self._sessions.get(session_id)
         if session is None:
             return None
-        bars = _slice_bars(session.bars, start=start, end=end)
+        resolved_start, resolved_end = _resolve_window(session, start, end)
+        cache_key = ("bars", resolved_start, resolved_end, interval or "1m")
+        cached = self._cache_get(session, cache_key)
+        if cached is not None:
+            return cached["bars"]
+        bars = [_bar_to_chart_dict(bar) for bar in self.store.list_bars("1m", session.underlying_symbol, resolved_start, resolved_end)]
         if interval is not None and interval != "1m":
-            return _aggregate_bars(bars, interval=interval)
+            bars = _aggregate_bars(bars, interval=interval)
+        self._cache_put(session, cache_key, {"bars": bars})
         return bars
 
     def get_series(
@@ -173,32 +186,76 @@ class OptionPowerReplayService:
         session = self._sessions.get(session_id)
         if session is None:
             return None
+        resolved_start, resolved_end = _resolve_window(session, start, end)
+        interval_key = interval or "1m"
+        names_key = tuple(sorted(set(names)))
+        cache_key = ("series", resolved_start, resolved_end, interval_key, names_key)
+        cached = self._cache_get(session, cache_key)
+        if cached is not None:
+            return cached["series"]
+        snapshot_datetimes, snapshots = self._build_window_frames(session, start=resolved_start, end=resolved_end)
+        snapshot_times = [snapshot["generated_at"] for snapshot in snapshots]
+        if snapshot_datetimes and snapshots:
+            all_snapshot_datetimes = _snapshot_datetimes(session)
+            snapshot_ts = snapshot_datetimes[0]
+            snapshot = snapshots[0]
+            snapshot_idx = bisect_left(all_snapshot_datetimes, snapshot_ts)
+            self._cache_put(
+                session,
+                ("snapshot", snapshot_ts),
+                {
+                    "payload": {
+                        "session_id": session.session_id,
+                        "index": snapshot_idx,
+                        "simulated_at": snapshot_ts.isoformat(),
+                        "snapshot": snapshot,
+                    }
+                },
+            )
+        indicator_series = _build_indicator_series(snapshot_times, snapshots)
         payload: dict[str, list[dict]] = {}
         for name in names:
-            if name in session.indicator_series:
+            if name in indicator_series:
                 payload[name] = _slice_and_resample_series(
-                    session.indicator_series[name],
-                    start=start,
-                    end=end,
+                    indicator_series[name],
+                    start=resolved_start,
+                    end=resolved_end,
                     interval=interval,
                 )
+        self._cache_put(session, cache_key, {"series": payload})
         return payload
 
     def get_snapshot_at(self, session_id: str, ts: datetime) -> dict | None:
         session = self._sessions.get(session_id)
-        if session is None or not session.snapshot_datetimes:
+        if session is None or session.snapshot_count <= 0:
             return None
 
-        idx = bisect_left(session.snapshot_datetimes, ts)
-        if idx >= len(session.snapshot_datetimes):
-            idx = len(session.snapshot_datetimes) - 1
+        snapshot_datetimes = _snapshot_datetimes(session)
+        idx = bisect_left(snapshot_datetimes, ts)
+        if idx >= len(snapshot_datetimes):
+            idx = len(snapshot_datetimes) - 1
         elif idx > 0:
-            previous_ts = session.snapshot_datetimes[idx - 1]
-            current_ts = session.snapshot_datetimes[idx]
+            previous_ts = snapshot_datetimes[idx - 1]
+            current_ts = snapshot_datetimes[idx]
             if abs((ts - previous_ts).total_seconds()) <= abs((current_ts - ts).total_seconds()):
                 idx -= 1
 
-        return self.get_snapshot(session_id, idx)
+        snapshot_ts = snapshot_datetimes[idx]
+        cache_key = ("snapshot", snapshot_ts)
+        cached = self._cache_get(session, cache_key)
+        if cached is not None:
+            return cached["payload"]
+        _, snapshots = self._build_window_frames(session, start=snapshot_ts, end=snapshot_ts)
+        if not snapshots:
+            return None
+        payload = {
+            "session_id": session_id,
+            "index": idx,
+            "simulated_at": snapshot_ts.isoformat(),
+            "snapshot": snapshots[-1],
+        }
+        self._cache_put(session, cache_key, {"payload": payload})
+        return payload
 
     def current_snapshot(self) -> dict:
         if self._default_session_id is None:
@@ -222,7 +279,7 @@ class OptionPowerReplayService:
                 "warning": "No replay session loaded.",
             }
         session = self._sessions[self._default_session_id]
-        if not session.snapshots:
+        if session.snapshot_count <= 0:
             return {
                 "type": "option_power_snapshot",
                 "generated_at": datetime.now().isoformat(),
@@ -242,28 +299,75 @@ class OptionPowerReplayService:
                 "status": "replay_empty",
                 "warning": "Replay session produced no snapshots.",
             }
-        return session.snapshots[0]
+        payload = self.get_snapshot(session.session_id, 0)
+        if payload is None:
+            return {
+                "type": "option_power_snapshot",
+                "generated_at": datetime.now().isoformat(),
+                "run_id": None,
+                "session": "unknown",
+                "option_root": self.option_root,
+                "underlying_reference_price": None,
+                "underlying_reference_source": None,
+                "raw_pressure": 0,
+                "pressure_index": 0,
+                "raw_pressure_weighted": 0,
+                "pressure_index_weighted": 0,
+                "regime": None,
+                "expiries": [],
+                "contract_count": 0,
+                "status": "replay_empty",
+                "warning": "Replay session produced no snapshots.",
+            }
+        return payload["snapshot"]
 
     def _build_session(self, *, start: datetime, end: datetime) -> ReplaySession:
         if end < start:
             raise ValueError("Replay end must be greater than or equal to start.")
 
         replay_symbols = [self.underlying_symbol, *TX_OPTION_ROOT_CANDIDATES]
-        raw_ticks = self.store.list_ticks_for_symbols(replay_symbols, start, end)
+        selected_option_roots = self._select_option_roots_from_store(replay_symbols, start, end)
+        interval_seconds = max(self.snapshot_interval_seconds, 1.0)
+        snapshot_count = int((end - start).total_seconds() // interval_seconds) + 1
+        session_id = f"replay-{datetime.now().strftime('%Y%m%dT%H%M%S')}-{uuid4().hex[:8]}"
 
-        option_ticks = [tick for tick in raw_ticks if tick.strike_price is not None and tick.call_put is not None]
-        selected_option_roots = self._select_option_roots(option_ticks)
-        filtered_option_ticks = [tick for tick in option_ticks if tick.symbol in selected_option_roots]
-        underlying_ticks = [tick for tick in raw_ticks if tick.symbol == self.underlying_symbol]
+        return ReplaySession(
+            session_id=session_id,
+            start=start,
+            end=end,
+            snapshot_interval_seconds=self.snapshot_interval_seconds,
+            option_root=self.option_root,
+            underlying_symbol=self.underlying_symbol,
+            selected_option_roots=selected_option_roots,
+            snapshot_count=snapshot_count,
+            available_series=_indicator_series_names(),
+        )
+
+    def _build_window_frames(
+        self,
+        session: ReplaySession,
+        *,
+        start: datetime,
+        end: datetime,
+    ) -> tuple[list[datetime], list[dict]]:
+        replay_symbols = [session.underlying_symbol, *session.selected_option_roots]
+        raw_ticks = self.store.list_ticks_for_symbols(replay_symbols, session.start, end)
+
+        option_ticks = [
+            tick
+            for tick in raw_ticks
+            if tick.symbol in session.selected_option_roots and tick.strike_price is not None and tick.call_put is not None
+        ]
+        underlying_ticks = [tick for tick in raw_ticks if tick.symbol == session.underlying_symbol]
 
         replay_ticks = sorted(
-            [*filtered_option_ticks, *underlying_ticks],
+            [*option_ticks, *underlying_ticks],
             key=lambda tick: (tick.ts, tick.instrument_key or "", tick.price, tick.size, tick.source),
         )
 
-        aggregator = OptionPowerAggregator(option_root=",".join(selected_option_roots) or self.option_root)
-        replay_session = classify_session(start)
-        for contract in _contract_seeds(filtered_option_ticks):
+        aggregator = OptionPowerAggregator(option_root=",".join(session.selected_option_roots) or session.option_root)
+        replay_session = classify_session(session.start)
+        for contract in _contract_seeds(option_ticks):
             aggregator.seed_contract(
                 instrument_key=contract.instrument_key or "",
                 symbol=contract.symbol,
@@ -275,16 +379,14 @@ class OptionPowerReplayService:
 
         snapshots: list[dict] = []
         snapshot_datetimes: list[datetime] = []
-        snapshot_times: list[str] = []
         latest_future_reference_price: float | None = None
         latest_day_indicator_price: float | None = None
         day_indicator_index = 0
         tick_index = 0
-        boundary = start
-        interval = timedelta(seconds=max(self.snapshot_interval_seconds, 1.0))
-        session_id = f"replay-{datetime.now().strftime('%Y%m%dT%H%M%S')}-{uuid4().hex[:8]}"
-        day_indicator_bars = self.store.list_bars("1m", DAY_INDICATOR_SYMBOL, start, end)
-        underlying_bars = self.store.list_bars("1m", self.underlying_symbol, start, end)
+        boundary = session.start
+        interval = timedelta(seconds=max(session.snapshot_interval_seconds, 1.0))
+        day_indicator_bars = self.store.list_bars("1m", DAY_INDICATOR_SYMBOL, session.start, end)
+        underlying_bars = self.store.list_bars("1m", session.underlying_symbol, session.start, end)
         underlying_tick_index = 0
         underlying_bar_index = 0
         regime = MtxRegimeAnalyzer()
@@ -292,7 +394,7 @@ class OptionPowerReplayService:
         while boundary <= end:
             while tick_index < len(replay_ticks) and replay_ticks[tick_index].ts <= boundary:
                 tick = replay_ticks[tick_index]
-                if tick.symbol == self.underlying_symbol:
+                if tick.symbol == session.underlying_symbol:
                     latest_future_reference_price = tick.price
                 else:
                     aggregator.ingest_tick(tick)
@@ -314,39 +416,55 @@ class OptionPowerReplayService:
                 session=classify_session(boundary),
                 latest_day_indicator_price=latest_day_indicator_price,
                 latest_future_reference_price=latest_future_reference_price,
-                underlying_symbol=self.underlying_symbol,
+                underlying_symbol=session.underlying_symbol,
             )
 
             snapshot = aggregator.snapshot(
                 generated_at=boundary,
-                run_id=session_id,
+                run_id=session.session_id,
                 underlying_reference_price=reference_price,
                 underlying_reference_source=reference_source,
                 status="replay_ready",
                 regime=regime.snapshot(boundary),
             ).to_dict()
-            snapshots.append(snapshot)
-            snapshot_datetimes.append(boundary)
-            snapshot_times.append(boundary.isoformat())
+            if boundary >= start:
+                snapshots.append(snapshot)
+                snapshot_datetimes.append(boundary)
             boundary += interval
 
-        bars = [_bar_to_chart_dict(bar) for bar in underlying_bars]
-        indicator_series = _build_indicator_series(snapshot_times, snapshots)
+        return snapshot_datetimes, snapshots
 
-        return ReplaySession(
-            session_id=session_id,
-            start=start,
-            end=end,
-            snapshot_interval_seconds=self.snapshot_interval_seconds,
-            option_root=self.option_root,
-            underlying_symbol=self.underlying_symbol,
-            selected_option_roots=selected_option_roots,
-            bars=bars,
-            indicator_series=indicator_series,
-            snapshot_datetimes=snapshot_datetimes,
-            snapshot_times=snapshot_times,
-            snapshots=snapshots,
+    def _select_option_roots_from_store(self, symbols: list[str], start: datetime, end: datetime) -> list[str]:
+        if self.option_root and self.option_root.upper() not in {"AUTO", "TX", "TXO"}:
+            return [self.option_root.upper()]
+        if hasattr(self.store, "list_tick_symbol_stats"):
+            stats = self.store.list_tick_symbol_stats(symbols, start, end)
+            return self._select_option_roots_from_stats(stats)
+        raw_ticks = self.store.list_ticks_for_symbols(symbols, start, end)
+        option_ticks = [tick for tick in raw_ticks if tick.strike_price is not None and tick.call_put is not None]
+        return self._select_option_roots(option_ticks)
+
+    def _select_option_roots_from_stats(self, stats: list[dict]) -> list[str]:
+        ranked = sorted(
+            ((item["symbol"], item["first_contract_month"], item["tick_count"]) for item in stats if item.get("symbol") != self.underlying_symbol),
+            key=lambda item: (item[1] or "999999", -int(item[2] or 0), item[0]),
         )
+        return [root for root, _, _ in ranked[: self.expiry_count]]
+
+    def _cache_get(self, session: ReplaySession, key: tuple) -> dict | None:
+        with self._lock:
+            cached = session.window_cache.get(key)
+            if cached is None:
+                return None
+            session.window_cache.move_to_end(key)
+            return cached
+
+    def _cache_put(self, session: ReplaySession, key: tuple, value: dict) -> None:
+        with self._lock:
+            session.window_cache[key] = value
+            session.window_cache.move_to_end(key)
+            while len(session.window_cache) > self._max_cached_windows:
+                session.window_cache.popitem(last=False)
 
     def _select_option_roots(self, ticks: list[CanonicalTick]) -> list[str]:
         if self.option_root and self.option_root.upper() not in {"AUTO", "TX", "TXO"}:
@@ -378,8 +496,8 @@ def _contract_seeds(ticks: list[CanonicalTick]) -> list[CanonicalTick]:
     )
 
 
-def _build_indicator_series(snapshot_times: list[str], snapshots: list[dict]) -> dict[str, list[dict]]:
-    series_names = [
+def _indicator_series_names() -> list[str]:
+    return [
         "pressure_index",
         "raw_pressure",
         "pressure_index_weighted",
@@ -410,6 +528,10 @@ def _build_indicator_series(snapshot_times: list[str], snapshots: list[dict]) ->
         "price_cvd_divergence_15b",
         "iv_skew",
     ]
+
+
+def _build_indicator_series(snapshot_times: list[str], snapshots: list[dict]) -> dict[str, list[dict]]:
+    series_names = _indicator_series_names()
     payload: dict[str, list[dict]] = {name: [] for name in series_names}
     drive_points: list[tuple[datetime, float]] = []
     expansion_points: list[tuple[datetime, float]] = []
@@ -543,6 +665,23 @@ def _bar_to_chart_dict(bar: Bar) -> dict:
         "close": bar.close,
         "volume": bar.volume,
     }
+
+
+def _resolve_window(
+    session: ReplaySession,
+    start: datetime | None,
+    end: datetime | None,
+) -> tuple[datetime, datetime]:
+    resolved_start = max(start, session.start) if start is not None else session.start
+    resolved_end = min(end, session.end) if end is not None else session.end
+    if resolved_end < resolved_start:
+        resolved_end = resolved_start
+    return resolved_start, resolved_end
+
+
+def _snapshot_datetimes(session: ReplaySession) -> list[datetime]:
+    interval = timedelta(seconds=max(session.snapshot_interval_seconds, 1.0))
+    return [session.start + interval * index for index in range(session.snapshot_count)]
 
 
 def _slice_bars(bars: list[dict], *, start: datetime | None, end: datetime | None) -> list[dict]:

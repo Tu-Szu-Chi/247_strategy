@@ -69,6 +69,30 @@ class BarRepository(ABC):
     ) -> list[CanonicalTick]:
         raise NotImplementedError
 
+    def list_tick_symbol_stats(
+        self,
+        symbols: list[str],
+        start: datetime,
+        end: datetime,
+    ) -> list[dict]:
+        ticks = self.list_ticks_for_symbols(symbols, start, end)
+        stats: dict[str, dict] = {}
+        for tick in ticks:
+            if tick.strike_price is None or tick.call_put is None:
+                continue
+            current = stats.get(tick.symbol)
+            contract_month = tick.contract_month or "999999"
+            if current is None:
+                stats[tick.symbol] = {
+                    "symbol": tick.symbol,
+                    "first_contract_month": contract_month,
+                    "tick_count": 1,
+                }
+                continue
+            current["first_contract_month"] = min(current["first_contract_month"], contract_month)
+            current["tick_count"] += 1
+        return list(stats.values())
+
     @abstractmethod
     def upsert_minute_force_features(self, features: Iterable[MinuteForceFeatures]) -> int:
         raise NotImplementedError

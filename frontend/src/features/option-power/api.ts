@@ -5,7 +5,6 @@ import type {
   LiveMeta,
   LiveSnapshotLatestResponse,
   ReplaySession,
-  SnapshotLookupResponse,
 } from "./types";
 
 export class ApiError extends Error {
@@ -65,6 +64,7 @@ export async function getReplayBundle(
   end: string,
   interval: IndicatorInterval,
   seriesNames: string[],
+  signal?: AbortSignal,
 ) {
   const names = encodeURIComponent(seriesNames.join(","));
   const search = new URLSearchParams({
@@ -72,29 +72,12 @@ export async function getReplayBundle(
     end,
     interval,
   });
-  const [bars, series, snapshot] = await Promise.all([
-    fetchJson<ChartBarPoint[]>(`/api/option-power/replay/sessions/${sessionId}/bars?${search.toString()}`),
+  const [bars, series] = await Promise.all([
+    fetchJson<ChartBarPoint[]>(`/api/option-power/replay/sessions/${sessionId}/bars?${search.toString()}`, { signal }),
     fetchJson<IndicatorSeriesMap>(
       `/api/option-power/replay/sessions/${sessionId}/series?names=${names}&${search.toString()}`,
-    ),
-    fetchJson<SnapshotLookupResponse>(
-      `/api/option-power/replay/sessions/${sessionId}/snapshot-at?ts=${encodeURIComponent(start)}`,
+      { signal },
     ),
   ]);
-  return { bars, series, snapshot };
-}
-
-export async function getLiveSnapshotAt(ts: string): Promise<SnapshotLookupResponse> {
-  return fetchJson<SnapshotLookupResponse>(
-    `/api/option-power/live/snapshot-at?ts=${encodeURIComponent(ts)}`,
-  );
-}
-
-export async function getReplaySnapshotAt(
-  sessionId: string,
-  ts: string,
-): Promise<SnapshotLookupResponse> {
-  return fetchJson<SnapshotLookupResponse>(
-    `/api/option-power/replay/sessions/${sessionId}/snapshot-at?ts=${encodeURIComponent(ts)}`,
-  );
+  return { bars, series };
 }

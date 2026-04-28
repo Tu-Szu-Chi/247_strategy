@@ -10,6 +10,7 @@ class DummyStore:
         self.ticks = ticks
         self.bars = bars or []
         self.list_ticks_for_symbols_calls = 0
+        self.list_tick_symbol_stats_calls = 0
         self.list_bars_calls = 0
 
     def list_ticks_for_symbols(self, symbols, start, end):
@@ -23,6 +24,30 @@ class DummyStore:
                 continue
             selected.append(tick)
         return sorted(selected, key=lambda item: (item.ts, item.instrument_key or "", item.price, item.size, item.source))
+
+    def list_tick_symbol_stats(self, symbols, start, end):
+        self.list_tick_symbol_stats_calls += 1
+        stats = {}
+        allowed = set(symbols)
+        for tick in self.ticks:
+            if tick.symbol not in allowed:
+                continue
+            if tick.ts < start or tick.ts > end:
+                continue
+            if tick.strike_price is None or tick.call_put is None:
+                continue
+            current = stats.get(tick.symbol)
+            contract_month = tick.contract_month or "999999"
+            if current is None:
+                stats[tick.symbol] = {
+                    "symbol": tick.symbol,
+                    "first_contract_month": contract_month,
+                    "tick_count": 1,
+                }
+                continue
+            current["first_contract_month"] = min(current["first_contract_month"], contract_month)
+            current["tick_count"] += 1
+        return list(stats.values())
 
     def list_bars(self, timeframe, symbol, start, end):
         self.list_bars_calls += 1
@@ -143,7 +168,7 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
 
         metadata = service.create_session(
             start=base_ts,
-            end=base_ts + timedelta(seconds=10),
+            end=base_ts + timedelta(seconds=11),
             set_as_default=True,
         )
 
@@ -282,16 +307,18 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
             end=base_ts + timedelta(minutes=30),
             set_as_default=True,
         )
-        self.assertEqual(store.list_ticks_for_symbols_calls, 1)
-        self.assertEqual(store.list_bars_calls, 2)
+        self.assertEqual(store.list_tick_symbol_stats_calls, 1)
+        self.assertEqual(store.list_ticks_for_symbols_calls, 0)
+        self.assertEqual(store.list_bars_calls, 0)
 
         subset = service.create_session(
             start=base_ts + timedelta(minutes=5),
             end=base_ts + timedelta(minutes=10),
         )
         self.assertEqual(subset["session_id"], full["session_id"])
-        self.assertEqual(store.list_ticks_for_symbols_calls, 1)
-        self.assertEqual(store.list_bars_calls, 2)
+        self.assertEqual(store.list_tick_symbol_stats_calls, 1)
+        self.assertEqual(store.list_ticks_for_symbols_calls, 0)
+        self.assertEqual(store.list_bars_calls, 0)
 
     def test_get_series_and_bars_support_range_and_interval(self) -> None:
         base_ts = datetime(2026, 4, 16, 9, 0, 0)

@@ -5,7 +5,6 @@ import type {
   IndicatorInterval,
   IndicatorSeriesMap,
   ReplaySession,
-  SnapshotLookupResponse,
 } from "./types";
 
 const INITIAL_REPLAY_WINDOW_HOURS = 3;
@@ -14,7 +13,6 @@ const REPLAY_WINDOW_PADDING_MINUTES = 30;
 type ReplayState = {
   bars: ChartBarPoint[];
   session: ReplaySession | null;
-  snapshot: SnapshotLookupResponse | null;
   windowStart: string | null;
   windowEnd: string | null;
   loadedInterval: IndicatorInterval | null;
@@ -31,7 +29,6 @@ export function useOptionPowerReplay(
   const [state, setState] = useState<ReplayState>({
     bars: [],
     session: null,
-    snapshot: null,
     windowStart: null,
     windowEnd: null,
     loadedInterval: null,
@@ -41,6 +38,8 @@ export function useOptionPowerReplay(
   const [series, setSeries] = useState<IndicatorSeriesMap>({});
   const lastLoadKeyRef = useRef("");
   const stateRef = useRef(state);
+  const abortRef = useRef<AbortController | null>(null);
+  const requestIdRef = useRef(0);
 
   useEffect(() => {
     stateRef.current = state;
@@ -55,12 +54,22 @@ export function useOptionPowerReplay(
       const window = requestedWindow ?? initialReplayWindow(session);
       setState((current) => ({
         ...current,
+        bars: current.session?.session_id === session.session_id ? current.bars : [],
         session,
         windowStart: window.start,
         windowEnd: window.end,
+        loadedInterval: current.session?.session_id === session.session_id ? current.loadedInterval : null,
         loading: true,
         error: null,
       }));
+      if (stateRef.current.session?.session_id !== session.session_id) {
+        setSeries({});
+      }
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+      requestIdRef.current += 1;
+      const requestId = requestIdRef.current;
       try {
         const bundle = await getReplayBundle(
           session.session_id,
@@ -68,18 +77,28 @@ export function useOptionPowerReplay(
           window.end,
           interval,
           seriesNames,
+          controller.signal,
         );
+        if (requestId !== requestIdRef.current) {
+          return session;
+        }
         setState((current) => {
           const shouldMerge = (
             current.session?.session_id === session.session_id
             && current.loadedInterval === interval
           );
+          const mergedBars = shouldMerge ? mergeBars(current.bars, bundle.bars) : bundle.bars;
+          const loadedWindow = shouldMerge
+            ? mergeWindows(
+                { start: current.windowStart ?? window.start, end: current.windowEnd ?? window.end },
+                window,
+              )
+            : window;
           return {
-            bars: shouldMerge ? mergeBars(current.bars, bundle.bars) : bundle.bars,
+            bars: mergedBars,
             session,
-            snapshot: bundle.snapshot,
-            windowStart: window.start,
-            windowEnd: window.end,
+            windowStart: loadedWindow.start,
+            windowEnd: loadedWindow.end,
             loadedInterval: interval,
             loading: false,
             error: null,
@@ -91,8 +110,12 @@ export function useOptionPowerReplay(
             ? mergeSeriesMaps(current, bundle.series)
             : bundle.series
         ));
+        lastLoadKeyRef.current = `${seriesKey}:${session.session_id}:${interval}`;
         return session;
       } catch (error) {
+        if (controller.signal.aborted || requestId !== requestIdRef.current) {
+          return session;
+        }
         const message = error instanceof Error ? error.message : "Replay bundle load failed.";
         setState((current) => ({
           ...current,
@@ -119,18 +142,21 @@ export function useOptionPowerReplay(
   );
 
   useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
+
+  useEffect(() => {
     if (!enabled) {
+      abortRef.current?.abort();
       return;
     }
     const sessionKey = state.session?.session_id ?? "default";
-    const windowKey = state.windowStart && state.windowEnd
-      ? `${state.windowStart}:${state.windowEnd}`
-      : "initial";
-    const loadKey = `${seriesKey}:${sessionKey}:${interval}:${windowKey}`;
+    const loadKey = `${seriesKey}:${sessionKey}:${interval}`;
     if (lastLoadKeyRef.current === loadKey) {
       return;
     }
-    lastLoadKeyRef.current = loadKey;
     const runner = state.session
       ? loadSession(
           state.session,
@@ -153,8 +179,6 @@ export function useOptionPowerReplay(
     loadSession,
     seriesKey,
     state.session,
-    state.windowEnd,
-    state.windowStart,
   ]);
 
   const shiftWindow = useCallback(
@@ -285,6 +309,20 @@ function shiftedReplayWindow(
   return {
     start: toLocalIsoString(nextStart),
     end: toLocalIsoString(nextEnd),
+  };
+}
+
+function mergeWindows(
+  current: { start: string; end: string },
+  incoming: { start: string; end: string },
+) {
+  return {
+    start: new Date(current.start).getTime() <= new Date(incoming.start).getTime()
+      ? current.start
+      : incoming.start,
+    end: new Date(current.end).getTime() >= new Date(incoming.end).getTime()
+      ? current.end
+      : incoming.end,
   };
 }
 

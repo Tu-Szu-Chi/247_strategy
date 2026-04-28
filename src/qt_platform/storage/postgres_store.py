@@ -224,6 +224,39 @@ class PostgresBarStore(BarRepository):
                 rows = cur.fetchall()
         return [self._row_to_tick(row) for row in rows]
 
+    def list_tick_symbol_stats(
+        self,
+        symbols: list[str],
+        start: datetime,
+        end: datetime,
+    ) -> list[dict]:
+        if not symbols:
+            return []
+        with psycopg.connect(self.dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT symbol, MIN(contract_month), COUNT(*)
+                    FROM raw_ticks
+                    WHERE symbol = ANY(%s)
+                      AND ts >= %s
+                      AND ts <= %s
+                      AND strike_price IS NOT NULL
+                      AND call_put IS NOT NULL
+                    GROUP BY symbol
+                    """,
+                    (symbols, _utc(start), _utc(end)),
+                )
+                rows = cur.fetchall()
+        return [
+            {
+                "symbol": row[0],
+                "first_contract_month": row[1] or "999999",
+                "tick_count": int(row[2]),
+            }
+            for row in rows
+        ]
+
     def upsert_minute_force_features(self, features: Iterable[MinuteForceFeatures]) -> int:
         rows = [self._feature_to_row(feature) for feature in features]
         if not rows:
@@ -509,6 +542,7 @@ class PostgresBarStore(BarRepository):
                     cur.execute("SELECT create_hypertable('raw_ticks', 'ts', if_not_exists => TRUE)")
                     cur.execute("SELECT create_hypertable('minute_force_features_1m', 'ts', if_not_exists => TRUE)")
                 self._migrate_schema(cur)
+                self._ensure_indexes(cur)
 
     def _migrate_schema(self, cur) -> None:
         cur.execute(
@@ -599,6 +633,15 @@ class PostgresBarStore(BarRepository):
         _ensure_primary_key(cur, "bars_1d", ("ts", "instrument_key", "contract_month", "session"))
         _ensure_primary_key(cur, "raw_ticks", ("ts", "instrument_key", "price", "size", "source"))
         _ensure_primary_key(cur, "minute_force_features_1m", ("ts", "instrument_key", "contract_month", "run_id"))
+
+    def _ensure_indexes(self, cur) -> None:
+        for ddl in (
+            "CREATE INDEX IF NOT EXISTS idx_bars_1m_symbol_ts ON bars_1m (symbol, ts)",
+            "CREATE INDEX IF NOT EXISTS idx_bars_1d_symbol_ts ON bars_1d (symbol, ts)",
+            "CREATE INDEX IF NOT EXISTS idx_raw_ticks_symbol_ts ON raw_ticks (symbol, ts)",
+            "CREATE INDEX IF NOT EXISTS idx_minute_force_features_1m_symbol_ts ON minute_force_features_1m (symbol, ts)",
+        ):
+            cur.execute(ddl)
 
     @staticmethod
     def _bar_to_row(bar: Bar) -> dict:
