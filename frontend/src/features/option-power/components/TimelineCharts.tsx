@@ -558,7 +558,7 @@ export function TimelineCharts({
 
   return (
     <div className={styles.grid}>
-      {PANEL_SPECS.map((panel) => (
+      {PANEL_SPECS.map((panel) => panel.id === "price" ? null : (
         <article
           key={panel.id}
           className={`${styles.card} ${panel.slot === "price" ? styles.priceCard : styles.indicatorCard}`}
