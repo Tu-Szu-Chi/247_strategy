@@ -56,12 +56,14 @@ type TimelineChartsProps = {
   trendQualitySeries: IndicatorPanelSeries[];
   cvdSeries: IndicatorPanelSeries[];
   rangeStateSeries: IndicatorPanelSeries[];
+  ivSkewSeries: IndicatorPanelSeries[];
+  visiblePanelIds?: PanelId[];
   mode: "live" | "replay";
   onCursorTimeChange: (ts: string | null) => void;
   viewKey?: string;
 };
 
-type PanelId = "price" | "pressure" | "regime" | "bias" | "signal" | "chop" | "structure" | "context" | "trendQuality" | "cvd" | "rangeState";
+type PanelId = "price" | "pressure" | "regime" | "bias" | "signal" | "chop" | "structure" | "context" | "trendQuality" | "cvd" | "rangeState" | "ivSkew";
 
 const PANEL_SPECS: Array<{
   id: PanelId;
@@ -159,6 +161,14 @@ const PANEL_SPECS: Array<{
     legend: "compressed / normal / expanding",
     height: 132,
   },
+  {
+    id: "ivSkew",
+    slot: "indicator",
+    label: "IV",
+    title: "IV Skew",
+    legend: "call wing - put wing",
+    height: 132,
+  },
 ];
 
 export function TimelineCharts({
@@ -173,6 +183,8 @@ export function TimelineCharts({
   trendQualitySeries,
   cvdSeries,
   rangeStateSeries,
+  ivSkewSeries,
+  visiblePanelIds,
   mode,
   onCursorTimeChange,
   viewKey,
@@ -189,9 +201,17 @@ export function TimelineCharts({
       trendQuality: trendQualitySeries,
       cvd: cvdSeries,
       rangeState: rangeStateSeries,
+      ivSkew: ivSkewSeries,
     }),
-    [biasSeries, chopSeries, contextSeries, cvdSeries, pressureSeries, rangeStateSeries, rawPressureSeries, signalSeries, structureSeries, trendQualitySeries],
+    [biasSeries, chopSeries, contextSeries, cvdSeries, ivSkewSeries, pressureSeries, rangeStateSeries, rawPressureSeries, signalSeries, structureSeries, trendQualitySeries],
   );
+  const visiblePanels = useMemo(() => {
+    if (!visiblePanelIds?.length) {
+      return PANEL_SPECS;
+    }
+    const allowed = new Set(visiblePanelIds);
+    return PANEL_SPECS.filter((panel) => allowed.has(panel.id));
+  }, [visiblePanelIds]);
 
   const containerRefs = useRef<Record<PanelId, HTMLDivElement | null>>({
     price: null,
@@ -205,6 +225,7 @@ export function TimelineCharts({
     trendQuality: null,
     cvd: null,
     rangeState: null,
+    ivSkew: null,
   });
   const chartsRef = useRef<Record<PanelId, IChartApi | null>>({
     price: null,
@@ -218,6 +239,7 @@ export function TimelineCharts({
     trendQuality: null,
     cvd: null,
     rangeState: null,
+    ivSkew: null,
   });
   const indicatorSeriesRef = useRef<Record<string, ISeriesApi<"Line">>>({});
   const indicatorHistogramRef = useRef<Record<string, ISeriesApi<"Histogram">>>({});
@@ -246,6 +268,7 @@ export function TimelineCharts({
     trendQuality: null,
     cvd: null,
     rangeState: null,
+    ivSkew: null,
   });
   const fittedRef = useRef(false);
   const syncingRangeRef = useRef(false);
@@ -262,86 +285,98 @@ export function TimelineCharts({
     trendQuality: new Map(),
     cvd: new Map(),
     rangeState: new Map(),
+    ivSkew: new Map(),
   });
 
   useEffect(() => {
-    const hasAllContainers = PANEL_SPECS.every((panel) => containerRefs.current[panel.id]);
+    const hasAllContainers = visiblePanels.every((panel) => containerRefs.current[panel.id]);
     if (!hasAllContainers) {
       return;
     }
 
-    const charts = PANEL_SPECS.reduce<Record<PanelId, IChartApi>>((accumulator, panel) => {
+    const charts = visiblePanels.reduce<Partial<Record<PanelId, IChartApi>>>((accumulator, panel) => {
       const container = containerRefs.current[panel.id];
       if (!container) {
         throw new Error(`Missing chart container for ${panel.id}`);
       }
       accumulator[panel.id] = createConfiguredChart(container, panel.height);
       return accumulator;
-    }, {} as Record<PanelId, IChartApi>);
+    }, {});
 
-    const candle = charts.price.addCandlestickSeries({
-      upColor: "#f87171",
-      downColor: "#4ade80",
-      borderVisible: false,
-      wickUpColor: "#f87171",
-      wickDownColor: "#4ade80",
-      priceScaleId: "right",
-      priceLineVisible: false,
-    });
-    const volume = charts.price.addHistogramSeries({
-      priceScaleId: "volume",
-      priceLineVisible: false,
-      lastValueVisible: false,
-      base: 0,
-    });
-    const ma10 = charts.price.addLineSeries({
-      color: "#fbbf24",
-      priceScaleId: "right",
-      lineWidth: 2,
-      crosshairMarkerVisible: false,
-      priceLineVisible: false,
-      lastValueVisible: false,
-    });
-    const ma30 = charts.price.addLineSeries({
-      color: "#7dd3fc",
-      priceScaleId: "right",
-      lineWidth: 2,
-      crosshairMarkerVisible: false,
-      priceLineVisible: false,
-      lastValueVisible: false,
-    });
-    const ma60 = charts.price.addLineSeries({
-      color: "#c084fc",
-      priceScaleId: "right",
-      lineWidth: 2,
-      crosshairMarkerVisible: false,
-      priceLineVisible: false,
-      lastValueVisible: false,
-    });
+    let candle: ISeriesApi<"Candlestick"> | null = null;
+    let volume: ISeriesApi<"Histogram"> | null = null;
+    let ma10: ISeriesApi<"Line"> | null = null;
+    let ma30: ISeriesApi<"Line"> | null = null;
+    let ma60: ISeriesApi<"Line"> | null = null;
+    if (charts.price) {
+      candle = charts.price.addCandlestickSeries({
+        upColor: "#f87171",
+        downColor: "#4ade80",
+        borderVisible: false,
+        wickUpColor: "#f87171",
+        wickDownColor: "#4ade80",
+        priceScaleId: "right",
+        priceLineVisible: false,
+      });
+      volume = charts.price.addHistogramSeries({
+        priceScaleId: "volume",
+        priceLineVisible: false,
+        lastValueVisible: false,
+        base: 0,
+      });
+      ma10 = charts.price.addLineSeries({
+        color: "#fbbf24",
+        priceScaleId: "right",
+        lineWidth: 2,
+        crosshairMarkerVisible: false,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      });
+      ma30 = charts.price.addLineSeries({
+        color: "#7dd3fc",
+        priceScaleId: "right",
+        lineWidth: 2,
+        crosshairMarkerVisible: false,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      });
+      ma60 = charts.price.addLineSeries({
+        color: "#c084fc",
+        priceScaleId: "right",
+        lineWidth: 2,
+        crosshairMarkerVisible: false,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      });
 
-    charts.price.priceScale("right").applyOptions({
-      visible: true,
-      scaleMargins: {
-        top: 0.08,
-        bottom: 0.24,
-      },
-    });
-    charts.price.priceScale("volume").applyOptions({
-      scaleMargins: {
-        top: 0.8,
-        bottom: 0.02,
-      },
-    });
+      charts.price.priceScale("right").applyOptions({
+        visible: true,
+        scaleMargins: {
+          top: 0.08,
+          bottom: 0.24,
+        },
+      });
+      charts.price.priceScale("volume").applyOptions({
+        scaleMargins: {
+          top: 0.8,
+          bottom: 0.02,
+        },
+      });
+    }
 
     const indicatorSeries: Record<string, ISeriesApi<"Line">> = {};
     const indicatorHistograms: Record<string, ISeriesApi<"Histogram">> = {};
-    for (const panel of PANEL_SPECS) {
+    for (const panel of visiblePanels) {
       if (panel.id === "price") {
+        continue;
+      }
+      const chart = charts[panel.id];
+      if (!chart) {
         continue;
       }
       for (const series of panelData[panel.id]) {
         if (series.kind === "histogram") {
-          indicatorHistograms[series.id] = charts[panel.id].addHistogramSeries({
+          indicatorHistograms[series.id] = chart.addHistogramSeries({
             priceScaleId: series.priceScaleId ?? "right",
             priceLineVisible: false,
             lastValueVisible: false,
@@ -349,7 +384,7 @@ export function TimelineCharts({
           });
           continue;
         }
-        indicatorSeries[series.id] = charts[panel.id].addLineSeries({
+        indicatorSeries[series.id] = chart.addLineSeries({
           color: series.color,
           lineWidth: 2,
           lineStyle: series.dashed ? LineStyle.Dashed : LineStyle.Solid,
@@ -360,7 +395,7 @@ export function TimelineCharts({
         });
       }
       if (panelData[panel.id].some((series) => series.priceScaleId === "left")) {
-        charts[panel.id].priceScale("left").applyOptions({
+        chart.priceScale("left").applyOptions({
           visible: true,
           borderColor: "rgba(148, 163, 184, 0.16)",
           autoScale: true,
@@ -368,7 +403,9 @@ export function TimelineCharts({
       }
     }
 
-    const allCharts = PANEL_SPECS.map((panel) => charts[panel.id]);
+    const allCharts = visiblePanels
+      .map((panel) => charts[panel.id])
+      .filter(Boolean) as IChartApi[];
     for (const sourceChart of allCharts) {
       sourceChart.timeScale().subscribeVisibleTimeRangeChange((range) => {
         if (!range || syncingRangeRef.current) {
@@ -388,8 +425,12 @@ export function TimelineCharts({
       });
     }
 
-    for (const panel of PANEL_SPECS) {
-      charts[panel.id].subscribeCrosshairMove((param) => {
+    for (const panel of visiblePanels) {
+      const chart = charts[panel.id];
+      if (!chart) {
+        continue;
+      }
+      chart.subscribeCrosshairMove((param) => {
         handleCrosshairMove(
           panel.id,
           param,
@@ -403,21 +444,35 @@ export function TimelineCharts({
     }
 
     const resizeObserver = new ResizeObserver(() => {
-      for (const panel of PANEL_SPECS) {
+      for (const panel of visiblePanels) {
         const container = containerRefs.current[panel.id];
-        if (container) {
-          charts[panel.id].applyOptions({ width: container.clientWidth });
+        const chart = charts[panel.id];
+        if (container && chart) {
+          chart.applyOptions({ width: container.clientWidth });
         }
       }
     });
-    for (const panel of PANEL_SPECS) {
+    for (const panel of visiblePanels) {
       const container = containerRefs.current[panel.id];
       if (container) {
         resizeObserver.observe(container);
       }
     }
 
-    chartsRef.current = charts;
+    chartsRef.current = {
+      price: charts.price ?? null,
+      pressure: charts.pressure ?? null,
+      regime: charts.regime ?? null,
+      chop: charts.chop ?? null,
+      structure: charts.structure ?? null,
+      bias: charts.bias ?? null,
+      signal: charts.signal ?? null,
+      context: charts.context ?? null,
+      trendQuality: charts.trendQuality ?? null,
+      cvd: charts.cvd ?? null,
+      rangeState: charts.rangeState ?? null,
+      ivSkew: charts.ivSkew ?? null,
+    };
     priceSeriesRef.current = { candle, volume, ma10, ma30, ma60 };
     indicatorSeriesRef.current = indicatorSeries;
     indicatorHistogramRef.current = indicatorHistograms;
@@ -439,6 +494,7 @@ export function TimelineCharts({
         trendQuality: null,
         cvd: null,
         rangeState: null,
+        ivSkew: null,
       };
       indicatorSeriesRef.current = {};
       indicatorHistogramRef.current = {};
@@ -461,36 +517,41 @@ export function TimelineCharts({
         trendQuality: null,
         cvd: null,
         rangeState: null,
+        ivSkew: null,
       };
       fittedRef.current = false;
     };
-  }, [onCursorTimeChange, panelData]);
+  }, [onCursorTimeChange, panelData, visiblePanels]);
 
   useEffect(() => {
     fittedRef.current = false;
   }, [viewKey]);
 
   useEffect(() => {
-    const { candle, volume, ma10, ma30, ma60 } = priceSeriesRef.current;
-    if (!candle || !volume || !ma10 || !ma30 || !ma60) {
-      return;
-    }
-
     const normalizedBars = bars.map(normalizeBar).filter(Boolean) as CandlestickData[];
     const normalizedVolume = bars.map(normalizeVolume).filter(Boolean) as HistogramData[];
+    const showsPricePanel = visiblePanels.some((panel) => panel.id === "price");
+    if (showsPricePanel) {
+      const { candle, volume, ma10, ma30, ma60 } = priceSeriesRef.current;
+      if (!candle || !volume || !ma10 || !ma30 || !ma60) {
+        return;
+      }
+      candle.setData(normalizedBars);
+      volume.setData(normalizedVolume);
+      ma10.setData(buildMovingAverageSeries(normalizedBars, 10));
+      ma30.setData(buildMovingAverageSeries(normalizedBars, 30));
+      ma60.setData(buildMovingAverageSeries(normalizedBars, 60));
+      dataRef.current.price = new Map(normalizedBars.map((item) => [Number(item.time), item]));
+      representativeSeriesRef.current.price = candle;
+    } else {
+      dataRef.current.price = new Map();
+      representativeSeriesRef.current.price = null;
+    }
 
-    candle.setData(normalizedBars);
-    volume.setData(normalizedVolume);
-    ma10.setData(buildMovingAverageSeries(normalizedBars, 10));
-    ma30.setData(buildMovingAverageSeries(normalizedBars, 30));
-    ma60.setData(buildMovingAverageSeries(normalizedBars, 60));
-    dataRef.current.price = new Map(normalizedBars.map((item) => [Number(item.time), item]));
-    representativeSeriesRef.current.price = candle;
-
-      for (const panel of PANEL_SPECS) {
-        if (panel.id === "price") {
-          continue;
-        }
+    for (const panel of visiblePanels) {
+      if (panel.id === "price") {
+        continue;
+      }
       let representativeSet = false;
       const mergedData = new Map<number, LineData>();
       for (const series of panelData[panel.id]) {
@@ -537,7 +598,10 @@ export function TimelineCharts({
       }
     }
 
-    const hasRenderableData = normalizedBars.length > 0 || PANEL_SPECS.some((panel) => {
+    const hasRenderableData = (showsPricePanel && normalizedBars.length > 0) || PANEL_SPECS.some((panel) => {
+      if (!visiblePanels.some((visiblePanel) => visiblePanel.id === panel.id)) {
+        return false;
+      }
       if (panel.id === "price") {
         return false;
       }
@@ -549,7 +613,7 @@ export function TimelineCharts({
     }
 
     if (!fittedRef.current) {
-      for (const panel of PANEL_SPECS) {
+      for (const panel of visiblePanels) {
         chartsRef.current[panel.id]?.timeScale().fitContent();
       }
       fittedRef.current = true;
@@ -557,15 +621,15 @@ export function TimelineCharts({
     }
 
     if (mode === "live") {
-      for (const panel of PANEL_SPECS) {
+      for (const panel of visiblePanels) {
         chartsRef.current[panel.id]?.timeScale().scrollToRealTime();
       }
     }
-  }, [bars, mode, panelData]);
+  }, [bars, mode, panelData, visiblePanels]);
 
   return (
     <div className={styles.grid}>
-      {PANEL_SPECS.map((panel) => (
+      {visiblePanels.map((panel) => (
         <article
           key={panel.id}
           className={`${styles.card} ${panel.slot === "price" ? styles.priceCard : styles.indicatorCard}`}
@@ -763,7 +827,7 @@ function formatChartTime(time: Time, formatter: Intl.DateTimeFormat) {
 function handleCrosshairMove(
   source: PanelId,
   param: MouseEventParams<Time>,
-  charts: Record<PanelId, IChartApi>,
+  charts: Partial<Record<PanelId, IChartApi>>,
   representatives: Record<PanelId, ISeriesApi<"Line"> | ISeriesApi<"Histogram"> | ISeriesApi<"Candlestick"> | null>,
   data: Record<string, Map<number, LineData | CandlestickData>>,
   syncingCrosshairRef: { current: boolean },
@@ -776,7 +840,7 @@ function handleCrosshairMove(
     syncingCrosshairRef.current = true;
     try {
       for (const panel of PANEL_SPECS) {
-        charts[panel.id].clearCrosshairPosition();
+        charts[panel.id]?.clearCrosshairPosition();
       }
       onCursorTimeChange(null);
     } finally {
@@ -799,13 +863,14 @@ function handleCrosshairMove(
       }
       const point = data[panel.id].get(time);
       const series = representatives[panel.id];
-      if (!point || !series) {
+      const chart = charts[panel.id];
+      if (!point || !series || !chart) {
         continue;
       }
       if ("close" in point) {
-        charts[panel.id].setCrosshairPosition(Number(point.close), point.time, series);
+        chart.setCrosshairPosition(Number(point.close), point.time, series);
       } else {
-        charts[panel.id].setCrosshairPosition(Number(point.value), point.time, series);
+        chart.setCrosshairPosition(Number(point.value), point.time, series);
       }
     }
   } finally {

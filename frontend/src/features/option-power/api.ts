@@ -34,11 +34,13 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export async function getLiveBundle(seriesNames: string[]) {
+export async function getLiveBundle(seriesNames: string[], includeBars = true) {
   const names = encodeURIComponent(seriesNames.join(","));
   const [meta, bars, series, latest] = await Promise.all([
     fetchJson<LiveMeta>("/api/option-power/live/meta"),
-    fetchJson<ChartBarPoint[]>("/api/option-power/live/bars"),
+    includeBars
+      ? fetchJson<ChartBarPoint[]>("/api/option-power/live/bars")
+      : Promise.resolve([] as ChartBarPoint[]),
     fetchJson<IndicatorSeriesMap>(`/api/option-power/live/series?names=${names}`),
     fetchJson<LiveSnapshotLatestResponse>("/api/option-power/live/snapshot/latest"),
   ]);

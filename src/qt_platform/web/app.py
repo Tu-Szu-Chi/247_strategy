@@ -140,20 +140,54 @@ def build_option_power_app(runtime_service=None, replay_service=None):
         return JSONResponse(payload)
 
     @app.get("/api/option-power/replay/sessions/{session_id}/bars")
-    async def replay_bars(session_id: str):
+    async def replay_bars(
+        session_id: str,
+        start: str | None = Query(None),
+        end: str | None = Query(None),
+        interval: str = Query("1m"),
+    ):
         if replay_service is None:
             raise HTTPException(status_code=404, detail="Replay service is not enabled.")
-        payload = replay_service.get_bars(session_id)
+        try:
+            resolved_start = datetime.fromisoformat(start) if start else None
+            resolved_end = datetime.fromisoformat(end) if end else None
+            _validate_replay_interval(interval)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        payload = replay_service.get_bars(
+            session_id,
+            start=resolved_start,
+            end=resolved_end,
+            interval=interval,
+        )
         if payload is None:
             raise HTTPException(status_code=404, detail="Replay session not found.")
         return JSONResponse(payload)
 
     @app.get("/api/option-power/replay/sessions/{session_id}/series")
-    async def replay_series(session_id: str, names: str):
+    async def replay_series(
+        session_id: str,
+        names: str,
+        start: str | None = Query(None),
+        end: str | None = Query(None),
+        interval: str = Query("1m"),
+    ):
         if replay_service is None:
             raise HTTPException(status_code=404, detail="Replay service is not enabled.")
         requested_names = [name.strip() for name in names.split(",") if name.strip()]
-        payload = replay_service.get_series(session_id, requested_names)
+        try:
+            resolved_start = datetime.fromisoformat(start) if start else None
+            resolved_end = datetime.fromisoformat(end) if end else None
+            _validate_replay_interval(interval)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        payload = replay_service.get_series(
+            session_id,
+            requested_names,
+            start=resolved_start,
+            end=resolved_end,
+            interval=interval,
+        )
         if payload is None:
             raise HTTPException(status_code=404, detail="Replay session not found.")
         return JSONResponse(payload)
@@ -210,3 +244,8 @@ def build_option_power_app(runtime_service=None, replay_service=None):
         return JSONResponse(payload)
 
     return app
+
+
+def _validate_replay_interval(interval: str) -> None:
+    if interval not in {"1m", "5m", "15m", "30m"}:
+        raise ValueError("Replay interval must be one of: 1m, 5m, 15m, 30m.")

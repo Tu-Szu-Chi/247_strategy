@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
+from qt_platform.option_iv.domain import OptionIvSurfaceSnapshot
 from qt_platform.regime import RegimeFeatureSnapshot
 
 
@@ -55,6 +56,7 @@ class OptionPowerSnapshot:
     contract_count: int
     status: str
     regime: RegimeFeatureSnapshot | None = None
+    iv_surface: OptionIvSurfaceSnapshot | None = None
     stop_reason: str | None = None
     warning: str | None = None
 
@@ -62,4 +64,5 @@ class OptionPowerSnapshot:
         payload = asdict(self)
         payload["expiries"] = [expiry.to_dict() for expiry in self.expiries]
         payload["regime"] = self.regime.to_dict() if self.regime else None
+        payload["iv_surface"] = self.iv_surface.to_dict() if self.iv_surface else None
         return payload

@@ -30,12 +30,12 @@ export type RegimeSnapshot = {
   close: number | null;
   session_vwap: number | null;
   vwap_distance_bps: number;
-  directional_efficiency_15m: number;
-  vwap_cross_count_15m: number;
-  tick_imbalance_5m: number;
-  trade_intensity_5m: number;
-  trade_intensity_ratio_30m: number;
-  range_ratio_5m_30m: number;
+  directional_efficiency_15b: number;
+  vwap_cross_count_15b: number;
+  tick_imbalance_5b: number;
+  trade_intensity_5b: number;
+  trade_intensity_ratio_30b: number;
+  range_ratio_5b_30b: number;
   adx_14: number;
   plus_di_14: number;
   minus_di_14: number;
@@ -45,10 +45,10 @@ export type RegimeSnapshot = {
   expansion_score: number;
   compression_expansion_state: string;
   session_cvd: number;
-  cvd_5m_delta: number;
-  cvd_15m_delta: number;
-  cvd_5m_slope: number;
-  price_cvd_divergence_15m: string;
+  cvd_5b_delta: number;
+  cvd_15b_delta: number;
+  cvd_5b_slope: number;
+  price_cvd_divergence_15b: string;
   cvd_price_alignment: string;
   trend_score: number;
   chop_score: number;
@@ -79,6 +79,41 @@ export type OptionPowerExpiry = {
   contracts: OptionPowerContract[];
 };
 
+export type OptionIvPoint = {
+  instrument_key: string;
+  symbol: string;
+  contract_month: string;
+  strike_price: number;
+  call_put: "call" | "put" | string;
+  last_price: number;
+  iv: number;
+  moneyness: number;
+  side: string;
+  last_tick_ts: string | null;
+};
+
+export type OptionIvExpiry = {
+  contract_month: string;
+  label: string;
+  time_to_expiry_years: number;
+  skew: number | null;
+  call_wing_iv: number | null;
+  put_wing_iv: number | null;
+  point_count: number;
+  points: OptionIvPoint[];
+};
+
+export type OptionIvSurface = {
+  generated_at: string;
+  underlying_reference_price: number | null;
+  underlying_reference_source: string | null;
+  skew: number | null;
+  skew_intensity: number | null;
+  expiries: OptionIvExpiry[];
+  status: string;
+  warning?: string | null;
+};
+
 export type OptionPowerSnapshot = {
   type: string;
   generated_at: string;
@@ -91,6 +126,7 @@ export type OptionPowerSnapshot = {
   raw_pressure_weighted: number;
   pressure_index_weighted: number;
   regime?: RegimeSnapshot | null;
+  iv_surface?: OptionIvSurface | null;
   expiries: OptionPowerExpiry[];
   contract_count: number;
   status: string;

@@ -7,10 +7,10 @@ export const PRIMARY_SERIES_OPTIONS = [
   "chop_score",
   "reversal_risk",
   "vwap_distance_bps",
-  "directional_efficiency_15m",
-  "tick_imbalance_5m",
-  "trade_intensity_ratio_30m",
-  "range_ratio_5m_30m",
+  "directional_efficiency_15b",
+  "tick_imbalance_5b",
+  "trade_intensity_ratio_30b",
+  "range_ratio_5b_30b",
 ] as const;
 
 export const SECONDARY_SERIES_OPTIONS = PRIMARY_SERIES_OPTIONS;

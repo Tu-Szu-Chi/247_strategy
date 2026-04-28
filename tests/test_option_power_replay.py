@@ -156,6 +156,7 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
         self.assertIn("adx_14", metadata["available_series"])
         self.assertIn("session_cvd", metadata["available_series"])
         self.assertIn("compression_score", metadata["available_series"])
+        self.assertIn("iv_skew", metadata["available_series"])
 
         default_snapshot = service.current_snapshot()
         self.assertEqual(default_snapshot["underlying_reference_price"], 19400.0)
@@ -195,6 +196,7 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
                 "adx_14",
                 "session_cvd",
                 "compression_score",
+                "iv_skew",
             ],
         )
         self.assertEqual(
@@ -202,6 +204,7 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
             [
                 "adx_14",
                 "compression_score",
+                "iv_skew",
                 "pressure_index",
                 "pressure_index_weighted",
                 "raw_pressure",
@@ -289,6 +292,112 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
         self.assertEqual(subset["session_id"], full["session_id"])
         self.assertEqual(store.list_ticks_for_symbols_calls, 1)
         self.assertEqual(store.list_bars_calls, 2)
+
+    def test_get_series_and_bars_support_range_and_interval(self) -> None:
+        base_ts = datetime(2026, 4, 16, 9, 0, 0)
+        ticks = [
+            _tick(
+                ts=base_ts,
+                symbol="MTX",
+                price=19450.0,
+                size=1,
+                instrument_key="MTX202605",
+            ),
+            _tick(
+                ts=base_ts + timedelta(seconds=5),
+                symbol="TXX",
+                price=120.0,
+                size=10,
+                instrument_key="TXX20260419400C",
+                contract_month="202604",
+                strike_price=19400.0,
+                call_put="call",
+                tick_direction="up",
+            ),
+            _tick(
+                ts=base_ts + timedelta(minutes=1, seconds=5),
+                symbol="TXX",
+                price=121.0,
+                size=6,
+                instrument_key="TXX20260419400C",
+                contract_month="202604",
+                strike_price=19400.0,
+                call_put="call",
+                tick_direction="up",
+            ),
+        ]
+        bars = [
+            Bar(
+                ts=base_ts + timedelta(minutes=index),
+                trading_day=date(2026, 4, 16),
+                symbol="MTX",
+                contract_month="202605",
+                session="day",
+                open=19440.0 + index,
+                high=19460.0 + index,
+                low=19430.0 + index,
+                close=19450.0 + index,
+                volume=1000.0 + index,
+                open_interest=None,
+                source="stub_replay",
+                instrument_key="MTX202605",
+            )
+            for index in range(6)
+        ]
+        store = DummyStore(ticks, bars=bars)
+        service = OptionPowerReplayService(
+            store=store,
+            option_root="AUTO",
+            expiry_count=2,
+            underlying_symbol="MTX",
+            snapshot_interval_seconds=5.0,
+        )
+        metadata = service.create_session(
+            start=base_ts,
+            end=base_ts + timedelta(minutes=5),
+            set_as_default=True,
+        )
+
+        sliced_bars = service.get_bars(
+            metadata["session_id"],
+            start=base_ts,
+            end=base_ts + timedelta(hours=3),
+            interval="5m",
+        )
+        self.assertIsNotNone(sliced_bars)
+        self.assertEqual(len(sliced_bars), 2)
+        self.assertEqual(sliced_bars[0]["time"], base_ts.isoformat())
+        self.assertEqual(sliced_bars[0]["open"], 19440.0)
+        self.assertEqual(sliced_bars[0]["close"], 19454.0)
+        self.assertEqual(sliced_bars[0]["volume"], 5010.0)
+
+        sliced_series = service.get_series(
+            metadata["session_id"],
+            ["raw_pressure"],
+            start=base_ts,
+            end=base_ts + timedelta(minutes=2),
+            interval="1m",
+        )
+        self.assertIsNotNone(sliced_series)
+        self.assertEqual(
+            [point["time"] for point in sliced_series["raw_pressure"]],
+            [
+                base_ts.isoformat(),
+                (base_ts + timedelta(minutes=1)).isoformat(),
+                (base_ts + timedelta(minutes=2)).isoformat(),
+            ],
+        )
+
+        aggregated_30m_bars = service.get_bars(
+            metadata["session_id"],
+            start=base_ts,
+            end=base_ts + timedelta(minutes=29),
+            interval="30m",
+        )
+        self.assertIsNotNone(aggregated_30m_bars)
+        self.assertEqual(len(aggregated_30m_bars), 1)
+        self.assertEqual(aggregated_30m_bars[0]["time"], base_ts.isoformat())
+        self.assertEqual(aggregated_30m_bars[0]["close"], 19455.0)
 
 
 if __name__ == "__main__":

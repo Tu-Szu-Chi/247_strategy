@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from bisect import bisect_left
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from math import ceil
@@ -146,20 +147,41 @@ class OptionPowerReplayService:
             "snapshot": session.snapshots[index],
         }
 
-    def get_bars(self, session_id: str) -> list[dict] | None:
+    def get_bars(
+        self,
+        session_id: str,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        interval: str | None = None,
+    ) -> list[dict] | None:
         session = self._sessions.get(session_id)
         if session is None:
             return None
-        return session.bars
+        bars = _slice_bars(session.bars, start=start, end=end)
+        if interval is not None and interval != "1m":
+            return _aggregate_bars(bars, interval=interval)
+        return bars
 
-    def get_series(self, session_id: str, names: list[str]) -> dict[str, list[dict]] | None:
+    def get_series(
+        self,
+        session_id: str,
+        names: list[str],
+        start: datetime | None = None,
+        end: datetime | None = None,
+        interval: str | None = None,
+    ) -> dict[str, list[dict]] | None:
         session = self._sessions.get(session_id)
         if session is None:
             return None
         payload: dict[str, list[dict]] = {}
         for name in names:
             if name in session.indicator_series:
-                payload[name] = session.indicator_series[name]
+                payload[name] = _slice_and_resample_series(
+                    session.indicator_series[name],
+                    start=start,
+                    end=end,
+                    interval=interval,
+                )
         return payload
 
     def get_snapshot_at(self, session_id: str, ts: datetime) -> dict | None:
@@ -193,6 +215,7 @@ class OptionPowerReplayService:
                 "raw_pressure_weighted": 0,
                 "pressure_index_weighted": 0,
                 "regime": None,
+                "iv_surface": None,
                 "expiries": [],
                 "contract_count": 0,
                 "status": "replay_not_loaded",
@@ -213,6 +236,7 @@ class OptionPowerReplayService:
                 "raw_pressure_weighted": 0,
                 "pressure_index_weighted": 0,
                 "regime": None,
+                "iv_surface": None,
                 "expiries": [],
                 "contract_count": 0,
                 "status": "replay_empty",
@@ -362,12 +386,14 @@ def _build_indicator_series(snapshot_times: list[str], snapshots: list[dict]) ->
         "raw_pressure_weighted",
         "regime_state",
         "structure_state",
+        "trend_score",
         "chop_score",
+        "reversal_risk",
         "vwap_distance_bps",
-        "directional_efficiency_15m",
-        "tick_imbalance_5m",
-        "trade_intensity_ratio_30m",
-        "range_ratio_5m_30m",
+        "directional_efficiency_15b",
+        "tick_imbalance_5b",
+        "trade_intensity_ratio_30b",
+        "range_ratio_5b_30b",
         "adx_14",
         "plus_di_14",
         "minus_di_14",
@@ -377,11 +403,12 @@ def _build_indicator_series(snapshot_times: list[str], snapshots: list[dict]) ->
         "expansion_score",
         "compression_expansion_state",
         "session_cvd",
-        "cvd_5m_delta",
-        "cvd_15m_delta",
-        "cvd_5m_slope",
+        "cvd_5b_delta",
+        "cvd_15b_delta",
+        "cvd_5b_slope",
         "cvd_price_alignment",
-        "price_cvd_divergence_15m",
+        "price_cvd_divergence_15b",
+        "iv_skew",
     ]
     payload: dict[str, list[dict]] = {name: [] for name in series_names}
     drive_points: list[tuple[datetime, float]] = []
@@ -390,15 +417,17 @@ def _build_indicator_series(snapshot_times: list[str], snapshots: list[dict]) ->
     for ts, snapshot in zip(snapshot_times, snapshots):
         ts_dt = datetime.fromisoformat(ts)
         regime = snapshot.get("regime") or {}
-        drive_value = float(regime.get("directional_efficiency_15m", 0) or 0) * float(regime.get("tick_imbalance_5m", 0) or 0)
-        expansion_value = float(regime.get("range_ratio_5m_30m", 0) or 0)
+        drive_value = float(regime.get("directional_efficiency_15b", 0) or 0) * float(regime.get("tick_imbalance_5b", 0) or 0)
+        expansion_value = float(regime.get("range_ratio_5b_30b", 0) or 0)
         drive_points.append((ts_dt, drive_value))
         expansion_points.append((ts_dt, expansion_value))
         for name in series_names:
             if name in snapshot:
                 value = snapshot.get(name, 0)
             else:
-                if name == "regime_state":
+                if name == "iv_skew":
+                    value = _iv_surface_value(snapshot, "skew")
+                elif name == "regime_state":
                     value = _regime_state_value(regime.get("regime_label"))
                 elif name == "structure_state":
                     candidate = _structure_state_value(ts_dt, drive_points, expansion_points)
@@ -409,12 +438,17 @@ def _build_indicator_series(snapshot_times: list[str], snapshots: list[dict]) ->
                     value = _compression_expansion_state_value(regime.get("compression_expansion_state"))
                 elif name == "cvd_price_alignment":
                     value = _cvd_price_alignment_value(regime.get("cvd_price_alignment"))
-                elif name == "price_cvd_divergence_15m":
-                    value = _price_cvd_divergence_value(regime.get("price_cvd_divergence_15m"))
+                elif name == "price_cvd_divergence_15b":
+                    value = _price_cvd_divergence_value(regime.get("price_cvd_divergence_15b"))
                 else:
                     value = regime.get(name, 0)
             payload[name].append({"time": ts, "value": value})
     return payload
+
+
+def _iv_surface_value(snapshot: dict, field: str) -> float:
+    value = (snapshot.get("iv_surface") or {}).get(field)
+    return float(value) if value is not None else 0.0
 
 
 def _regime_state_value(label: str | None) -> int:
@@ -509,3 +543,86 @@ def _bar_to_chart_dict(bar: Bar) -> dict:
         "close": bar.close,
         "volume": bar.volume,
     }
+
+
+def _slice_bars(bars: list[dict], *, start: datetime | None, end: datetime | None) -> list[dict]:
+    if start is None and end is None:
+        return bars
+    sliced: list[dict] = []
+    for bar in bars:
+        ts = datetime.fromisoformat(bar["time"])
+        if start is not None and ts < start:
+            continue
+        if end is not None and ts > end:
+            continue
+        sliced.append(bar)
+    return sliced
+
+
+def _aggregate_bars(bars: list[dict], *, interval: str) -> list[dict]:
+    if interval == "1m":
+        return bars
+    buckets: OrderedDict[datetime, dict] = OrderedDict()
+    for bar in bars:
+        ts = datetime.fromisoformat(bar["time"])
+        bucket = _bucket_datetime(ts, interval)
+        existing = buckets.get(bucket)
+        if existing is None:
+            buckets[bucket] = {
+                "time": bucket.isoformat(),
+                "open": bar["open"],
+                "high": bar["high"],
+                "low": bar["low"],
+                "close": bar["close"],
+                "volume": bar.get("volume", 0),
+            }
+            continue
+        existing["high"] = max(existing["high"], bar["high"])
+        existing["low"] = min(existing["low"], bar["low"])
+        existing["close"] = bar["close"]
+        existing["volume"] = existing.get("volume", 0) + bar.get("volume", 0)
+    return list(buckets.values())
+
+
+def _slice_and_resample_series(
+    points: list[dict],
+    *,
+    start: datetime | None,
+    end: datetime | None,
+    interval: str | None,
+) -> list[dict]:
+    if interval is None:
+        return [
+            point
+            for point in points
+            if (start is None or datetime.fromisoformat(point["time"]) >= start)
+            and (end is None or datetime.fromisoformat(point["time"]) <= end)
+        ]
+    buckets: OrderedDict[datetime, dict] = OrderedDict()
+    for point in points:
+        ts = datetime.fromisoformat(point["time"])
+        if start is not None and ts < start:
+            continue
+        if end is not None and ts > end:
+            continue
+        bucket = _bucket_datetime(ts, interval)
+        buckets[bucket] = {
+            "time": bucket.isoformat(),
+            "value": point["value"],
+        }
+    return list(buckets.values())
+
+
+def _bucket_datetime(ts: datetime, interval: str) -> datetime:
+    if interval == "1m":
+        return ts.replace(second=0, microsecond=0)
+    if interval == "5m":
+        minute = ts.minute - (ts.minute % 5)
+        return ts.replace(minute=minute, second=0, microsecond=0)
+    if interval == "15m":
+        minute = ts.minute - (ts.minute % 15)
+        return ts.replace(minute=minute, second=0, microsecond=0)
+    if interval == "30m":
+        minute = ts.minute - (ts.minute % 30)
+        return ts.replace(minute=minute, second=0, microsecond=0)
+    raise ValueError(f"Unsupported replay interval: {interval}")

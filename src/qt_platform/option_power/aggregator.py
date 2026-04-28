@@ -7,6 +7,7 @@ import re
 from threading import Lock
 
 from qt_platform.domain import CanonicalTick
+from qt_platform.option_iv.surface import build_iv_surface
 from qt_platform.option_power.domain import (
     OptionContractSnapshot,
     OptionExpirySnapshot,
@@ -197,6 +198,12 @@ class OptionPowerAggregator:
                 )
                 for contract_month, contracts in sorted(expiries.items())
             ]
+            iv_surface = build_iv_surface(
+                generated_at=generated_at,
+                underlying_reference_price=underlying_reference_price,
+                underlying_reference_source=underlying_reference_source,
+                expiries=expiry_snapshots,
+            )
 
             return OptionPowerSnapshot(
                 type="option_power_snapshot",
@@ -214,6 +221,7 @@ class OptionPowerAggregator:
                 contract_count=contract_count,
                 status=status,
                 regime=regime,
+                iv_surface=iv_surface,
                 stop_reason=stop_reason,
                 warning=warning,
             )

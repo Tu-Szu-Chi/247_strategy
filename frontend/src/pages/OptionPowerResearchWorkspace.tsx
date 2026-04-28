@@ -24,6 +24,11 @@ type OptionPowerResearchWorkspaceProps = {
 export function OptionPowerResearchWorkspace({
   mode,
 }: OptionPowerResearchWorkspaceProps) {
+  const hiddenLivePanels = useMemo(
+    () => new Set(["price", "context", "trendQuality"] as const),
+    [],
+  );
+  const liveShowsPricePanel = !hiddenLivePanels.has("price");
   const [indicatorInterval, setIndicatorInterval] = useState<IndicatorInterval>(
     mode === "replay" ? "5m" : "1m",
   );
@@ -46,7 +51,7 @@ export function OptionPowerResearchWorkspace({
       "chop_score",
       "reversal_risk",
       "vwap_distance_bps",
-      "trade_intensity_ratio_30m",
+      "trade_intensity_ratio_30b",
       "adx_14",
       "plus_di_14",
       "minus_di_14",
@@ -56,15 +61,16 @@ export function OptionPowerResearchWorkspace({
       "expansion_score",
       "compression_expansion_state",
       "session_cvd",
-      "cvd_5m_delta",
-      "cvd_15m_delta",
-      "cvd_5m_slope",
+      "cvd_5b_delta",
+      "cvd_15b_delta",
+      "cvd_5b_slope",
       "cvd_price_alignment",
-      "price_cvd_divergence_15m",
+      "price_cvd_divergence_15b",
+      "iv_skew",
     ],
     [],
   );
-  const live = useOptionPowerLive(requestedSeries, mode === "live");
+  const live = useOptionPowerLive(requestedSeries, mode === "live", liveShowsPricePanel);
   const replay = useOptionPowerReplay(requestedSeries, mode === "replay", indicatorInterval);
 
   useEffect(() => {
@@ -255,6 +261,17 @@ export function OptionPowerResearchWorkspace({
     ],
     [activeSeries, indicatorInterval],
   );
+  const ivSkewPanelSeries = useMemo<IndicatorPanelSeries[]>(
+    () => [
+      {
+        id: "iv_skew",
+        label: "IV Skew",
+        points: resampleSeries(activeSeries.iv_skew ?? [], indicatorInterval),
+        color: "#2dd4bf",
+      },
+    ],
+    [activeSeries, indicatorInterval],
+  );
   const signalPanelSeries = useMemo<IndicatorPanelSeries[]>(
     () => [
       {
@@ -310,7 +327,7 @@ export function OptionPowerResearchWorkspace({
   const weightedTone = toneOf(snapshot?.pressure_index_weighted ?? 0);
   const headingEyebrow = mode === "live" ? "Research Live" : "Research Replay";
   const headingSubtitle = mode === "live"
-    ? "主圖固定看 MTX，副圖同步鋪開 pressure、regime 與 market structure。"
+    ? "Live 先聚焦核心訊號，暫時停掉較重的主圖、trend、context 與 option power 分布區塊。"
     : "主圖固定看 MTX，下方多副圖一次展開 pressure、regime 與 market structure，先專注觀察整體節奏。";
   const regime = snapshot?.regime ?? null;
   const signalState = useMemo(
@@ -446,6 +463,12 @@ export function OptionPowerResearchWorkspace({
           trendQualitySeries={trendQualityPanelSeries}
           cvdSeries={cvdPanelSeries}
           rangeStateSeries={rangeStatePanelSeries}
+          ivSkewSeries={ivSkewPanelSeries}
+          visiblePanelIds={
+            mode === "live"
+              ? ["pressure", "regime", "bias", "signal", "chop", "structure", "cvd", "rangeState", "ivSkew"]
+              : undefined
+          }
           mode={mode}
           onCursorTimeChange={requestSnapshotAt}
           viewKey={mode === "replay" ? `${replay.windowStart ?? ""}:${replay.windowEnd ?? ""}` : mode}
@@ -455,12 +478,13 @@ export function OptionPowerResearchWorkspace({
       <section className={styles.insights}>
         <section className={styles.metricGrid}>
           <MetricCard label="Signal State" value={signalState.label} tone={signalState.tone} />
-          <MetricCard label="Intensity 30m" value={formatIntensity(regime?.trade_intensity_ratio_30m ?? 0)} tone={intensityTone(regime?.trade_intensity_ratio_30m ?? 0)} />
+          <MetricCard label="Intensity 30b" value={formatIntensity(regime?.trade_intensity_ratio_30b ?? 0)} tone={intensityTone(regime?.trade_intensity_ratio_30b ?? 0)} />
           <MetricCard label="Regime" value={formatRegimeLabel(regime?.regime_label ?? "no_data")} tone={regimeTone(regime?.regime_label ?? "no_data")} />
           <MetricCard label="Trend Score" value={formatSigned(regime?.trend_score ?? 0)} tone={toneOf(regime?.trend_score ?? 0)} />
           <MetricCard label="Reversal Risk" value={formatSigned(regime?.reversal_risk ?? 0)} tone={toneOf(-(regime?.reversal_risk ?? 0))} />
           <MetricCard label="VWAP Dist" value={formatSignedFloat(regime?.vwap_distance_bps ?? 0, " bps")} tone={toneOf(regime?.vwap_distance_bps ?? 0)} />
           <MetricCard label="Pressure Index" value={formatSigned(snapshot?.pressure_index ?? 0)} tone={sessionTone} />
+          <MetricCard label="IV Skew" value={formatVolPoints(snapshot?.iv_surface?.skew ?? 0)} tone={toneOf(snapshot?.iv_surface?.skew ?? 0)} />
           <MetricCard
             label="Index Weighted"
             value={formatSigned(snapshot?.pressure_index_weighted ?? 0)}
@@ -482,13 +506,15 @@ export function OptionPowerResearchWorkspace({
         </section>
       </section>
 
-      <section className={styles.expirySection}>
-        <SnapshotLadder
-          snapshot={snapshot}
-          selectedExpiry={selectedExpiry}
-          onExpiryChange={setSelectedExpiry}
-        />
-      </section>
+      {mode === "live" ? null : (
+        <section className={styles.expirySection}>
+          <SnapshotLadder
+            snapshot={snapshot}
+            selectedExpiry={selectedExpiry}
+            onExpiryChange={setSelectedExpiry}
+          />
+        </section>
+      )}
     </section>
   );
 }
@@ -525,6 +551,12 @@ function formatSignedFloat(value: number, suffix = "") {
   const normalized = Number(value || 0);
   const prefix = normalized > 0 ? "+" : "";
   return `${prefix}${normalized.toFixed(2)}${suffix}`;
+}
+
+function formatVolPoints(value: number) {
+  const normalized = Number(value || 0) * 100;
+  const prefix = normalized > 0 ? "+" : "";
+  return `${prefix}${normalized.toFixed(2)} pts`;
 }
 
 function formatRegimeLabel(value: string) {
@@ -647,13 +679,14 @@ function deriveSignalSeries(
   const rawPressure = activeSeries.raw_pressure ?? [];
   const regimeState = activeSeries.regime_state ?? [];
   const structureState = activeSeries.structure_state ?? [];
-  const intensity = activeSeries.trade_intensity_ratio_30m ?? [];
+  const intensity = activeSeries.trade_intensity_ratio_30b ?? [];
+  const chop = activeSeries.chop_score ?? [];
   const adx = activeSeries.adx_14 ?? [];
   const choppiness = activeSeries.choppiness_14 ?? [];
   const diBias = activeSeries.di_bias_14 ?? [];
-  const cvdSlope = activeSeries.cvd_5m_slope ?? [];
+  const cvdSlope = activeSeries.cvd_5b_slope ?? [];
   const cvdAlignment = activeSeries.cvd_price_alignment ?? [];
-  const cvdDivergence = activeSeries.price_cvd_divergence_15m ?? [];
+  const cvdDivergence = activeSeries.price_cvd_divergence_15b ?? [];
   const rangeState = activeSeries.compression_expansion_state ?? [];
   const timeSet = new Set<string>();
   for (const series of [
@@ -662,6 +695,7 @@ function deriveSignalSeries(
     regimeState,
     structureState,
     intensity,
+    chop,
     adx,
     choppiness,
     diBias,
@@ -679,6 +713,7 @@ function deriveSignalSeries(
   const regimeStateMap = new Map(regimeState.map((point) => [point.time, Number(point.value ?? 0)]));
   const structureStateMap = new Map(structureState.map((point) => [point.time, Number(point.value ?? 0)]));
   const intensityMap = new Map(intensity.map((point) => [point.time, Number(point.value ?? 0)]));
+  const chopMap = new Map(chop.map((point) => [point.time, Number(point.value ?? 0)]));
   const adxMap = new Map(adx.map((point) => [point.time, Number(point.value ?? 0)]));
   const choppinessMap = new Map(choppiness.map((point) => [point.time, Number(point.value ?? 0)]));
   const diBiasMap = new Map(diBias.map((point) => [point.time, Number(point.value ?? 0)]));
@@ -688,7 +723,8 @@ function deriveSignalSeries(
   const rangeStateMap = new Map(rangeState.map((point) => [point.time, Number(point.value ?? 0)]));
 
   const orderedTimes = Array.from(timeSet).sort();
-  const signalPoints = orderedTimes.map((time) => {
+  const signalPoints = orderedTimes.map((time, timeIndex) => {
+    const previousTime = timeIndex > 0 ? orderedTimes[timeIndex - 1] : null;
     const now = new Date(time);
     const pressureHistory = rollingWindowValues(pressureIndexMap, orderedTimes, now, 30);
     const rawHistory = rollingWindowValues(rawPressureMap, orderedTimes, now, 30);
@@ -698,6 +734,7 @@ function deriveSignalSeries(
     const slopeAbsHistory = slopeHistory.map((value) => Math.abs(value));
     const biasValue = deriveBiasValue({
       pressureIndex: pressureIndexMap.get(time) ?? 0,
+      previousPressureIndex: previousTime ? (pressureIndexMap.get(previousTime) ?? 0) : null,
       regimeState: regimeStateMap.get(time) ?? 0,
       structureState: structureStateMap.get(time) ?? 0,
       intensityRatio: intensityMap.get(time) ?? 0,
@@ -709,7 +746,9 @@ function deriveSignalSeries(
       regimeState: regimeStateMap.get(time) ?? 0,
       structureState: structureStateMap.get(time) ?? 0,
       intensityRatio: intensityMap.get(time) ?? 0,
+      chopScore: chopMap.get(time) ?? 0,
       pressureIndex: pressureIndexMap.get(time) ?? 0,
+      previousPressureIndex: previousTime ? (pressureIndexMap.get(previousTime) ?? 0) : null,
       rawPressure: rawPressureMap.get(time) ?? 0,
       adxValue: adxMap.get(time) ?? 0,
       choppinessValue: choppinessMap.get(time) ?? 0,
@@ -735,7 +774,7 @@ function deriveBiasSeries(
   const pressureIndex = activeSeries.pressure_index ?? [];
   const regimeState = activeSeries.regime_state ?? [];
   const structureState = activeSeries.structure_state ?? [];
-  const intensity = activeSeries.trade_intensity_ratio_30m ?? [];
+  const intensity = activeSeries.trade_intensity_ratio_30b ?? [];
   const timeSet = new Set<string>();
   for (const series of [pressureIndex, regimeState, structureState, intensity]) {
     for (const point of series) {
@@ -750,15 +789,19 @@ function deriveBiasSeries(
   return resampleSeries(
     Array.from(timeSet)
       .sort()
-      .map((time) => ({
-        time,
-        value: deriveBiasValue({
-          pressureIndex: pressureIndexMap.get(time) ?? 0,
-          regimeState: regimeStateMap.get(time) ?? 0,
-          structureState: structureStateMap.get(time) ?? 0,
-          intensityRatio: intensityMap.get(time) ?? 0,
-        }),
-      })),
+      .map((time, index, orderedTimes) => {
+        const previousTime = index > 0 ? orderedTimes[index - 1] : null;
+        return {
+          time,
+          value: deriveBiasValue({
+            pressureIndex: pressureIndexMap.get(time) ?? 0,
+            previousPressureIndex: previousTime ? (pressureIndexMap.get(previousTime) ?? 0) : null,
+            regimeState: regimeStateMap.get(time) ?? 0,
+            structureState: structureStateMap.get(time) ?? 0,
+            intensityRatio: intensityMap.get(time) ?? 0,
+          }),
+        };
+      }),
     interval,
   );
 }
@@ -826,7 +869,7 @@ function deriveFlowImpulseSeries(
   activeSeries: Record<string, { time: string; value: number }[]>,
   interval: IndicatorInterval,
 ) {
-  const cvdSlope = activeSeries.cvd_5m_slope ?? [];
+  const cvdSlope = activeSeries.cvd_5b_slope ?? [];
   const timeSet = new Set<string>();
   for (const point of cvdSlope) {
     timeSet.add(point.time);
@@ -851,7 +894,7 @@ function deriveFlowStateSeries(
   interval: IndicatorInterval,
 ) {
   const alignment = activeSeries.cvd_price_alignment ?? [];
-  const divergence = activeSeries.price_cvd_divergence_15m ?? [];
+  const divergence = activeSeries.price_cvd_divergence_15b ?? [];
   const timeSet = new Set<string>();
   for (const series of [alignment, divergence]) {
     for (const point of series) {
@@ -898,12 +941,14 @@ function deriveRangeStateSeries(
   );
 }
 
-function deriveSignalStateValue(input: {
+export function deriveSignalStateValue(input: {
   biasValue: number;
   regimeState: number;
   structureState: number;
   intensityRatio: number;
+  chopScore: number;
   pressureIndex: number;
+  previousPressureIndex: number | null;
   rawPressure: number;
   adxValue: number;
   choppinessValue: number;
@@ -916,14 +961,15 @@ function deriveSignalStateValue(input: {
   rawPressureThreshold: number;
   flowThreshold: number;
 }) {
-  const pressureDirection = input.pressureIndex > 0 ? 1 : input.pressureIndex < 0 ? -1 : 0;
+  const pressureSide = resolvePressureSide(input.pressureIndex);
+  const pressureSlope = resolvePressureSlope(input.pressureIndex, input.previousPressureIndex);
   const active = input.intensityRatio >= 0.95;
   const strongPressure = Math.abs(input.pressureIndex) >= input.strongPressureThreshold;
   const supportedRawPressure = Math.abs(input.rawPressure) >= input.rawPressureThreshold;
   const trendBiasDirection = input.diBiasValue > 8 ? 1 : input.diBiasValue < -8 ? -1 : 0;
   const flowDirection = input.cvdSlopeValue > input.flowThreshold ? 1 : input.cvdSlopeValue < -input.flowThreshold ? -1 : 0;
   const trendReady = input.adxValue >= 18 && input.choppinessValue <= 62;
-  if (!active || input.biasValue === 0 || input.rangeStateValue < 0) {
+  if (!active || input.biasValue === 0 || input.rangeStateValue < 0 || input.chopScore > 30) {
     return 0;
   }
   const opposingDivergence = input.cvdDivergenceValue === -input.biasValue;
@@ -946,7 +992,7 @@ function deriveSignalStateValue(input: {
   if (input.cvdAlignmentValue === input.biasValue) {
     supportScore += 1;
   }
-  if (pressureDirection === input.biasValue) {
+  if (pressureSupportsBias(pressureSide, pressureSlope, input.biasValue)) {
     supportScore += 1;
   }
   if (trendReady) {
@@ -967,27 +1013,31 @@ function deriveSignalStateValue(input: {
   return 0;
 }
 
-function deriveBiasValue(input: {
+export function deriveBiasValue(input: {
   pressureIndex: number;
+  previousPressureIndex: number | null;
   regimeState: number;
   structureState: number;
   intensityRatio: number;
 }) {
-  const pressureDirection = input.pressureIndex > 0 ? 1 : input.pressureIndex < 0 ? -1 : 0;
+  const structureDirection = input.structureState > 0 ? 1 : input.structureState < 0 ? -1 : 0;
+  const regimeDirection = input.regimeState > 0 ? 1 : input.regimeState < 0 ? -1 : 0;
+  const pressureSide = resolvePressureSide(input.pressureIndex);
+  const pressureSlope = resolvePressureSlope(input.pressureIndex, input.previousPressureIndex);
   const active = input.intensityRatio >= 0.95;
   if (!active) {
     return 0;
   }
   if (
     input.structureState > 0
-    && pressureDirection > 0
+    && pressureSupportsBias(pressureSide, pressureSlope, 1)
     && input.regimeState >= 0
   ) {
     return 1;
   }
   if (
     input.structureState < 0
-    && pressureDirection < 0
+    && pressureSupportsBias(pressureSide, pressureSlope, -1)
     && input.regimeState <= 0
   ) {
     return -1;
@@ -999,6 +1049,40 @@ function deriveBiasValue(input: {
     return -1;
   }
   return 0;
+}
+
+export function resolvePressureSide(value: number) {
+  if (value >= 2) {
+    return 1;
+  }
+  if (value <= -2) {
+    return -1;
+  }
+  return 0;
+}
+
+export function resolvePressureSlope(value: number, previousValue: number | null) {
+  if (previousValue === null) {
+    return 0;
+  }
+  const delta = value - previousValue;
+  if (delta >= 2) {
+    return 1;
+  }
+  if (delta <= -2) {
+    return -1;
+  }
+  return 0;
+}
+
+function pressureSupportsBias(side: number, slope: number, bias: number) {
+  if (side !== bias) {
+    return false;
+  }
+  if (bias > 0) {
+    return slope >= 0;
+  }
+  return slope <= 0;
 }
 
 function rollingWindowValues(

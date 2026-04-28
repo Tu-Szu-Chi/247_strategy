@@ -12,7 +12,7 @@ type LiveState = {
 
 const POLL_MS = 5000;
 
-export function useOptionPowerLive(seriesNames: string[], enabled: boolean) {
+export function useOptionPowerLive(seriesNames: string[], enabled: boolean, includeBars = true) {
   const seriesKey = seriesNames.join(",");
   const [state, setState] = useState<LiveState>({
     bars: [],
@@ -40,7 +40,7 @@ export function useOptionPowerLive(seriesNames: string[], enabled: boolean) {
         setState((current) => ({ ...current, loading: true, error: null }));
       }
       try {
-        const bundle = await getLiveBundle(seriesNames);
+        const bundle = await getLiveBundle(seriesNames, includeBars);
         if (cancelled) {
           return;
         }
@@ -78,7 +78,7 @@ export function useOptionPowerLive(seriesNames: string[], enabled: boolean) {
         timerRef.current = null;
       }
     };
-  }, [enabled, seriesKey]);
+  }, [enabled, includeBars, seriesKey]);
 
   return {
     ...state,
