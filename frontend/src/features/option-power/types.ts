@@ -12,7 +12,7 @@ export type ChartSeriesPoint = {
   value: number;
 };
 
-export type IndicatorInterval = "5s" | "30s" | "1m" | "5m";
+export type IndicatorInterval = "1m" | "5m" | "15m" | "30m";
 
 export type RegimeLabel =
   | "trend_up"

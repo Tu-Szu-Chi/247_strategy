@@ -1,6 +1,7 @@
 import type {
   ChartBarPoint,
   IndicatorSeriesMap,
+  IndicatorInterval,
   LiveMeta,
   LiveSnapshotLatestResponse,
   ReplaySession,
@@ -56,11 +57,24 @@ export async function createReplaySession(start: string, end: string): Promise<R
   });
 }
 
-export async function getReplayBundle(sessionId: string, start: string, seriesNames: string[]) {
+export async function getReplayBundle(
+  sessionId: string,
+  start: string,
+  end: string,
+  interval: IndicatorInterval,
+  seriesNames: string[],
+) {
   const names = encodeURIComponent(seriesNames.join(","));
+  const search = new URLSearchParams({
+    start,
+    end,
+    interval,
+  });
   const [bars, series, snapshot] = await Promise.all([
-    fetchJson<ChartBarPoint[]>(`/api/option-power/replay/sessions/${sessionId}/bars`),
-    fetchJson<IndicatorSeriesMap>(`/api/option-power/replay/sessions/${sessionId}/series?names=${names}`),
+    fetchJson<ChartBarPoint[]>(`/api/option-power/replay/sessions/${sessionId}/bars?${search.toString()}`),
+    fetchJson<IndicatorSeriesMap>(
+      `/api/option-power/replay/sessions/${sessionId}/series?names=${names}&${search.toString()}`,
+    ),
     fetchJson<SnapshotLookupResponse>(
       `/api/option-power/replay/sessions/${sessionId}/snapshot-at?ts=${encodeURIComponent(start)}`,
     ),

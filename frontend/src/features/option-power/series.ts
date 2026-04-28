@@ -15,17 +15,17 @@ export const PRIMARY_SERIES_OPTIONS = [
 
 export const SECONDARY_SERIES_OPTIONS = PRIMARY_SERIES_OPTIONS;
 
-export const INDICATOR_INTERVAL_OPTIONS: IndicatorInterval[] = ["5s", "30s", "1m", "5m"];
+export const INDICATOR_INTERVAL_OPTIONS: IndicatorInterval[] = ["30m", "15m", "5m", "1m"];
 
 const INTERVAL_MS: Record<IndicatorInterval, number> = {
-  "5s": 5_000,
-  "30s": 30_000,
   "1m": 60_000,
   "5m": 300_000,
+  "15m": 900_000,
+  "30m": 1_800_000,
 };
 
 export function resampleSeries(points: ChartSeriesPoint[], interval: IndicatorInterval): ChartSeriesPoint[] {
-  if (!points.length || interval === "5s") {
+  if (!points.length) {
     return points;
   }
   const bucketMs = INTERVAL_MS[interval];

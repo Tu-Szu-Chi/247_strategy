@@ -24,7 +24,9 @@ type OptionPowerResearchWorkspaceProps = {
 export function OptionPowerResearchWorkspace({
   mode,
 }: OptionPowerResearchWorkspaceProps) {
-  const [indicatorInterval, setIndicatorInterval] = useState<IndicatorInterval>("1m");
+  const [indicatorInterval, setIndicatorInterval] = useState<IndicatorInterval>(
+    mode === "replay" ? "5m" : "1m",
+  );
   const [selectedExpiry, setSelectedExpiry] = useState("");
   const [snapshot, setSnapshot] = useState<OptionPowerSnapshot | null>(null);
   const [cursorTime, setCursorTime] = useState("-");
@@ -63,7 +65,7 @@ export function OptionPowerResearchWorkspace({
     [],
   );
   const live = useOptionPowerLive(requestedSeries, mode === "live");
-  const replay = useOptionPowerReplay(requestedSeries, mode === "replay");
+  const replay = useOptionPowerReplay(requestedSeries, mode === "replay", indicatorInterval);
 
   useEffect(() => {
     if (mode === "live") {
@@ -291,6 +293,9 @@ export function OptionPowerResearchWorkspace({
     : replay.session
       ? `${formatDateTime(replay.session.start)} -> ${formatDateTime(replay.session.end)}`
       : "-";
+  const replayWindowLabel = mode === "replay" && replay.windowStart && replay.windowEnd
+    ? `${formatDateTime(replay.windowStart)} -> ${formatDateTime(replay.windowEnd)}`
+    : "-";
 
   const selectedContracts = selectExpiry(snapshot, selectedExpiry)?.contracts ?? [];
   const contractTotals = useMemo(
@@ -378,6 +383,38 @@ export function OptionPowerResearchWorkspace({
                 "Load Replay"
               )}
             </button>
+
+            <div className={styles.windowControls}>
+              <button
+                className={styles.button}
+                disabled={replay.loading || !replay.canShiftPrev}
+                onClick={() => void replay.shiftWindow(-1)}
+                type="button"
+              >
+                Prev 3h
+              </button>
+              <button
+                className={styles.button}
+                disabled={replay.loading || !replay.canShiftNext}
+                onClick={() => void replay.shiftWindow(1)}
+                type="button"
+              >
+                Next 3h
+              </button>
+              <button
+                className={styles.button}
+                disabled={replay.loading || !replay.session}
+                onClick={() => void replay.resetWindow()}
+                type="button"
+              >
+                Reset Window
+              </button>
+            </div>
+
+            <div className={styles.windowInfo}>
+              <span>Window</span>
+              <strong>{replayWindowLabel}</strong>
+            </div>
           </>
         ) : null}
 
@@ -411,6 +448,7 @@ export function OptionPowerResearchWorkspace({
           rangeStateSeries={rangeStatePanelSeries}
           mode={mode}
           onCursorTimeChange={requestSnapshotAt}
+          viewKey={mode === "replay" ? `${replay.windowStart ?? ""}:${replay.windowEnd ?? ""}` : mode}
         />
       </section>
 

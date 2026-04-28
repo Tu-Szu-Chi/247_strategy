@@ -48,6 +48,7 @@ type TimelineChartsProps = {
   bars: ChartBarPoint[];
   pressureSeries: IndicatorPanelSeries[];
   rawPressureSeries: IndicatorPanelSeries[];
+  chopSeries: IndicatorPanelSeries[];
   structureSeries: IndicatorPanelSeries[];
   biasSeries: IndicatorPanelSeries[];
   signalSeries: IndicatorPanelSeries[];
@@ -57,6 +58,7 @@ type TimelineChartsProps = {
   rangeStateSeries: IndicatorPanelSeries[];
   mode: "live" | "replay";
   onCursorTimeChange: (ts: string | null) => void;
+  viewKey?: string;
 };
 
 type PanelId = "price" | "pressure" | "regime" | "bias" | "signal" | "chop" | "structure" | "context" | "trendQuality" | "cvd" | "rangeState";
@@ -173,6 +175,7 @@ export function TimelineCharts({
   rangeStateSeries,
   mode,
   onCursorTimeChange,
+  viewKey,
 }: TimelineChartsProps) {
   const panelData = useMemo<Record<Exclude<PanelId, "price">, IndicatorPanelSeries[]>>(
     () => ({
@@ -464,6 +467,10 @@ export function TimelineCharts({
   }, [onCursorTimeChange, panelData]);
 
   useEffect(() => {
+    fittedRef.current = false;
+  }, [viewKey]);
+
+  useEffect(() => {
     const { candle, volume, ma10, ma30, ma60 } = priceSeriesRef.current;
     if (!candle || !volume || !ma10 || !ma30 || !ma60) {
       return;
@@ -558,7 +565,7 @@ export function TimelineCharts({
 
   return (
     <div className={styles.grid}>
-      {PANEL_SPECS.map((panel) => panel.id === "price" ? null : (
+      {PANEL_SPECS.map((panel) => (
         <article
           key={panel.id}
           className={`${styles.card} ${panel.slot === "price" ? styles.priceCard : styles.indicatorCard}`}

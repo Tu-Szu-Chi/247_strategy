@@ -96,6 +96,27 @@
   background: rgba(8, 47, 73, 0.36);
 }
 
+.windowControls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.windowInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 260px;
+  color: var(--color-text-muted);
+  font-size: 0.82rem;
+}
+
+.windowInfo strong {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
 .field {
   display: flex;
   flex-direction: column;
