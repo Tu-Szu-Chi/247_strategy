@@ -119,11 +119,19 @@ export function OptionPowerResearchWorkspace({
     setCursorTime(formatDateTime(ts));
   }, []);
 
-  const handleVisibleRangeChange = useCallback((start: string, end: string) => {
+  const handleVisibleRangeChange = useCallback((range: {
+    start: string;
+    end: string;
+    hasLeftWhitespace?: boolean;
+    hasRightWhitespace?: boolean;
+  }) => {
     if (mode !== "replay") {
       return;
     }
-    void replay.ensureWindowForVisibleRange(start, end).catch(() => {
+    void replay.ensureWindowForVisibleRange(range.start, range.end, {
+      hasLeftWhitespace: range.hasLeftWhitespace,
+      hasRightWhitespace: range.hasRightWhitespace,
+    }).catch(() => {
       return;
     });
   }, [mode, replay]);
@@ -297,7 +305,9 @@ export function OptionPowerResearchWorkspace({
 
   const activeStatus = mode === "live"
     ? live.meta?.status ?? live.error ?? "-"
-    : replay.session?.session_id ?? replay.error ?? "-";
+    : replay.session
+      ? `${replay.computeStatus}${replay.partial ? " (partial)" : ""} ${Math.round(replay.progressRatio * 100)}%`
+      : replay.error ?? "-";
   const rootsLabel = mode === "live"
     ? (live.meta?.selected_option_roots ?? []).join(" + ")
     : (replay.session?.selected_option_roots ?? []).join(" + ");
@@ -382,6 +392,9 @@ export function OptionPowerResearchWorkspace({
         <div className={styles.metaCard}>
           <MetaRow label="Mode" value={mode} />
           <MetaRow label="Status" value={activeStatus} />
+          {mode === "replay" ? (
+            <MetaRow label="Session" value={replay.session?.session_id ?? "-"} />
+          ) : null}
           <MetaRow label="Roots" value={rootsLabel || "-"} />
           <MetaRow label="Range" value={rangeLabel} />
           <MetaRow label="Cursor" value={cursorTime} />
@@ -433,6 +446,7 @@ export function OptionPowerResearchWorkspace({
                 className={styles.button}
                 disabled={replay.loading || !replay.canShiftPrev}
                 onClick={() => void replay.shiftWindow(-1)}
+                title={!replay.canShiftPrev ? "At replay start" : undefined}
                 type="button"
               >
                 Prev 3h
@@ -441,6 +455,7 @@ export function OptionPowerResearchWorkspace({
                 className={styles.button}
                 disabled={replay.loading || !replay.canShiftNext}
                 onClick={() => void replay.shiftWindow(1)}
+                title={!replay.canShiftNext ? "At replay end" : undefined}
                 type="button"
               >
                 Next 3h
@@ -499,7 +514,7 @@ export function OptionPowerResearchWorkspace({
           mode={mode}
           onCursorTimeChange={handleCursorTime}
           onVisibleRangeChange={handleVisibleRangeChange}
-          viewKey={mode === "replay" ? replay.session?.session_id ?? "replay" : mode}
+          viewKey={mode === "replay" ? `${mode}:${replay.windowStart ?? ""}:${replay.windowEnd ?? ""}` : mode}
         />
       </section>
 

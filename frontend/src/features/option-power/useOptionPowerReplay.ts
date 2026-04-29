@@ -1,21 +1,41 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { createReplaySession, getReplayBundle, getReplayDefault } from "./api";
+import {
+  createReplaySession,
+  getReplayBundle,
+  getReplayBundleByBars,
+  getReplayDefault,
+  getReplayProgress,
+} from "./api";
 import type {
   ChartBarPoint,
   IndicatorInterval,
   IndicatorSeriesMap,
+  ReplayComputeStatus,
   ReplaySession,
 } from "./types";
 
 const INITIAL_REPLAY_WINDOW_HOURS = 3;
 const REPLAY_WINDOW_PADDING_MINUTES = 30;
+const PREFETCH_EDGE_THRESHOLD_MINUTES = 30;
+const CURSOR_PREFETCH_BAR_COUNT = 300;
+
+type LoadOptions = {
+  updateWindow?: boolean;
+  showLoading?: boolean;
+};
 
 type ReplayState = {
   bars: ChartBarPoint[];
   session: ReplaySession | null;
   windowStart: string | null;
   windowEnd: string | null;
+  loadedStart: string | null;
+  loadedEnd: string | null;
   loadedInterval: IndicatorInterval | null;
+  computeStatus: ReplayComputeStatus;
+  computedUntil: string | null;
+  progressRatio: number;
+  partial: boolean;
   loading: boolean;
   error: string | null;
 };
@@ -31,7 +51,13 @@ export function useOptionPowerReplay(
     session: null,
     windowStart: null,
     windowEnd: null,
+    loadedStart: null,
+    loadedEnd: null,
     loadedInterval: null,
+    computeStatus: "pending",
+    computedUntil: null,
+    progressRatio: 0,
+    partial: false,
     loading: enabled,
     error: null,
   });
@@ -39,7 +65,10 @@ export function useOptionPowerReplay(
   const lastLoadKeyRef = useRef("");
   const stateRef = useRef(state);
   const abortRef = useRef<AbortController | null>(null);
-  const requestIdRef = useRef(0);
+  const foregroundRequestIdRef = useRef(0);
+  const readyReloadKeyRef = useRef("");
+  const prefetchInFlightRef = useRef<Set<string>>(new Set());
+  const cursorInFlightRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     stateRef.current = state;
@@ -50,26 +79,37 @@ export function useOptionPowerReplay(
       session: ReplaySession,
       interval: IndicatorInterval,
       requestedWindow?: { start: string; end: string },
+      options: LoadOptions = {},
     ) => {
+      const updateWindow = options.updateWindow ?? true;
+      const showLoading = options.showLoading ?? true;
       const window = requestedWindow ?? initialReplayWindow(session);
       setState((current) => ({
         ...current,
         bars: current.session?.session_id === session.session_id ? current.bars : [],
         session,
-        windowStart: window.start,
-        windowEnd: window.end,
+        windowStart: updateWindow ? window.start : current.windowStart,
+        windowEnd: updateWindow ? window.end : current.windowEnd,
+        loadedStart: current.session?.session_id === session.session_id ? current.loadedStart : null,
+        loadedEnd: current.session?.session_id === session.session_id ? current.loadedEnd : null,
         loadedInterval: current.session?.session_id === session.session_id ? current.loadedInterval : null,
-        loading: true,
+        computeStatus: session.compute_status ?? current.computeStatus,
+        computedUntil: session.computed_until ?? current.computedUntil,
+        progressRatio: session.progress_ratio ?? current.progressRatio,
+        partial: current.session?.session_id === session.session_id ? current.partial : false,
+        loading: showLoading ? true : current.loading,
         error: null,
       }));
       if (stateRef.current.session?.session_id !== session.session_id) {
         setSeries({});
       }
-      abortRef.current?.abort();
-      const controller = new AbortController();
-      abortRef.current = controller;
-      requestIdRef.current += 1;
-      const requestId = requestIdRef.current;
+      const controller = showLoading ? new AbortController() : null;
+      const requestId = showLoading ? foregroundRequestIdRef.current + 1 : 0;
+      if (showLoading) {
+        abortRef.current?.abort();
+        abortRef.current = controller;
+        foregroundRequestIdRef.current = requestId;
+      }
       try {
         const bundle = await getReplayBundle(
           session.session_id,
@@ -77,30 +117,38 @@ export function useOptionPowerReplay(
           window.end,
           interval,
           seriesNames,
-          controller.signal,
+          controller?.signal,
         );
-        if (requestId !== requestIdRef.current) {
+        if (showLoading && requestId !== foregroundRequestIdRef.current) {
           return session;
         }
         setState((current) => {
+          if (current.session?.session_id !== session.session_id) {
+            return current;
+          }
           const shouldMerge = (
-            current.session?.session_id === session.session_id
-            && current.loadedInterval === interval
+            current.loadedInterval === interval
           );
           const mergedBars = shouldMerge ? mergeBars(current.bars, bundle.bars) : bundle.bars;
           const loadedWindow = shouldMerge
             ? mergeWindows(
-                { start: current.windowStart ?? window.start, end: current.windowEnd ?? window.end },
+                { start: current.loadedStart ?? window.start, end: current.loadedEnd ?? window.end },
                 window,
               )
             : window;
           return {
             bars: mergedBars,
-            session,
-            windowStart: loadedWindow.start,
-            windowEnd: loadedWindow.end,
+            session: current.session,
+            windowStart: updateWindow ? window.start : current.windowStart,
+            windowEnd: updateWindow ? window.end : current.windowEnd,
+            loadedStart: loadedWindow.start,
+            loadedEnd: loadedWindow.end,
             loadedInterval: interval,
-            loading: false,
+            computeStatus: bundle.seriesStatus.compute_status,
+            computedUntil: bundle.seriesStatus.computed_until,
+            progressRatio: bundle.seriesStatus.progress_ratio,
+            partial: bundle.seriesStatus.partial,
+            loading: showLoading ? false : current.loading,
             error: null,
           };
         });
@@ -113,15 +161,17 @@ export function useOptionPowerReplay(
         lastLoadKeyRef.current = `${seriesKey}:${session.session_id}:${interval}`;
         return session;
       } catch (error) {
-        if (controller.signal.aborted || requestId !== requestIdRef.current) {
+        if ((controller?.signal.aborted ?? false) || (showLoading && requestId !== foregroundRequestIdRef.current)) {
           return session;
         }
         const message = error instanceof Error ? error.message : "Replay bundle load failed.";
-        setState((current) => ({
-          ...current,
-          loading: false,
-          error: message,
-        }));
+        if (showLoading) {
+          setState((current) => ({
+            ...current,
+            loading: false,
+            error: message,
+          }));
+        }
         throw error;
       }
     },
@@ -132,6 +182,79 @@ export function useOptionPowerReplay(
     const session = await getReplayDefault();
     return loadSession(session, interval);
   }, [loadSession]);
+
+  const loadSessionByBars = useCallback(
+    async (
+      session: ReplaySession,
+      direction: "prev" | "next",
+      anchor: string,
+    ) => {
+      const cursorKey = `${seriesKey}:${session.session_id}:${interval}:${direction}:${anchor}:${CURSOR_PREFETCH_BAR_COUNT}`;
+      if (cursorInFlightRef.current.has(cursorKey)) {
+        return session;
+      }
+      cursorInFlightRef.current.add(cursorKey);
+      setState((current) => ({
+        ...current,
+        session,
+        bars: current.loadedInterval === interval ? current.bars : [],
+        loadedStart: current.loadedInterval === interval ? current.loadedStart : null,
+        loadedEnd: current.loadedInterval === interval ? current.loadedEnd : null,
+        loadedInterval: current.loadedInterval === interval ? current.loadedInterval : null,
+        computeStatus: session.compute_status ?? current.computeStatus,
+        computedUntil: session.computed_until ?? current.computedUntil,
+        progressRatio: session.progress_ratio ?? current.progressRatio,
+        error: null,
+      }));
+      try {
+        const bundle = await getReplayBundleByBars(
+          session.session_id,
+          anchor,
+          direction,
+          CURSOR_PREFETCH_BAR_COUNT,
+          interval,
+          seriesNames,
+        );
+        setState((current) => {
+          const responseSession = bundle.session ?? session;
+          if (current.session?.session_id !== session.session_id && current.session?.session_id !== responseSession.session_id) {
+            return current;
+          }
+          const hasCoverage = bundle.coverage.first_bar_time && bundle.coverage.last_bar_time;
+          const incomingWindow = hasCoverage
+            ? {
+                start: bundle.coverage.first_bar_time ?? anchor,
+                end: bundle.coverage.last_bar_time ?? anchor,
+              }
+            : null;
+          const loadedWindow = incomingWindow
+            ? mergeWindows(
+                { start: current.loadedStart ?? incomingWindow.start, end: current.loadedEnd ?? incomingWindow.end },
+                incomingWindow,
+              )
+            : { start: current.loadedStart, end: current.loadedEnd };
+          return {
+            ...current,
+            session: responseSession,
+            bars: mergeBars(current.bars, bundle.bars),
+            loadedStart: loadedWindow.start,
+            loadedEnd: loadedWindow.end,
+            loadedInterval: interval,
+            computeStatus: bundle.seriesStatus.compute_status,
+            computedUntil: bundle.seriesStatus.computed_until,
+            progressRatio: bundle.seriesStatus.progress_ratio,
+            partial: bundle.seriesStatus.partial,
+            error: null,
+          };
+        });
+        setSeries((current) => mergeSeriesMaps(current, bundle.series));
+        return session;
+      } finally {
+        cursorInFlightRef.current.delete(cursorKey);
+      }
+    },
+    [interval, seriesKey],
+  );
 
   const createSession = useCallback(
     async (start: string, end: string) => {
@@ -146,6 +269,93 @@ export function useOptionPowerReplay(
       abortRef.current?.abort();
     };
   }, []);
+
+  useEffect(() => {
+    if (!enabled || !state.session) {
+      return;
+    }
+    const sessionId = state.session.session_id;
+    let closed = false;
+    const applyProgress = (payload: {
+      compute_status: ReplayComputeStatus;
+      computed_until: string | null;
+      progress_ratio: number;
+      checkpoint_count: number;
+    }) => {
+      if (closed) {
+        return;
+      }
+      const current = stateRef.current;
+      const shouldReloadReadyWindow = (
+        payload.compute_status === "ready"
+        && current.partial
+        && !current.loading
+        && current.session?.session_id === sessionId
+        && current.loadedStart
+        && current.loadedEnd
+      );
+      const readyReloadKey = shouldReloadReadyWindow
+        ? `${seriesKey}:${sessionId}:${interval}:${current.loadedStart}:${current.loadedEnd}`
+        : "";
+      setState((current) => ({
+        ...current,
+        session: current.session?.session_id === sessionId
+          ? {
+              ...current.session,
+              compute_status: payload.compute_status,
+              computed_until: payload.computed_until,
+              progress_ratio: payload.progress_ratio,
+              checkpoint_count: payload.checkpoint_count,
+            }
+          : current.session,
+        computeStatus: payload.compute_status,
+        computedUntil: payload.computed_until,
+        progressRatio: payload.progress_ratio,
+        partial: current.partial,
+      }));
+      if (
+        shouldReloadReadyWindow
+        && current.session
+        && current.loadedStart
+        && current.loadedEnd
+        && readyReloadKeyRef.current !== readyReloadKey
+      ) {
+        readyReloadKeyRef.current = readyReloadKey;
+        void loadSession(
+          current.session,
+          interval,
+          { start: current.loadedStart, end: current.loadedEnd },
+          { updateWindow: false, showLoading: false },
+        ).catch(() => {});
+      }
+    };
+
+    if (typeof EventSource !== "undefined") {
+      const events = new EventSource(`/api/option-power/replay/sessions/${sessionId}/events`);
+      events.addEventListener("progress", (event) => {
+        applyProgress(JSON.parse((event as MessageEvent).data));
+      });
+      events.onerror = () => {
+        events.close();
+      };
+      return () => {
+        closed = true;
+        events.close();
+      };
+    }
+
+    const controller = new AbortController();
+    const poll = window.setInterval(() => {
+      void getReplayProgress(sessionId, controller.signal)
+        .then(applyProgress)
+        .catch(() => {});
+    }, 1000);
+    return () => {
+      closed = true;
+      controller.abort();
+      window.clearInterval(poll);
+    };
+  }, [enabled, interval, loadSession, seriesKey, state.session?.session_id]);
 
   useEffect(() => {
     if (!enabled) {
@@ -209,26 +419,90 @@ export function useOptionPowerReplay(
   }, [interval, loadSession, state.session]);
 
   const ensureWindowForVisibleRange = useCallback(
-    async (start: string, end: string) => {
+    async (
+      start: string,
+      end: string,
+      options: { hasLeftWhitespace?: boolean; hasRightWhitespace?: boolean } = {},
+    ) => {
       if (!state.session) {
         return null;
       }
-      if (state.windowStart && state.windowEnd) {
-        const loadedStart = new Date(state.windowStart).getTime();
-        const loadedEnd = new Date(state.windowEnd).getTime();
-        const visibleStart = new Date(start).getTime();
-        const visibleEnd = new Date(end).getTime();
-        if (visibleStart >= loadedStart && visibleEnd <= loadedEnd) {
+      const visibleStart = new Date(start).getTime();
+      const visibleEnd = new Date(end).getTime();
+      const sessionStart = new Date(state.session.start).getTime();
+      const sessionEnd = new Date(state.session.end).getTime();
+      const thresholdMs = PREFETCH_EDGE_THRESHOLD_MINUTES * 60 * 1000;
+      const wantsPrev = options.hasLeftWhitespace === true || (
+        state.loadedStart !== null && visibleStart < new Date(state.loadedStart).getTime()
+      );
+      const wantsNext = options.hasRightWhitespace === true || (
+        state.loadedEnd !== null && visibleEnd > new Date(state.loadedEnd).getTime()
+      );
+      const needsLargerSession = (
+        visibleStart < sessionStart
+        || visibleEnd > sessionEnd
+        || (options.hasLeftWhitespace === true && visibleStart <= sessionStart + thresholdMs)
+        || (options.hasRightWhitespace === true && visibleEnd >= sessionEnd - thresholdMs)
+      );
+      if (needsLargerSession) {
+        const nextSessionRange = replaySessionRangeForVisibleRange(state.session, start, end, options);
+        const nextWindowKey = `${nextSessionRange.start}:${nextSessionRange.end}`;
+        const prefetchKey = `extend:${state.session.session_id}:${interval}:${nextWindowKey}`;
+        if (prefetchInFlightRef.current.has(prefetchKey)) {
+          return state.session;
+        }
+        prefetchInFlightRef.current.add(prefetchKey);
+        try {
+          const nextSession = await createReplaySession(nextSessionRange.start, nextSessionRange.end);
+          if (wantsPrev && state.loadedStart) {
+            return loadSessionByBars(nextSession, "prev", state.loadedStart);
+          }
+          if (wantsNext && state.loadedEnd) {
+            return loadSessionByBars(nextSession, "next", state.loadedEnd);
+          }
+          return loadSession(nextSession, interval, replayWindowForVisibleRange(nextSession, start, end));
+        } finally {
+          prefetchInFlightRef.current.delete(prefetchKey);
+        }
+      }
+      if (state.loadedStart && state.loadedEnd) {
+        const loadedStart = new Date(state.loadedStart).getTime();
+        const loadedEnd = new Date(state.loadedEnd).getTime();
+        const nearLoadedStart = visibleStart - loadedStart <= thresholdMs && loadedStart > sessionStart;
+        const nearLoadedEnd = loadedEnd - visibleEnd <= thresholdMs && loadedEnd < sessionEnd;
+        if (
+          visibleStart >= loadedStart
+          && visibleEnd <= loadedEnd
+          && !nearLoadedStart
+          && !nearLoadedEnd
+        ) {
           return state.session;
         }
       }
-      return loadSession(
-        state.session,
-        interval,
-        replayWindowForVisibleRange(state.session, start, end),
-      );
+      if (wantsPrev && state.loadedStart) {
+        return loadSessionByBars(state.session, "prev", state.loadedStart);
+      }
+      if (wantsNext && state.loadedEnd) {
+        return loadSessionByBars(state.session, "next", state.loadedEnd);
+      }
+      const nextWindow = replayWindowForVisibleRange(state.session, start, end);
+      const prefetchKey = `${state.session.session_id}:${interval}:${nextWindow.start}:${nextWindow.end}`;
+      if (prefetchInFlightRef.current.has(prefetchKey)) {
+        return state.session;
+      }
+      prefetchInFlightRef.current.add(prefetchKey);
+      try {
+        return await loadSession(
+          state.session,
+          interval,
+          nextWindow,
+          { updateWindow: false, showLoading: false },
+        );
+      } finally {
+        prefetchInFlightRef.current.delete(prefetchKey);
+      }
     },
-    [interval, loadSession, state.session, state.windowEnd, state.windowStart],
+    [interval, loadSession, loadSessionByBars, state.loadedEnd, state.loadedStart, state.session],
   );
 
   return {
@@ -356,6 +630,35 @@ function replayWindowForVisibleRange(
   return {
     start: toLocalIsoString(start),
     end: toLocalIsoString(end),
+  };
+}
+
+function replaySessionRangeForVisibleRange(
+  session: ReplaySession,
+  visibleStart: string,
+  visibleEnd: string,
+  options: { hasLeftWhitespace?: boolean; hasRightWhitespace?: boolean } = {},
+) {
+  const sessionStart = new Date(session.start);
+  const sessionEnd = new Date(session.end);
+  const visibleStartDate = new Date(visibleStart);
+  const visibleEndDate = new Date(visibleEnd);
+  const paddingMs = REPLAY_WINDOW_PADDING_MINUTES * 60 * 1000;
+  const extendMs = INITIAL_REPLAY_WINDOW_HOURS * 60 * 60 * 1000;
+  const nextStart = new Date(Math.min(
+    sessionStart.getTime(),
+    visibleStartDate.getTime() - paddingMs,
+    options.hasLeftWhitespace === true ? sessionStart.getTime() - extendMs : sessionStart.getTime(),
+  ));
+  const nextEnd = new Date(Math.max(
+    sessionEnd.getTime(),
+    visibleEndDate.getTime() + paddingMs,
+    options.hasRightWhitespace === true ? sessionEnd.getTime() + extendMs : sessionEnd.getTime(),
+  ));
+
+  return {
+    start: toLocalIsoString(nextStart),
+    end: toLocalIsoString(nextEnd),
   };
 }
 

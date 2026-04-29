@@ -4,6 +4,9 @@ import type {
   IndicatorInterval,
   LiveMeta,
   LiveSnapshotLatestResponse,
+  ReplayBundleByBarsResponse,
+  ReplayProgress,
+  ReplaySeriesResponse,
   ReplaySession,
 } from "./types";
 
@@ -72,12 +75,42 @@ export async function getReplayBundle(
     end,
     interval,
   });
-  const [bars, series] = await Promise.all([
-    fetchJson<ChartBarPoint[]>(`/api/option-power/replay/sessions/${sessionId}/bars?${search.toString()}`, { signal }),
-    fetchJson<IndicatorSeriesMap>(
-      `/api/option-power/replay/sessions/${sessionId}/series?names=${names}&${search.toString()}`,
-      { signal },
-    ),
-  ]);
-  return { bars, series };
+  const payload = await fetchJson<ReplaySeriesResponse & { bars: ChartBarPoint[] }>(
+    `/api/option-power/replay/sessions/${sessionId}/bundle?names=${names}&${search.toString()}`,
+    { signal },
+  );
+  return { bars: payload.bars, series: payload.series, seriesStatus: payload };
+}
+
+export async function getReplayBundleByBars(
+  sessionId: string,
+  anchor: string,
+  direction: "prev" | "next" | "around",
+  barCount: number,
+  interval: IndicatorInterval,
+  seriesNames: string[],
+  signal?: AbortSignal,
+) {
+  const names = encodeURIComponent(seriesNames.join(","));
+  const search = new URLSearchParams({
+    anchor,
+    direction,
+    bar_count: String(barCount),
+    interval,
+  });
+  const payload = await fetchJson<ReplayBundleByBarsResponse>(
+    `/api/option-power/replay/sessions/${sessionId}/bundle-by-bars?names=${names}&${search.toString()}`,
+    { signal },
+  );
+  return {
+    bars: payload.bars,
+    series: payload.series,
+    seriesStatus: payload,
+    coverage: payload.coverage,
+    session: payload.session,
+  };
+}
+
+export async function getReplayProgress(sessionId: string, signal?: AbortSignal): Promise<ReplayProgress> {
+  return fetchJson<ReplayProgress>(`/api/option-power/replay/sessions/${sessionId}/progress`, { signal });
 }

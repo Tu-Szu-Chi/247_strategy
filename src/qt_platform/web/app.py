@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -8,8 +9,13 @@ from pathlib import Path
 def build_option_power_app(runtime_service=None, replay_service=None):
     try:
         from fastapi import Body, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
-        from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+        from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
         from fastapi.staticfiles import StaticFiles
+        try:
+            import orjson  # noqa: F401
+            from fastapi.responses import ORJSONResponse as ApiJSONResponse
+        except ImportError:  # pragma: no cover
+            ApiJSONResponse = JSONResponse
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
             "FastAPI is required for serve-option-power. Install with: pip install -e .[web]"
@@ -73,8 +79,8 @@ def build_option_power_app(runtime_service=None, replay_service=None):
         if runtime_service is None and replay_service is None:
             raise HTTPException(status_code=404, detail="No option power service configured.")
         if runtime_service is None:
-            return JSONResponse(replay_service.current_snapshot())
-        return JSONResponse(runtime_service.current_snapshot())
+            return ApiJSONResponse(replay_service.current_snapshot())
+        return ApiJSONResponse(runtime_service.current_snapshot())
 
     @app.websocket("/ws/option-power")
     async def option_power_ws(websocket: WebSocket):
@@ -96,7 +102,7 @@ def build_option_power_app(runtime_service=None, replay_service=None):
         metadata = replay_service.get_default_session_metadata()
         if metadata is None:
             raise HTTPException(status_code=404, detail="No default replay session is loaded.")
-        return JSONResponse(metadata)
+        return ApiJSONResponse(metadata)
 
     @app.post("/api/option-power/replay/sessions")
     async def create_replay_session(
@@ -119,7 +125,7 @@ def build_option_power_app(runtime_service=None, replay_service=None):
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return JSONResponse(metadata)
+        return ApiJSONResponse(metadata)
 
     @app.get("/api/option-power/replay/sessions/{session_id}")
     async def replay_session_metadata(session_id: str):
@@ -128,7 +134,36 @@ def build_option_power_app(runtime_service=None, replay_service=None):
         metadata = replay_service.get_session_metadata(session_id)
         if metadata is None:
             raise HTTPException(status_code=404, detail="Replay session not found.")
-        return JSONResponse(metadata)
+        return ApiJSONResponse(metadata)
+
+    @app.get("/api/option-power/replay/sessions/{session_id}/progress")
+    async def replay_progress(session_id: str):
+        if replay_service is None:
+            raise HTTPException(status_code=404, detail="Replay service is not enabled.")
+        payload = replay_service.get_progress(session_id)
+        if payload is None:
+            raise HTTPException(status_code=404, detail="Replay session not found.")
+        return ApiJSONResponse(payload)
+
+    @app.get("/api/option-power/replay/sessions/{session_id}/events")
+    async def replay_progress_events(session_id: str):
+        if replay_service is None:
+            raise HTTPException(status_code=404, detail="Replay service is not enabled.")
+        if replay_service.get_progress(session_id) is None:
+            raise HTTPException(status_code=404, detail="Replay session not found.")
+
+        async def event_stream():
+            while True:
+                payload = replay_service.get_progress(session_id)
+                if payload is None:
+                    yield "event: error\ndata: {}\n\n"
+                    return
+                yield f"event: progress\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                if payload.get("compute_status") in {"ready", "failed"}:
+                    return
+                await asyncio.sleep(0.5)
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
 
     @app.get("/api/option-power/replay/sessions/{session_id}/snapshots/{index}")
     async def replay_snapshot(session_id: str, index: int):
@@ -137,7 +172,7 @@ def build_option_power_app(runtime_service=None, replay_service=None):
         payload = replay_service.get_snapshot(session_id, index)
         if payload is None:
             raise HTTPException(status_code=404, detail="Replay snapshot not found.")
-        return JSONResponse(payload)
+        return ApiJSONResponse(payload)
 
     @app.get("/api/option-power/replay/sessions/{session_id}/bars")
     async def replay_bars(
@@ -162,7 +197,7 @@ def build_option_power_app(runtime_service=None, replay_service=None):
         )
         if payload is None:
             raise HTTPException(status_code=404, detail="Replay session not found.")
-        return JSONResponse(payload)
+        return ApiJSONResponse(payload)
 
     @app.get("/api/option-power/replay/sessions/{session_id}/series")
     async def replay_series(
@@ -181,7 +216,7 @@ def build_option_power_app(runtime_service=None, replay_service=None):
             _validate_replay_interval(interval)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        payload = replay_service.get_series(
+        payload = replay_service.get_series_payload(
             session_id,
             requested_names,
             start=resolved_start,
@@ -190,7 +225,68 @@ def build_option_power_app(runtime_service=None, replay_service=None):
         )
         if payload is None:
             raise HTTPException(status_code=404, detail="Replay session not found.")
-        return JSONResponse(payload)
+        return ApiJSONResponse(payload)
+
+    @app.get("/api/option-power/replay/sessions/{session_id}/bundle")
+    async def replay_bundle(
+        session_id: str,
+        names: str,
+        start: str | None = Query(None),
+        end: str | None = Query(None),
+        interval: str = Query("1m"),
+    ):
+        if replay_service is None:
+            raise HTTPException(status_code=404, detail="Replay service is not enabled.")
+        requested_names = [name.strip() for name in names.split(",") if name.strip()]
+        try:
+            resolved_start = datetime.fromisoformat(start) if start else None
+            resolved_end = datetime.fromisoformat(end) if end else None
+            _validate_replay_interval(interval)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        payload = replay_service.get_bundle(
+            session_id,
+            requested_names,
+            start=resolved_start,
+            end=resolved_end,
+            interval=interval,
+        )
+        if payload is None:
+            raise HTTPException(status_code=404, detail="Replay session not found.")
+        return ApiJSONResponse(payload)
+
+    @app.get("/api/option-power/replay/sessions/{session_id}/bundle-by-bars")
+    async def replay_bundle_by_bars(
+        session_id: str,
+        names: str,
+        anchor: str,
+        direction: str = Query("next"),
+        bar_count: int = Query(300),
+        interval: str = Query("1m"),
+    ):
+        if replay_service is None:
+            raise HTTPException(status_code=404, detail="Replay service is not enabled.")
+        requested_names = [name.strip() for name in names.split(",") if name.strip()]
+        try:
+            resolved_anchor = datetime.fromisoformat(anchor)
+            _validate_replay_interval(interval)
+            if direction not in {"prev", "next", "around"}:
+                raise ValueError(f"Unsupported replay bar direction: {direction}")
+            if bar_count <= 0:
+                raise ValueError("Replay bar_count must be greater than 0.")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        payload = replay_service.get_bundle_by_bars(
+            session_id,
+            requested_names,
+            anchor=resolved_anchor,
+            direction=direction,
+            bar_count=bar_count,
+            interval=interval,
+        )
+        if payload is None:
+            raise HTTPException(status_code=404, detail="Replay session not found.")
+        return ApiJSONResponse(payload)
 
     @app.get("/api/option-power/replay/sessions/{session_id}/snapshot-at")
     async def replay_snapshot_at(session_id: str, ts: str):
@@ -203,32 +299,32 @@ def build_option_power_app(runtime_service=None, replay_service=None):
         payload = replay_service.get_snapshot_at(session_id, snapshot_ts)
         if payload is None:
             raise HTTPException(status_code=404, detail="Replay snapshot not found.")
-        return JSONResponse(payload)
+        return ApiJSONResponse(payload)
 
     @app.get("/api/option-power/live/meta")
     async def live_meta():
         if runtime_service is None:
             raise HTTPException(status_code=404, detail="Live service is not enabled.")
-        return JSONResponse(runtime_service.live_metadata())
+        return ApiJSONResponse(runtime_service.live_metadata())
 
     @app.get("/api/option-power/live/bars")
     async def live_bars():
         if runtime_service is None:
             raise HTTPException(status_code=404, detail="Live service is not enabled.")
-        return JSONResponse(runtime_service.live_bars())
+        return ApiJSONResponse(runtime_service.live_bars())
 
     @app.get("/api/option-power/live/series")
     async def live_series(names: str):
         if runtime_service is None:
             raise HTTPException(status_code=404, detail="Live service is not enabled.")
         requested_names = [name.strip() for name in names.split(",") if name.strip()]
-        return JSONResponse(runtime_service.live_series(requested_names))
+        return ApiJSONResponse(runtime_service.live_series(requested_names))
 
     @app.get("/api/option-power/live/snapshot/latest")
     async def live_snapshot_latest():
         if runtime_service is None:
             raise HTTPException(status_code=404, detail="Live service is not enabled.")
-        return JSONResponse({"snapshot": runtime_service.current_snapshot()})
+        return ApiJSONResponse({"snapshot": runtime_service.current_snapshot()})
 
     @app.get("/api/option-power/live/snapshot-at")
     async def live_snapshot_at(ts: str):
@@ -241,7 +337,7 @@ def build_option_power_app(runtime_service=None, replay_service=None):
         payload = runtime_service.live_snapshot_at(snapshot_ts)
         if payload is None:
             raise HTTPException(status_code=404, detail="Live snapshot not found.")
-        return JSONResponse(payload)
+        return ApiJSONResponse(payload)
 
     return app
 

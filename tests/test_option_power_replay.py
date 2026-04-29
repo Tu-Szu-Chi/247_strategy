@@ -182,6 +182,9 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
         self.assertIn("session_cvd", metadata["available_series"])
         self.assertIn("compression_score", metadata["available_series"])
         self.assertIn("iv_skew", metadata["available_series"])
+        self.assertIn(metadata["compute_status"], {"pending", "running"})
+        self.assertEqual(metadata["target_window_bars"], 200)
+        self.assertTrue(service.wait_until_ready(metadata["session_id"], timeout=2.0))
 
         default_snapshot = service.current_snapshot()
         self.assertEqual(default_snapshot["underlying_reference_price"], 19400.0)
@@ -317,8 +320,8 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
         )
         self.assertEqual(subset["session_id"], full["session_id"])
         self.assertEqual(store.list_tick_symbol_stats_calls, 1)
-        self.assertEqual(store.list_ticks_for_symbols_calls, 0)
-        self.assertEqual(store.list_bars_calls, 0)
+        self.assertTrue(service.wait_until_ready(full["session_id"], timeout=2.0))
+        self.assertEqual(store.list_ticks_for_symbols_calls, 1)
 
     def test_get_series_and_bars_support_range_and_interval(self) -> None:
         base_ts = datetime(2026, 4, 16, 9, 0, 0)
@@ -384,6 +387,15 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
             end=base_ts + timedelta(minutes=5),
             set_as_default=True,
         )
+        pending_series = service.get_series_payload(
+            metadata["session_id"],
+            ["raw_pressure"],
+            start=base_ts,
+            end=base_ts + timedelta(minutes=2),
+            interval="1m",
+        )
+        self.assertIsNotNone(pending_series)
+        self.assertIn("partial", pending_series)
 
         sliced_bars = service.get_bars(
             metadata["session_id"],
@@ -397,6 +409,7 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
         self.assertEqual(sliced_bars[0]["open"], 19440.0)
         self.assertEqual(sliced_bars[0]["close"], 19454.0)
         self.assertEqual(sliced_bars[0]["volume"], 5010.0)
+        self.assertTrue(service.wait_until_ready(metadata["session_id"], timeout=2.0))
 
         sliced_series = service.get_series(
             metadata["session_id"],
@@ -425,6 +438,255 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
         self.assertEqual(len(aggregated_30m_bars), 1)
         self.assertEqual(aggregated_30m_bars[0]["time"], base_ts.isoformat())
         self.assertEqual(aggregated_30m_bars[0]["close"], 19455.0)
+
+    def test_get_bars_excludes_unknown_session_boundary_bars_before_aggregation(self) -> None:
+        base_ts = datetime(2026, 4, 16, 8, 44, 0)
+        bars = [
+            Bar(
+                ts=base_ts,
+                trading_day=date(2026, 4, 16),
+                symbol="MTX",
+                contract_month="202605",
+                session="unknown",
+                open=19400.0,
+                high=19401.0,
+                low=19400.0,
+                close=19401.0,
+                volume=10.0,
+                open_interest=None,
+                source="stub_replay",
+                instrument_key="MTX202605",
+            ),
+            *[
+                Bar(
+                    ts=base_ts + timedelta(minutes=index),
+                    trading_day=date(2026, 4, 16),
+                    symbol="MTX",
+                    contract_month="202605",
+                    session="day",
+                    open=19440.0 + index,
+                    high=19460.0 + index,
+                    low=19430.0 + index,
+                    close=19450.0 + index,
+                    volume=1000.0 + index,
+                    open_interest=None,
+                    source="stub_replay",
+                    instrument_key="MTX202605",
+                )
+                for index in range(1, 6)
+            ],
+        ]
+        store = DummyStore([], bars=bars)
+        service = OptionPowerReplayService(
+            store=store,
+            option_root="AUTO",
+            expiry_count=2,
+            underlying_symbol="MTX",
+            snapshot_interval_seconds=5.0,
+        )
+        metadata = service.create_session(
+            start=base_ts,
+            end=base_ts + timedelta(minutes=5),
+            set_as_default=True,
+        )
+
+        one_minute_bars = service.get_bars(
+            metadata["session_id"],
+            start=base_ts,
+            end=base_ts + timedelta(minutes=5),
+            interval="1m",
+        )
+        self.assertIsNotNone(one_minute_bars)
+        self.assertEqual(one_minute_bars[0]["time"], "2026-04-16T08:45:00")
+
+        five_minute_bars = service.get_bars(
+            metadata["session_id"],
+            start=base_ts,
+            end=base_ts + timedelta(minutes=5),
+            interval="5m",
+        )
+        self.assertIsNotNone(five_minute_bars)
+        self.assertEqual(five_minute_bars[0]["time"], "2026-04-16T08:45:00")
+
+    def test_get_bars_aggregates_full_buckets_for_overlapping_windows(self) -> None:
+        base_ts = datetime(2026, 4, 16, 9, 15, 0)
+        bars = [
+            Bar(
+                ts=base_ts + timedelta(minutes=index),
+                trading_day=date(2026, 4, 16),
+                symbol="MTX",
+                contract_month="202605",
+                session="day",
+                open=100.0 + index,
+                high=101.0 + index,
+                low=99.0 + index,
+                close=100.5 + index,
+                volume=10.0 + index,
+                open_interest=None,
+                source="stub_replay",
+                instrument_key="MTX202605",
+            )
+            for index in range(10)
+        ]
+        store = DummyStore([], bars=bars)
+        service = OptionPowerReplayService(
+            store=store,
+            option_root="AUTO",
+            expiry_count=2,
+            underlying_symbol="MTX",
+            snapshot_interval_seconds=5.0,
+        )
+        metadata = service.create_session(
+            start=base_ts,
+            end=base_ts + timedelta(minutes=9),
+            set_as_default=True,
+        )
+
+        aligned = service.get_bars(
+            metadata["session_id"],
+            start=base_ts + timedelta(minutes=5),
+            end=base_ts + timedelta(minutes=9),
+            interval="5m",
+        )
+        partial_overlap = service.get_bars(
+            metadata["session_id"],
+            start=base_ts + timedelta(minutes=7),
+            end=base_ts + timedelta(minutes=9),
+            interval="5m",
+        )
+
+        self.assertIsNotNone(aligned)
+        self.assertIsNotNone(partial_overlap)
+        self.assertEqual(aligned, partial_overlap)
+        self.assertEqual(aligned[0]["time"], "2026-04-16T09:20:00")
+        self.assertEqual(aligned[0]["open"], 105.0)
+        self.assertEqual(aligned[0]["close"], 109.5)
+        self.assertEqual(aligned[0]["volume"], 85.0)
+
+    def test_get_bundle_by_bars_uses_existing_bars_across_calendar_gaps(self) -> None:
+        friday = datetime(2026, 4, 17, 13, 44, 0)
+        monday = datetime(2026, 4, 20, 8, 45, 0)
+        bars = [
+            Bar(
+                ts=friday,
+                trading_day=date(2026, 4, 17),
+                symbol="MTX",
+                contract_month="202605",
+                session="day",
+                open=100.0,
+                high=101.0,
+                low=99.0,
+                close=100.5,
+                volume=10.0,
+                open_interest=None,
+                source="stub_replay",
+                instrument_key="MTX202605",
+            ),
+            Bar(
+                ts=monday,
+                trading_day=date(2026, 4, 20),
+                symbol="MTX",
+                contract_month="202605",
+                session="day",
+                open=110.0,
+                high=111.0,
+                low=109.0,
+                close=110.5,
+                volume=20.0,
+                open_interest=None,
+                source="stub_replay",
+                instrument_key="MTX202605",
+            ),
+        ]
+        store = DummyStore([], bars=bars)
+        service = OptionPowerReplayService(
+            store=store,
+            option_root="AUTO",
+            expiry_count=2,
+            underlying_symbol="MTX",
+            snapshot_interval_seconds=5.0,
+        )
+        metadata = service.create_session(
+            start=friday,
+            end=monday,
+            set_as_default=True,
+        )
+
+        payload = service.get_bundle_by_bars(
+            metadata["session_id"],
+            ["raw_pressure"],
+            anchor=friday,
+            direction="next",
+            bar_count=1,
+            interval="1m",
+        )
+
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["bars"][0]["time"], "2026-04-20T08:45:00")
+        self.assertEqual(payload["coverage"]["bar_count"], 1)
+        self.assertEqual(payload["coverage"]["first_bar_time"], "2026-04-20T08:45:00")
+
+    def test_get_bundle_by_bars_finds_previous_bars_outside_current_session(self) -> None:
+        friday = datetime(2026, 4, 17, 13, 44, 0)
+        monday = datetime(2026, 4, 20, 8, 45, 0)
+        bars = [
+            Bar(
+                ts=friday,
+                trading_day=date(2026, 4, 17),
+                symbol="MTX",
+                contract_month="202605",
+                session="day",
+                open=100.0,
+                high=101.0,
+                low=99.0,
+                close=100.5,
+                volume=10.0,
+                open_interest=None,
+                source="stub_replay",
+                instrument_key="MTX202605",
+            ),
+            Bar(
+                ts=monday,
+                trading_day=date(2026, 4, 20),
+                symbol="MTX",
+                contract_month="202605",
+                session="day",
+                open=110.0,
+                high=111.0,
+                low=109.0,
+                close=110.5,
+                volume=20.0,
+                open_interest=None,
+                source="stub_replay",
+                instrument_key="MTX202605",
+            ),
+        ]
+        store = DummyStore([], bars=bars)
+        service = OptionPowerReplayService(
+            store=store,
+            option_root="AUTO",
+            expiry_count=2,
+            underlying_symbol="MTX",
+            snapshot_interval_seconds=5.0,
+        )
+        metadata = service.create_session(
+            start=monday,
+            end=monday,
+            set_as_default=True,
+        )
+
+        payload = service.get_bundle_by_bars(
+            metadata["session_id"],
+            ["raw_pressure"],
+            anchor=monday,
+            direction="prev",
+            bar_count=1,
+            interval="1m",
+        )
+
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["bars"][0]["time"], "2026-04-17T13:44:00")
+        self.assertLess(payload["session"]["start"], metadata["start"])
 
 
 if __name__ == "__main__":

@@ -88,12 +88,13 @@
 
 .button:disabled {
   opacity: 0.72;
-  cursor: wait;
+  cursor: default;
 }
 
 .button[data-loading="true"] {
   border-color: rgba(125, 211, 252, 0.34);
   background: rgba(8, 47, 73, 0.36);
+  cursor: wait;
 }
 
 .windowControls {

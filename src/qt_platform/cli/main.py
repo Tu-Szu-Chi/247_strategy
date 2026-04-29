@@ -6,6 +6,7 @@ import os
 import sqlite3
 import time
 from datetime import date, datetime, timedelta
+from math import ceil
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -166,6 +167,18 @@ def main() -> None:
     serve_option_power_replay.add_argument("--end", required=True)
     serve_option_power_replay.add_argument("--log-file", default="logs/serve-option-power-replay.log")
 
+    benchmark_replay = subparsers.add_parser("benchmark-replay")
+    benchmark_replay.add_argument("--database-url")
+    benchmark_replay.add_argument("--start", required=True)
+    benchmark_replay.add_argument("--end", required=True)
+    benchmark_replay.add_argument("--symbol", default="MTX")
+    benchmark_replay.add_argument("--option-root", default="AUTO")
+    benchmark_replay.add_argument("--expiry-count", type=int, default=2)
+    benchmark_replay.add_argument("--snapshot-interval-seconds", type=float, default=10.0)
+    benchmark_replay.add_argument("--window-bars", type=int, default=200)
+    benchmark_replay.add_argument("--runs", type=int, default=5)
+    benchmark_replay.add_argument("--report-dir", default="reports/benchmarks")
+
     resolve_contract = subparsers.add_parser("resolve-contract")
     resolve_contract.add_argument("--symbol", default="MTX")
     resolve_contract.add_argument("--date", required=True)
@@ -192,6 +205,8 @@ def main() -> None:
         _serve_option_power(args, settings)
     elif args.command == "serve-option-power-replay":
         _serve_option_power_replay(args, settings)
+    elif args.command == "benchmark-replay":
+        _benchmark_replay(args, settings)
     elif args.command == "resolve-contract":
         _resolve_contract(args)
 
@@ -890,11 +905,122 @@ def _serve_option_power_replay(args: argparse.Namespace, settings: Settings) -> 
     uvicorn.run(app, host=args.host, port=args.port, log_level="info", access_log=False)
 
 
+def _benchmark_replay(args: argparse.Namespace, settings: Settings) -> None:
+    store = build_bar_repository(_database_url(args, settings))
+    replay = OptionPowerReplayService(
+        store=store,
+        option_root=args.option_root,
+        expiry_count=args.expiry_count,
+        underlying_symbol=args.symbol,
+        snapshot_interval_seconds=args.snapshot_interval_seconds,
+    )
+    start = datetime.fromisoformat(args.start)
+    end = datetime.fromisoformat(args.end)
+    window_end = min(end, start + timedelta(minutes=max(args.window_bars - 1, 0)))
+    series_names = [
+        "pressure_index",
+        "raw_pressure",
+        "pressure_index_weighted",
+        "raw_pressure_weighted",
+        "regime_state",
+        "trend_score",
+        "adx_14",
+        "session_cvd",
+        "iv_skew",
+    ]
+
+    create_started = time.perf_counter()
+    metadata = replay.create_session(start=start, end=end, set_as_default=True)
+    session_create_latency = time.perf_counter() - create_started
+
+    compute_started = time.perf_counter()
+    replay.wait_until_ready(metadata["session_id"], timeout=max(1.0, (end - start).total_seconds()))
+    background_compute_total_time = time.perf_counter() - compute_started
+    progress = replay.get_progress(metadata["session_id"]) or {}
+
+    bars_latencies: list[float] = []
+    series_latencies: list[float] = []
+    snapshot_latencies: list[float] = []
+    json_encode_latencies: list[float] = []
+    payload_bytes: list[int] = []
+
+    for _ in range(max(args.runs, 1)):
+        started = time.perf_counter()
+        bars = replay.get_bars(metadata["session_id"], start=start, end=window_end, interval="1m") or []
+        bars_latencies.append(time.perf_counter() - started)
+
+        started = time.perf_counter()
+        series_payload = replay.get_series_payload(
+            metadata["session_id"],
+            series_names,
+            start=start,
+            end=window_end,
+            interval="1m",
+        ) or {"series": {}}
+        series_latencies.append(time.perf_counter() - started)
+
+        snapshot_at = start + (window_end - start) / 2
+        started = time.perf_counter()
+        snapshot = replay.get_snapshot_at(metadata["session_id"], snapshot_at) or {}
+        snapshot_latencies.append(time.perf_counter() - started)
+
+        started = time.perf_counter()
+        encoded = json.dumps(
+            {"bars": bars, "series": series_payload, "snapshot": snapshot},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        json_encode_latencies.append(time.perf_counter() - started)
+        payload_bytes.append(len(encoded))
+
+    report = {
+        "generated_at": datetime.now().isoformat(),
+        "command": "benchmark-replay",
+        "session_id": metadata["session_id"],
+        "symbol": args.symbol,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "window_bars": args.window_bars,
+        "runs": max(args.runs, 1),
+        "session_create_latency": session_create_latency,
+        "background_compute_total_time": background_compute_total_time,
+        "bars_api_p50": _percentile(bars_latencies, 0.50),
+        "bars_api_p95": _percentile(bars_latencies, 0.95),
+        "series_api_p50": _percentile(series_latencies, 0.50),
+        "series_api_p95": _percentile(series_latencies, 0.95),
+        "snapshot_at_p50": _percentile(snapshot_latencies, 0.50),
+        "snapshot_at_p95": _percentile(snapshot_latencies, 0.95),
+        "checkpoint_hit_rate": 1.0 if int(progress.get("checkpoint_count") or 0) > 0 else 0.0,
+        "checkpoint_count": progress.get("checkpoint_count", 0),
+        "db_query_time": None,
+        "json_encode_time_p50": _percentile(json_encode_latencies, 0.50),
+        "json_encode_time_p95": _percentile(json_encode_latencies, 0.95),
+        "payload_bytes_p50": _percentile([float(value) for value in payload_bytes], 0.50),
+        "payload_bytes_p95": _percentile([float(value) for value in payload_bytes], 0.95),
+        "compute_status": progress.get("compute_status"),
+        "progress_ratio": progress.get("progress_ratio"),
+    }
+
+    report_dir = Path(args.report_dir)
+    report_dir.mkdir(parents=True, exist_ok=True)
+    report_path = report_dir / f"replay-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(json.dumps({"report_path": str(report_path), **report}, ensure_ascii=False, indent=2))
+
+
 def _resolve_contract(args: argparse.Namespace) -> None:
     if args.symbol != "MTX":
         raise ValueError("Only MTX monthly contract resolution is implemented in v1.")
     resolution = resolve_mtx_monthly_contract(date.fromisoformat(args.date))
     print(json.dumps(resolution.__dict__, ensure_ascii=False, indent=2, default=str))
+
+
+def _percentile(values: list[float], quantile: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    index = max(0, min(len(ordered) - 1, ceil(quantile * len(ordered)) - 1))
+    return ordered[index]
 
 
 def _check_finmind_user_info(settings: Settings) -> dict:

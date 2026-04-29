@@ -13,6 +13,7 @@ export type ChartSeriesPoint = {
 };
 
 export type IndicatorInterval = "1m" | "5m" | "15m" | "30m";
+export type ReplayComputeStatus = "pending" | "running" | "ready" | "partial" | "failed" | string;
 
 export type RegimeLabel =
   | "trend_up"
@@ -149,6 +150,47 @@ export type ReplaySession = {
   cache_mode?: "memory" | string;
   loaded_window_count?: number;
   supports_windowed_loading?: boolean;
+  compute_status?: ReplayComputeStatus;
+  computed_until?: string | null;
+  progress_ratio?: number;
+  checkpoint_count?: number;
+  target_window_bars?: number;
+  compute_error?: string | null;
+};
+
+export type ReplaySeriesResponse = {
+  series: IndicatorSeriesMap;
+  status: ReplayComputeStatus;
+  compute_status: ReplayComputeStatus;
+  partial: boolean;
+  computed_until: string | null;
+  progress_ratio: number;
+  checkpoint_count: number;
+};
+
+export type ReplayBundleCoverage = {
+  anchor: string;
+  direction: "prev" | "next" | "around" | string;
+  interval: IndicatorInterval | string;
+  bar_count: number;
+  first_bar_time: string | null;
+  last_bar_time: string | null;
+  has_prev: boolean;
+  has_next: boolean;
+};
+
+export type ReplayBundleByBarsResponse = ReplaySeriesResponse & {
+  bars: ChartBarPoint[];
+  coverage: ReplayBundleCoverage;
+  session?: ReplaySession;
+};
+
+export type ReplayProgress = {
+  status: ReplayComputeStatus;
+  compute_status: ReplayComputeStatus;
+  computed_until: string | null;
+  progress_ratio: number;
+  checkpoint_count: number;
 };
 
 export type LiveMeta = {

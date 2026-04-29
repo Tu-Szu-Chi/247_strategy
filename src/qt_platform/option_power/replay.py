@@ -5,7 +5,8 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from math import ceil
-from threading import Lock
+from threading import Lock, Thread, Timer
+from typing import Callable
 from uuid import uuid4
 
 from qt_platform.domain import Bar, CanonicalTick
@@ -40,6 +41,13 @@ class ReplaySession:
     selected_option_roots: list[str]
     snapshot_count: int
     available_series: list[str]
+    compute_status: str = "pending"
+    computed_until: datetime | None = None
+    progress_ratio: float = 0.0
+    checkpoint_count: int = 0
+    target_window_bars: int = 200
+    compute_error: str | None = None
+    frame_cache: OrderedDict[datetime, dict] = field(default_factory=OrderedDict)
     window_cache: OrderedDict[tuple, dict] = field(default_factory=OrderedDict)
 
     def metadata(self) -> dict:
@@ -58,6 +66,12 @@ class ReplaySession:
             "cache_mode": "memory",
             "loaded_window_count": len(self.window_cache),
             "supports_windowed_loading": True,
+            "compute_status": self.compute_status,
+            "computed_until": self.computed_until.isoformat() if self.computed_until is not None else None,
+            "progress_ratio": self.progress_ratio,
+            "checkpoint_count": self.checkpoint_count,
+            "target_window_bars": self.target_window_bars,
+            "compute_error": self.compute_error,
         }
 
 
@@ -80,6 +94,7 @@ class OptionPowerReplayService:
         self._sessions: dict[str, ReplaySession] = {}
         self._default_session_id: str | None = None
         self._max_cached_windows = 24
+        self._compute_threads: dict[str, Thread] = {}
 
     def create_session(
         self,
@@ -105,7 +120,67 @@ class OptionPowerReplayService:
             self._sessions[replay_session.session_id] = replay_session
             if set_as_default or self._default_session_id is None:
                 self._default_session_id = replay_session.session_id
+            self._start_background_compute_locked(replay_session)
         return replay_session.metadata()
+
+    def wait_until_ready(self, session_id: str, timeout: float = 30.0) -> bool:
+        thread = self._compute_threads.get(session_id)
+        if thread is None:
+            session = self._sessions.get(session_id)
+            return session is not None and session.compute_status == "ready"
+        thread.join(timeout)
+        session = self._sessions.get(session_id)
+        return session is not None and session.compute_status == "ready"
+
+    def get_progress(self, session_id: str) -> dict | None:
+        session = self._sessions.get(session_id)
+        if session is None:
+            return None
+        return _progress_payload(session)
+
+    def _start_background_compute_locked(self, session: ReplaySession) -> None:
+        if session.session_id in self._compute_threads:
+            return
+        thread = Timer(0.001, self._run_background_compute, args=(session.session_id,))
+        thread.name = f"option-power-replay-{session.session_id}"
+        thread.daemon = True
+        self._compute_threads[session.session_id] = thread
+        thread.start()
+
+    def _run_background_compute(self, session_id: str) -> None:
+        session = self._sessions.get(session_id)
+        if session is None:
+            return
+        with self._lock:
+            session.compute_status = "running"
+            session.compute_error = None
+
+        try:
+            interval_seconds = max(session.snapshot_interval_seconds, 1.0)
+            checkpoint_every = max(1, min(120, ceil(600 / interval_seconds)))
+
+            def on_snapshot(snapshot_ts: datetime, snapshot: dict) -> None:
+                snapshot_index = max(0, int((snapshot_ts - session.start).total_seconds() // interval_seconds))
+                with self._lock:
+                    session.frame_cache[snapshot_ts] = snapshot
+                    session.computed_until = snapshot_ts
+                    session.progress_ratio = min(1.0, (snapshot_index + 1) / max(session.snapshot_count, 1))
+                    session.checkpoint_count = (snapshot_index + 1) // checkpoint_every
+
+            self._build_window_frames(
+                session,
+                start=session.start,
+                end=session.end,
+                on_snapshot=on_snapshot,
+            )
+            with self._lock:
+                session.compute_status = "ready"
+                session.computed_until = session.end if session.snapshot_count > 0 else None
+                session.progress_ratio = 1.0
+        except Exception as exc:  # pragma: no cover - defensive background boundary
+            with self._lock:
+                session.compute_status = "failed"
+                session.compute_error = str(exc)
 
     def _find_covering_session_locked(self, *, start: datetime, end: datetime) -> ReplaySession | None:
         covering = [
@@ -165,11 +240,13 @@ class OptionPowerReplayService:
         if session is None:
             return None
         resolved_start, resolved_end = _resolve_window(session, start, end)
-        cache_key = ("bars", resolved_start, resolved_end, interval or "1m")
+        query_start, query_end = _expand_window_for_interval(resolved_start, resolved_end, interval)
+        cache_key = ("bars", query_start, query_end, interval or "1m")
         cached = self._cache_get(session, cache_key)
         if cached is not None:
             return cached["bars"]
-        bars = [_bar_to_chart_dict(bar) for bar in self.store.list_bars("1m", session.underlying_symbol, resolved_start, resolved_end)]
+        source_bars = self.store.list_bars("1m", session.underlying_symbol, query_start, query_end)
+        bars = [_bar_to_chart_dict(bar) for bar in source_bars if bar.session != "unknown"]
         if interval is not None and interval != "1m":
             bars = _aggregate_bars(bars, interval=interval)
         self._cache_put(session, cache_key, {"bars": bars})
@@ -183,47 +260,174 @@ class OptionPowerReplayService:
         end: datetime | None = None,
         interval: str | None = None,
     ) -> dict[str, list[dict]] | None:
+        payload = self.get_series_payload(
+            session_id,
+            names,
+            start=start,
+            end=end,
+            interval=interval,
+        )
+        if payload is None:
+            return None
+        return payload["series"]
+
+    def get_series_payload(
+        self,
+        session_id: str,
+        names: list[str],
+        start: datetime | None = None,
+        end: datetime | None = None,
+        interval: str | None = None,
+    ) -> dict | None:
         session = self._sessions.get(session_id)
         if session is None:
             return None
         resolved_start, resolved_end = _resolve_window(session, start, end)
+        query_start, query_end = _expand_window_for_interval(resolved_start, resolved_end, interval)
         interval_key = interval or "1m"
         names_key = tuple(sorted(set(names)))
-        cache_key = ("series", resolved_start, resolved_end, interval_key, names_key)
+        cache_key = ("series", query_start, query_end, interval_key, names_key)
         cached = self._cache_get(session, cache_key)
         if cached is not None:
-            return cached["series"]
-        snapshot_datetimes, snapshots = self._build_window_frames(session, start=resolved_start, end=resolved_end)
+            return {
+                "series": cached["series"],
+                **_progress_payload(session),
+                "partial": _is_partial(session, query_end),
+            }
+
+        snapshot_datetimes, snapshots = self._cached_frames_in_window(
+            session,
+            start=query_start,
+            end=query_end,
+        )
         snapshot_times = [snapshot["generated_at"] for snapshot in snapshots]
-        if snapshot_datetimes and snapshots:
-            all_snapshot_datetimes = _snapshot_datetimes(session)
-            snapshot_ts = snapshot_datetimes[0]
-            snapshot = snapshots[0]
-            snapshot_idx = bisect_left(all_snapshot_datetimes, snapshot_ts)
-            self._cache_put(
-                session,
-                ("snapshot", snapshot_ts),
-                {
-                    "payload": {
-                        "session_id": session.session_id,
-                        "index": snapshot_idx,
-                        "simulated_at": snapshot_ts.isoformat(),
-                        "snapshot": snapshot,
-                    }
-                },
-            )
         indicator_series = _build_indicator_series(snapshot_times, snapshots)
         payload: dict[str, list[dict]] = {}
         for name in names:
             if name in indicator_series:
                 payload[name] = _slice_and_resample_series(
                     indicator_series[name],
-                    start=resolved_start,
-                    end=resolved_end,
+                    start=query_start,
+                    end=query_end,
                     interval=interval,
                 )
-        self._cache_put(session, cache_key, {"series": payload})
-        return payload
+        partial = _is_partial(session, query_end)
+        if not partial:
+            self._cache_put(session, cache_key, {"series": payload})
+        return {
+            "series": payload,
+            **_progress_payload(session),
+            "partial": partial,
+        }
+
+    def get_bundle(
+        self,
+        session_id: str,
+        names: list[str],
+        start: datetime | None = None,
+        end: datetime | None = None,
+        interval: str | None = None,
+    ) -> dict | None:
+        bars = self.get_bars(session_id, start=start, end=end, interval=interval)
+        series_payload = self.get_series_payload(
+            session_id,
+            names,
+            start=start,
+            end=end,
+            interval=interval,
+        )
+        if bars is None or series_payload is None:
+            return None
+        return {
+            "bars": bars,
+            "series": series_payload["series"],
+            "status": series_payload["status"],
+            "partial": series_payload["partial"],
+            "computed_until": series_payload["computed_until"],
+            "compute_status": series_payload["compute_status"],
+            "progress_ratio": series_payload["progress_ratio"],
+            "checkpoint_count": series_payload["checkpoint_count"],
+        }
+
+    def get_bundle_by_bars(
+        self,
+        session_id: str,
+        names: list[str],
+        *,
+        anchor: datetime,
+        direction: str,
+        bar_count: int,
+        interval: str | None = None,
+    ) -> dict | None:
+        session = self._sessions.get(session_id)
+        if session is None:
+            return None
+        if direction not in {"prev", "next", "around"}:
+            raise ValueError(f"Unsupported replay bar direction: {direction}")
+        if bar_count <= 0:
+            raise ValueError("Replay bar_count must be greater than 0.")
+
+        bars = self._cursor_bars(
+            session,
+            anchor=anchor,
+            direction=direction,
+            bar_count=bar_count,
+            interval=interval,
+        )
+        selected_bars = _select_bars_by_cursor(
+            bars,
+            anchor=anchor,
+            direction=direction,
+            bar_count=bar_count,
+        )
+        coverage = _bar_cursor_coverage(
+            bars,
+            selected_bars,
+            anchor=anchor,
+            direction=direction,
+            interval=interval or "1m",
+        )
+        if not selected_bars:
+            return {
+                "bars": [],
+                "series": {name: [] for name in names},
+                **_progress_payload(session),
+                "partial": False,
+                "coverage": coverage,
+                "session": session.metadata(),
+            }
+
+        selected_start = datetime.fromisoformat(selected_bars[0]["time"])
+        selected_end = datetime.fromisoformat(selected_bars[-1]["time"])
+        active_session = session
+        if selected_start < session.start or selected_end > session.end:
+            metadata = self.create_session(
+                start=min(session.start, selected_start),
+                end=max(session.end, selected_end),
+            )
+            active_session = self._sessions[metadata["session_id"]]
+
+        series_payload = self.get_series_payload(
+            active_session.session_id,
+            names,
+            start=selected_start,
+            end=selected_end,
+            interval=interval,
+        )
+        if series_payload is None:
+            return None
+        return {
+            "bars": selected_bars,
+            "series": series_payload["series"],
+            "status": series_payload["status"],
+            "partial": series_payload["partial"],
+            "computed_until": series_payload["computed_until"],
+            "compute_status": series_payload["compute_status"],
+            "progress_ratio": series_payload["progress_ratio"],
+            "checkpoint_count": series_payload["checkpoint_count"],
+            "coverage": coverage,
+            "session": active_session.metadata(),
+        }
 
     def get_snapshot_at(self, session_id: str, ts: datetime) -> dict | None:
         session = self._sessions.get(session_id)
@@ -245,14 +449,14 @@ class OptionPowerReplayService:
         cached = self._cache_get(session, cache_key)
         if cached is not None:
             return cached["payload"]
-        _, snapshots = self._build_window_frames(session, start=snapshot_ts, end=snapshot_ts)
-        if not snapshots:
+        snapshots = self._cached_frame(session, snapshot_ts)
+        if snapshots is None:
             return None
         payload = {
             "session_id": session_id,
             "index": idx,
             "simulated_at": snapshot_ts.isoformat(),
-            "snapshot": snapshots[-1],
+            "snapshot": snapshots,
         }
         self._cache_put(session, cache_key, {"payload": payload})
         return payload
@@ -301,6 +505,7 @@ class OptionPowerReplayService:
             }
         payload = self.get_snapshot(session.session_id, 0)
         if payload is None:
+            status = "replay_pending" if session.compute_status in {"pending", "running"} else "replay_empty"
             return {
                 "type": "option_power_snapshot",
                 "generated_at": datetime.now().isoformat(),
@@ -316,8 +521,8 @@ class OptionPowerReplayService:
                 "regime": None,
                 "expiries": [],
                 "contract_count": 0,
-                "status": "replay_empty",
-                "warning": "Replay session produced no snapshots.",
+                "status": status,
+                "warning": "Replay session compute is not ready." if status == "replay_pending" else "Replay session produced no snapshots.",
             }
         return payload["snapshot"]
 
@@ -349,6 +554,7 @@ class OptionPowerReplayService:
         *,
         start: datetime,
         end: datetime,
+        on_snapshot: Callable[[datetime, dict], None] | None = None,
     ) -> tuple[list[datetime], list[dict]]:
         replay_symbols = [session.underlying_symbol, *session.selected_option_roots]
         raw_ticks = self.store.list_ticks_for_symbols(replay_symbols, session.start, end)
@@ -430,9 +636,78 @@ class OptionPowerReplayService:
             if boundary >= start:
                 snapshots.append(snapshot)
                 snapshot_datetimes.append(boundary)
+                if on_snapshot is not None:
+                    on_snapshot(boundary, snapshot)
             boundary += interval
 
         return snapshot_datetimes, snapshots
+
+    def _cached_frame(self, session: ReplaySession, snapshot_ts: datetime) -> dict | None:
+        with self._lock:
+            return session.frame_cache.get(snapshot_ts)
+
+    def _cached_frames_in_window(
+        self,
+        session: ReplaySession,
+        *,
+        start: datetime,
+        end: datetime,
+    ) -> tuple[list[datetime], list[dict]]:
+        with self._lock:
+            items = [
+                (snapshot_ts, snapshot)
+                for snapshot_ts, snapshot in session.frame_cache.items()
+                if start <= snapshot_ts <= end
+            ]
+        items.sort(key=lambda item: item[0])
+        return [item[0] for item in items], [item[1] for item in items]
+
+    def _cursor_bars(
+        self,
+        session: ReplaySession,
+        *,
+        anchor: datetime,
+        direction: str,
+        bar_count: int,
+        interval: str | None,
+    ) -> list[dict]:
+        if direction == "around":
+            start = anchor - timedelta(days=7)
+            end = anchor + timedelta(days=7)
+            return self._bars_from_store(start=start, end=end, session=session, interval=interval)
+
+        for days in (1, 3, 7, 14, 30, 90):
+            if direction == "prev":
+                start = anchor - timedelta(days=days)
+                end = max(anchor, session.end)
+            else:
+                start = min(anchor, session.start)
+                end = anchor + timedelta(days=days)
+            bars = self._bars_from_store(start=start, end=end, session=session, interval=interval)
+            selected = _select_bars_by_cursor(
+                bars,
+                anchor=anchor,
+                direction=direction,
+                bar_count=bar_count,
+            )
+            if len(selected) >= bar_count:
+                return bars
+        return bars
+
+    def _bars_from_store(
+        self,
+        *,
+        start: datetime,
+        end: datetime,
+        session: ReplaySession,
+        interval: str | None,
+    ) -> list[dict]:
+        query_start, query_end = _expand_window_for_interval(start, end, interval)
+        source_bars = self.store.list_bars("1m", session.underlying_symbol, query_start, query_end)
+        bars = [_bar_to_chart_dict(bar) for bar in source_bars if bar.session != "unknown"]
+        if interval is not None and interval != "1m":
+            bars = _aggregate_bars(bars, interval=interval)
+        return bars
 
     def _select_option_roots_from_store(self, symbols: list[str], start: datetime, end: datetime) -> list[str]:
         if self.option_root and self.option_root.upper() not in {"AUTO", "TX", "TXO"}:
@@ -679,6 +954,25 @@ def _resolve_window(
     return resolved_start, resolved_end
 
 
+def _progress_payload(session: ReplaySession) -> dict:
+    status = session.compute_status
+    return {
+        "status": "partial" if status == "running" and session.computed_until is not None else status,
+        "compute_status": status,
+        "computed_until": session.computed_until.isoformat() if session.computed_until is not None else None,
+        "progress_ratio": session.progress_ratio,
+        "checkpoint_count": session.checkpoint_count,
+    }
+
+
+def _is_partial(session: ReplaySession, end: datetime) -> bool:
+    if session.compute_status == "ready":
+        return False
+    if session.computed_until is None:
+        return True
+    return session.computed_until < end
+
+
 def _snapshot_datetimes(session: ReplaySession) -> list[datetime]:
     interval = timedelta(seconds=max(session.snapshot_interval_seconds, 1.0))
     return [session.start + interval * index for index in range(session.snapshot_count)]
@@ -696,6 +990,78 @@ def _slice_bars(bars: list[dict], *, start: datetime | None, end: datetime | Non
             continue
         sliced.append(bar)
     return sliced
+
+
+def _select_bars_by_cursor(
+    bars: list[dict],
+    *,
+    anchor: datetime,
+    direction: str,
+    bar_count: int,
+) -> list[dict]:
+    if direction == "next":
+        return [bar for bar in bars if datetime.fromisoformat(bar["time"]) > anchor][:bar_count]
+    if direction == "prev":
+        return [bar for bar in bars if datetime.fromisoformat(bar["time"]) < anchor][-bar_count:]
+    if direction == "around":
+        half = max(1, bar_count // 2)
+        previous_bars = [bar for bar in bars if datetime.fromisoformat(bar["time"]) < anchor][-half:]
+        current_and_next = [bar for bar in bars if datetime.fromisoformat(bar["time"]) >= anchor]
+        return [*previous_bars, *current_and_next[: max(0, bar_count - len(previous_bars))]]
+    raise ValueError(f"Unsupported replay bar direction: {direction}")
+
+
+def _bar_cursor_coverage(
+    bars: list[dict],
+    selected_bars: list[dict],
+    *,
+    anchor: datetime,
+    direction: str,
+    interval: str,
+) -> dict:
+    first_bar_time = selected_bars[0]["time"] if selected_bars else None
+    last_bar_time = selected_bars[-1]["time"] if selected_bars else None
+    if not bars:
+        return {
+            "anchor": anchor.isoformat(),
+            "direction": direction,
+            "interval": interval,
+            "bar_count": 0,
+            "first_bar_time": None,
+            "last_bar_time": None,
+            "has_prev": False,
+            "has_next": False,
+        }
+    first_available = datetime.fromisoformat(bars[0]["time"])
+    last_available = datetime.fromisoformat(bars[-1]["time"])
+    if selected_bars:
+        first_selected = datetime.fromisoformat(selected_bars[0]["time"])
+        last_selected = datetime.fromisoformat(selected_bars[-1]["time"])
+    else:
+        first_selected = anchor
+        last_selected = anchor
+    return {
+        "anchor": anchor.isoformat(),
+        "direction": direction,
+        "interval": interval,
+        "bar_count": len(selected_bars),
+        "first_bar_time": first_bar_time,
+        "last_bar_time": last_bar_time,
+        "has_prev": first_selected > first_available,
+        "has_next": last_selected < last_available,
+    }
+
+
+def _expand_window_for_interval(
+    start: datetime,
+    end: datetime,
+    interval: str | None,
+) -> tuple[datetime, datetime]:
+    if interval is None or interval == "1m":
+        return start, end
+    bucket_start = _bucket_datetime(start, interval)
+    bucket_end = _bucket_datetime(end, interval) + _interval_timedelta(interval) - timedelta(microseconds=1)
+    return bucket_start, bucket_end
 
 
 def _aggregate_bars(bars: list[dict], *, interval: str) -> list[dict]:
@@ -764,4 +1130,16 @@ def _bucket_datetime(ts: datetime, interval: str) -> datetime:
     if interval == "30m":
         minute = ts.minute - (ts.minute % 30)
         return ts.replace(minute=minute, second=0, microsecond=0)
+    raise ValueError(f"Unsupported replay interval: {interval}")
+
+
+def _interval_timedelta(interval: str) -> timedelta:
+    if interval == "1m":
+        return timedelta(minutes=1)
+    if interval == "5m":
+        return timedelta(minutes=5)
+    if interval == "15m":
+        return timedelta(minutes=15)
+    if interval == "30m":
+        return timedelta(minutes=30)
     raise ValueError(f"Unsupported replay interval: {interval}")

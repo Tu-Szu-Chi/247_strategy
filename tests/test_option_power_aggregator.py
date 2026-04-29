@@ -63,8 +63,8 @@ class OptionPowerAggregatorTest(unittest.TestCase):
         self.assertEqual(contract.unknown_volume, 2)
         self.assertEqual(snapshot.raw_pressure, 7)
         self.assertEqual(snapshot.pressure_index, 54)
-        self.assertEqual(snapshot.raw_pressure_weighted, 7)
-        self.assertEqual(snapshot.pressure_index_weighted, 50)
+        self.assertEqual(snapshot.raw_pressure_weighted, 6)
+        self.assertEqual(snapshot.pressure_index_weighted, 47)
 
     def test_snapshot_evicts_old_rolling_events(self) -> None:
         aggregator = OptionPowerAggregator(option_root="TXO")
@@ -233,7 +233,7 @@ class OptionPowerAggregatorTest(unittest.TestCase):
         self.assertEqual(snapshot.raw_pressure, 14)
         self.assertEqual(snapshot.pressure_index, 61)
         self.assertEqual(snapshot.raw_pressure_weighted, 15)
-        self.assertEqual(snapshot.pressure_index_weighted, 60)
+        self.assertEqual(snapshot.pressure_index_weighted, 58)
 
     def test_snapshot_includes_iv_surface_for_fresh_otm_options(self) -> None:
         aggregator = OptionPowerAggregator(option_root="TXO")

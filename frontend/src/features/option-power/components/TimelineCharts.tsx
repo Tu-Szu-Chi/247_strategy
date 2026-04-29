@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ColorType,
   HistogramData,
@@ -8,10 +8,12 @@ import {
   type IChartApi,
   type ISeriesApi,
   type LineData,
+  type LogicalRange,
   type MouseEventParams,
   type Time,
 } from "lightweight-charts";
 import type { ChartBarPoint, ChartSeriesPoint } from "../types";
+import { normalizeChartData, type NormalizedChartData } from "../chartData";
 import styles from "./TimelineCharts.module.css";
 
 const DISPLAY_DATE_TIME = new Intl.DateTimeFormat("zh-TW", {
@@ -60,7 +62,7 @@ type TimelineChartsProps = {
   visiblePanelIds?: PanelId[];
   mode: "live" | "replay";
   onCursorTimeChange: (ts: string | null) => void;
-  onVisibleRangeChange?: (start: string, end: string) => void;
+  onVisibleRangeChange?: (range: { start: string; end: string; hasLeftWhitespace?: boolean; hasRightWhitespace?: boolean }) => void;
   viewKey?: string;
 };
 
@@ -291,10 +293,17 @@ export function TimelineCharts({
     ivSkew: null,
   });
   const fittedRef = useRef(false);
+  const liveAutoFollowRef = useRef(true);
   const syncingRangeRef = useRef(false);
   const syncingCrosshairRef = useRef(false);
   const visibleRangeTimeoutRef = useRef<number | null>(null);
+  const workerRef = useRef<Worker | null>(null);
+  const workerRequestIdRef = useRef(0);
   const onVisibleRangeChangeRef = useRef(onVisibleRangeChange);
+  const [normalizedData, setNormalizedData] = useState<NormalizedChartData>(() => normalizeChartData({
+    bars: [],
+    panelData: {},
+  }));
   const dataRef = useRef<Record<string, Map<number, LineData | CandlestickData>>>({
     price: new Map(),
     pressure: new Map(),
@@ -433,29 +442,37 @@ export function TimelineCharts({
       .map((panel) => charts[panel.id])
       .filter(Boolean) as IChartApi[];
     for (const sourceChart of allCharts) {
-      sourceChart.timeScale().subscribeVisibleTimeRangeChange((range) => {
-        if (!range || syncingRangeRef.current) {
+      sourceChart.timeScale().subscribeVisibleLogicalRangeChange((logicalRange) => {
+        if (!logicalRange || syncingRangeRef.current) {
           return;
         }
         syncingRangeRef.current = true;
         for (const targetChart of allCharts) {
           if (targetChart !== sourceChart) {
             try {
-              targetChart.timeScale().setVisibleRange(range);
+              targetChart.timeScale().setVisibleLogicalRange(logicalRange);
             } catch (_error) {
               // ignore bootstrap sync errors
             }
           }
         }
         syncingRangeRef.current = false;
-        if (mode === "replay" && onVisibleRangeChangeRef.current && range.from && range.to) {
+        if (mode === "live") {
+          liveAutoFollowRef.current = sourceChart.timeScale().scrollPosition() <= 0.5;
+        }
+        if (mode === "replay" && onVisibleRangeChangeRef.current) {
           if (visibleRangeTimeoutRef.current !== null) {
             window.clearTimeout(visibleRangeTimeoutRef.current);
           }
-          const start = toIsoTime(range.from as Time);
-          const end = toIsoTime(range.to as Time);
+          const visibleRange = sourceChart.timeScale().getVisibleRange();
+          const requestedRange = resolveRequestedVisibleRange(
+            normalizedData.bars,
+            logicalRange,
+            visibleRange?.from as Time | undefined,
+            visibleRange?.to as Time | undefined,
+          );
           visibleRangeTimeoutRef.current = window.setTimeout(() => {
-            onVisibleRangeChangeRef.current?.(start, end);
+            onVisibleRangeChangeRef.current?.(requestedRange);
           }, 180);
         }
       });
@@ -565,12 +582,45 @@ export function TimelineCharts({
 
   useEffect(() => {
     fittedRef.current = false;
+    liveAutoFollowRef.current = true;
   }, [viewKey]);
 
   useEffect(() => {
-    const normalizedBars = bars.map(normalizeBar).filter(Boolean) as CandlestickData[];
-    const normalizedVolume = bars.map(normalizeVolume).filter(Boolean) as HistogramData[];
+    const requestId = workerRequestIdRef.current + 1;
+    workerRequestIdRef.current = requestId;
+    const payload = {
+      bars,
+      panelData,
+    };
+    if (typeof Worker === "undefined") {
+      setNormalizedData(normalizeChartData(payload));
+      return;
+    }
+    if (!workerRef.current) {
+      workerRef.current = new Worker(new URL("../chartData.worker.ts", import.meta.url), { type: "module" });
+    }
+    const worker = workerRef.current;
+    const handleMessage = (event: MessageEvent<{ type: string; requestId: number; payload: NormalizedChartData }>) => {
+      if (event.data.type !== "normalized" || event.data.requestId !== workerRequestIdRef.current) {
+        return;
+      }
+      setNormalizedData(event.data.payload);
+    };
+    worker.addEventListener("message", handleMessage);
+    worker.postMessage({ type: "normalize", requestId, payload });
+    return () => {
+      worker.removeEventListener("message", handleMessage);
+    };
+  }, [bars, panelData]);
+
+  useEffect(() => {
+    const normalizedBars = normalizedData.bars;
+    const normalizedVolume = normalizedData.volume;
     const showsPricePanel = visiblePanels.some((panel) => panel.id === "price");
+    const previousLogicalRanges = fittedRef.current
+      ? captureVisibleLogicalRanges(chartsRef.current, visiblePanels)
+      : new Map<PanelId, LogicalRange>();
+    const shouldRestoreLogicalRange = fittedRef.current && (mode !== "live" || !liveAutoFollowRef.current);
     if (showsPricePanel) {
       const { candle, volume, ma10, ma30, ma60 } = priceSeriesRef.current;
       if (!candle || !volume || !ma10 || !ma30 || !ma60) {
@@ -578,9 +628,9 @@ export function TimelineCharts({
       }
       candle.setData(normalizedBars);
       volume.setData(normalizedVolume);
-      ma10.setData(buildMovingAverageSeries(normalizedBars, 10));
-      ma30.setData(buildMovingAverageSeries(normalizedBars, 30));
-      ma60.setData(buildMovingAverageSeries(normalizedBars, 60));
+      ma10.setData(normalizedData.ma10);
+      ma30.setData(normalizedData.ma30);
+      ma60.setData(normalizedData.ma60);
       dataRef.current.price = new Map(normalizedBars.map((item) => [Number(item.time), item]));
       representativeSeriesRef.current.price = candle;
     } else {
@@ -600,7 +650,7 @@ export function TimelineCharts({
           if (!target) {
             continue;
           }
-          const normalized = series.points.map(normalizeHistogramBand).filter(Boolean) as HistogramData[];
+          const normalized = (normalizedData.panels[panel.id]?.[series.id] ?? []) as HistogramData[];
           target.setData(normalized);
           for (const item of normalized) {
             if (!mergedData.has(Number(item.time))) {
@@ -620,7 +670,7 @@ export function TimelineCharts({
         if (!target) {
           continue;
         }
-        const normalized = series.points.map(normalizeLine).filter(Boolean) as LineData[];
+        const normalized = (normalizedData.panels[panel.id]?.[series.id] ?? []) as LineData[];
         target.setData(normalized);
         for (const item of normalized) {
           if (!mergedData.has(Number(item.time))) {
@@ -661,11 +711,27 @@ export function TimelineCharts({
     }
 
     if (mode === "live") {
-      for (const panel of visiblePanels) {
-        chartsRef.current[panel.id]?.timeScale().scrollToRealTime();
+      if (liveAutoFollowRef.current) {
+        for (const panel of visiblePanels) {
+          chartsRef.current[panel.id]?.timeScale().scrollToRealTime();
+        }
+      } else if (shouldRestoreLogicalRange) {
+        restoreVisibleLogicalRanges(chartsRef.current, previousLogicalRanges);
       }
+      return;
     }
-  }, [bars, mode, panelData, visiblePanels]);
+
+    if (shouldRestoreLogicalRange) {
+      restoreVisibleLogicalRanges(chartsRef.current, previousLogicalRanges);
+    }
+  }, [mode, normalizedData, panelData, visiblePanels]);
+
+  useEffect(() => {
+    return () => {
+      workerRef.current?.terminate();
+      workerRef.current = null;
+    };
+  }, []);
 
   return (
     <div className={styles.grid}>
@@ -755,83 +821,94 @@ function createConfiguredChart(container: HTMLDivElement, height: number) {
   });
 }
 
-function normalizeBar(item: ChartBarPoint): CandlestickData | null {
-  const time = toUnixSeconds(item.time);
-  if (Number.isNaN(time)) {
-    return null;
-  }
-  return {
-    time: time as Time,
-    open: Number(item.open),
-    high: Number(item.high),
-    low: Number(item.low),
-    close: Number(item.close),
-  };
-}
-
-function normalizeLine(item: ChartSeriesPoint): LineData | null {
-  const time = toUnixSeconds(item.time);
-  if (Number.isNaN(time)) {
-    return null;
-  }
-  return {
-    time: time as Time,
-    value: Number(item.value),
-  };
-}
-
-function normalizeVolume(item: ChartBarPoint): HistogramData | null {
-  const time = toUnixSeconds(item.time);
-  const value = Number(item.volume ?? 0);
-  if (Number.isNaN(time) || Number.isNaN(value)) {
-    return null;
-  }
-  const isUp = Number(item.close) >= Number(item.open);
-  return {
-    time: time as Time,
-    value,
-    color: isUp ? "rgba(248, 113, 113, 0.22)" : "rgba(74, 222, 128, 0.22)",
-  };
-}
-
-function normalizeHistogramBand(item: ChartSeriesPoint): HistogramData | null {
-  const time = toUnixSeconds(item.time);
-  const value = Number(item.value);
-  if (Number.isNaN(time) || Number.isNaN(value)) {
-    return null;
-  }
-  return {
-    time: time as Time,
-    value,
-    color: value > 0
-      ? "rgba(248, 113, 113, 0.28)"
-      : value < 0
-        ? "rgba(168, 85, 247, 0.28)"
-        : "rgba(148, 163, 184, 0.16)",
-  };
-}
-
-function buildMovingAverageSeries(bars: CandlestickData[], period: number): LineData[] {
-  const points: LineData[] = [];
-  let rollingSum = 0;
-  for (let index = 0; index < bars.length; index += 1) {
-    rollingSum += Number(bars[index].close || 0);
-    if (index >= period) {
-      rollingSum -= Number(bars[index - period].close || 0);
+function captureVisibleLogicalRanges(
+  charts: Record<PanelId, IChartApi | null>,
+  panels: Array<{ id: PanelId }>,
+) {
+  const ranges = new Map<PanelId, LogicalRange>();
+  for (const panel of panels) {
+    const range = charts[panel.id]?.timeScale().getVisibleLogicalRange();
+    if (range) {
+      ranges.set(panel.id, range);
     }
-    if (index < period - 1) {
-      continue;
-    }
-    points.push({
-      time: bars[index].time,
-      value: Number((rollingSum / period).toFixed(2)),
-    });
   }
-  return points;
+  return ranges;
 }
 
-function toUnixSeconds(value: string) {
-  return Math.floor(new Date(value).getTime() / 1000);
+function restoreVisibleLogicalRanges(
+  charts: Record<PanelId, IChartApi | null>,
+  ranges: Map<PanelId, LogicalRange>,
+) {
+  for (const [panelId, range] of ranges) {
+    try {
+      charts[panelId]?.timeScale().setVisibleLogicalRange(range);
+    } catch (_error) {
+      // The previous logical range can briefly be outside the data bounds while panels bootstrap.
+    }
+  }
+}
+
+export function resolveRequestedVisibleRange(
+  bars: CandlestickData[],
+  logicalRange: LogicalRange,
+  visibleFrom?: Time,
+  visibleTo?: Time,
+) {
+  const leftWhitespaceBars = Math.max(0, Math.ceil(0 - logicalRange.from));
+  const rightWhitespaceBars = Math.max(0, Math.ceil(logicalRange.to - (bars.length - 1)));
+  const fallbackRange = {
+    start: visibleFrom !== undefined ? toIsoTime(visibleFrom) : "",
+    end: visibleTo !== undefined ? toIsoTime(visibleTo) : "",
+    hasLeftWhitespace: leftWhitespaceBars > 0,
+    hasRightWhitespace: rightWhitespaceBars > 0,
+  };
+  if (bars.length === 0) {
+    return fallbackRange;
+  }
+
+  const firstBarTime = Number(bars[0].time);
+  const lastBarTime = Number(bars[bars.length - 1].time);
+  if (Number.isNaN(firstBarTime) || Number.isNaN(lastBarTime)) {
+    return fallbackRange;
+  }
+
+  const intervalSeconds = inferBarIntervalSeconds(bars);
+  const logicalStart = localIsoString(new Date((firstBarTime + Math.floor(logicalRange.from) * intervalSeconds) * 1000));
+  const logicalEnd = localIsoString(new Date((firstBarTime + Math.ceil(logicalRange.to) * intervalSeconds) * 1000));
+
+  const requestedStart = leftWhitespaceBars > 0
+    ? localIsoString(new Date((firstBarTime - leftWhitespaceBars * intervalSeconds) * 1000))
+    : fallbackRange.start || logicalStart;
+  const requestedEnd = rightWhitespaceBars > 0
+    ? localIsoString(new Date((lastBarTime + rightWhitespaceBars * intervalSeconds) * 1000))
+    : fallbackRange.end || logicalEnd;
+
+  return {
+    start: requestedStart,
+    end: requestedEnd,
+    hasLeftWhitespace: leftWhitespaceBars > 0,
+    hasRightWhitespace: rightWhitespaceBars > 0,
+  };
+}
+
+function inferBarIntervalSeconds(bars: CandlestickData[]) {
+  if (bars.length < 2) {
+    return 60;
+  }
+  const deltas: number[] = [];
+  for (let index = 1; index < bars.length; index += 1) {
+    const previous = Number(bars[index - 1].time);
+    const current = Number(bars[index].time);
+    const delta = current - previous;
+    if (delta > 0 && Number.isFinite(delta)) {
+      deltas.push(delta);
+    }
+  }
+  if (deltas.length === 0) {
+    return 60;
+  }
+  deltas.sort((left, right) => left - right);
+  return deltas[Math.floor(deltas.length / 2)];
 }
 
 function toIsoTime(time: Time) {
