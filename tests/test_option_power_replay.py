@@ -686,7 +686,9 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
 
         self.assertIsNotNone(payload)
         self.assertEqual(payload["bars"][0]["time"], "2026-04-17T13:44:00")
-        self.assertLess(payload["session"]["start"], metadata["start"])
+        self.assertEqual(payload["session"]["session_id"], metadata["session_id"])
+        self.assertTrue(payload["partial"])
+        self.assertEqual(payload["series"], {"raw_pressure": []})
 
 
 if __name__ == "__main__":

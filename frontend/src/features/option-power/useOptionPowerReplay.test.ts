@@ -126,7 +126,7 @@ describe("useOptionPowerReplay", () => {
       "replay-extended",
       "2026-04-22T09:00:00",
       "prev",
-      300,
+      50,
       "1m",
       ["raw_pressure"],
     );
@@ -161,7 +161,7 @@ describe("useOptionPowerReplay", () => {
       "replay-right-extended",
       "2026-04-22T10:00:00",
       "next",
-      300,
+      50,
       "1m",
       ["raw_pressure"],
     );

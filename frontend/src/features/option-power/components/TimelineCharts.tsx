@@ -10,6 +10,7 @@ import {
   type LineData,
   type LogicalRange,
   type MouseEventParams,
+  type Range,
   type Time,
 } from "lightweight-charts";
 import type { ChartBarPoint, ChartSeriesPoint } from "../types";
@@ -617,9 +618,12 @@ export function TimelineCharts({
     const normalizedBars = normalizedData.bars;
     const normalizedVolume = normalizedData.volume;
     const showsPricePanel = visiblePanels.some((panel) => panel.id === "price");
-    const previousLogicalRanges = fittedRef.current
-      ? captureVisibleLogicalRanges(chartsRef.current, visiblePanels)
-      : new Map<PanelId, LogicalRange>();
+    const previousTimeRange = fittedRef.current
+      ? capturePrimaryVisibleTimeRange(chartsRef.current)
+      : null;
+    const previousLogicalRange = fittedRef.current
+      ? chartsRef.current.price?.timeScale().getVisibleLogicalRange() ?? null
+      : null;
     const shouldRestoreLogicalRange = fittedRef.current && (mode !== "live" || !liveAutoFollowRef.current);
     if (showsPricePanel) {
       const { candle, volume, ma10, ma30, ma60 } = priceSeriesRef.current;
@@ -716,13 +720,13 @@ export function TimelineCharts({
           chartsRef.current[panel.id]?.timeScale().scrollToRealTime();
         }
       } else if (shouldRestoreLogicalRange) {
-        restoreVisibleLogicalRanges(chartsRef.current, previousLogicalRanges);
+        restoreSyncedVisibleRange(chartsRef.current, visiblePanels, previousTimeRange, previousLogicalRange);
       }
       return;
     }
 
     if (shouldRestoreLogicalRange) {
-      restoreVisibleLogicalRanges(chartsRef.current, previousLogicalRanges);
+      restoreSyncedVisibleRange(chartsRef.current, visiblePanels, previousTimeRange, previousLogicalRange);
     }
   }, [mode, normalizedData, panelData, visiblePanels]);
 
@@ -821,27 +825,34 @@ function createConfiguredChart(container: HTMLDivElement, height: number) {
   });
 }
 
-function captureVisibleLogicalRanges(
+function capturePrimaryVisibleTimeRange(
   charts: Record<PanelId, IChartApi | null>,
-  panels: Array<{ id: PanelId }>,
 ) {
-  const ranges = new Map<PanelId, LogicalRange>();
-  for (const panel of panels) {
-    const range = charts[panel.id]?.timeScale().getVisibleLogicalRange();
-    if (range) {
-      ranges.set(panel.id, range);
-    }
-  }
-  return ranges;
+  return charts.price?.timeScale().getVisibleRange() ?? null;
 }
 
-function restoreVisibleLogicalRanges(
+function restoreSyncedVisibleRange(
   charts: Record<PanelId, IChartApi | null>,
-  ranges: Map<PanelId, LogicalRange>,
+  panels: Array<{ id: PanelId }>,
+  timeRange: Range<Time> | null,
+  fallbackLogicalRange: LogicalRange | null,
 ) {
-  for (const [panelId, range] of ranges) {
+  if (timeRange) {
+    for (const panel of panels) {
+      try {
+        charts[panel.id]?.timeScale().setVisibleRange(timeRange);
+      } catch (_error) {
+        // Some panels can briefly lack enough series data while they bootstrap.
+      }
+    }
+    return;
+  }
+  if (!fallbackLogicalRange) {
+    return;
+  }
+  for (const panel of panels) {
     try {
-      charts[panelId]?.timeScale().setVisibleLogicalRange(range);
+      charts[panel.id]?.timeScale().setVisibleLogicalRange(fallbackLogicalRange);
     } catch (_error) {
       // The previous logical range can briefly be outside the data bounds while panels bootstrap.
     }

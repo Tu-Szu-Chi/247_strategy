@@ -17,7 +17,7 @@ import type {
 const INITIAL_REPLAY_WINDOW_HOURS = 3;
 const REPLAY_WINDOW_PADDING_MINUTES = 30;
 const PREFETCH_EDGE_THRESHOLD_MINUTES = 30;
-const CURSOR_PREFETCH_BAR_COUNT = 300;
+const CURSOR_PREFETCH_BAR_COUNT = 50;
 
 type LoadOptions = {
   updateWindow?: boolean;

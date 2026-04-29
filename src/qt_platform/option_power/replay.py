@@ -399,16 +399,23 @@ class OptionPowerReplayService:
 
         selected_start = datetime.fromisoformat(selected_bars[0]["time"])
         selected_end = datetime.fromisoformat(selected_bars[-1]["time"])
-        active_session = session
         if selected_start < session.start or selected_end > session.end:
-            metadata = self.create_session(
-                start=min(session.start, selected_start),
-                end=max(session.end, selected_end),
-            )
-            active_session = self._sessions[metadata["session_id"]]
+            progress = _progress_payload(session)
+            return {
+                "bars": selected_bars,
+                "series": {name: [] for name in names},
+                "status": progress["status"],
+                "partial": True,
+                "computed_until": progress["computed_until"],
+                "compute_status": progress["compute_status"],
+                "progress_ratio": progress["progress_ratio"],
+                "checkpoint_count": progress["checkpoint_count"],
+                "coverage": coverage,
+                "session": session.metadata(),
+            }
 
         series_payload = self.get_series_payload(
-            active_session.session_id,
+            session_id,
             names,
             start=selected_start,
             end=selected_end,
@@ -426,7 +433,7 @@ class OptionPowerReplayService:
             "progress_ratio": series_payload["progress_ratio"],
             "checkpoint_count": series_payload["checkpoint_count"],
             "coverage": coverage,
-            "session": active_session.metadata(),
+            "session": session.metadata(),
         }
 
     def get_snapshot_at(self, session_id: str, ts: datetime) -> dict | None:
