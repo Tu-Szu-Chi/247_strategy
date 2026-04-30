@@ -297,10 +297,16 @@ export function TimelineCharts({
   const liveAutoFollowRef = useRef(true);
   const syncingRangeRef = useRef(false);
   const syncingCrosshairRef = useRef(false);
+  const suppressVisibleRangeChangeRef = useRef(false);
+  const suppressVisibleRangeTimerRef = useRef<number | null>(null);
   const visibleRangeTimeoutRef = useRef<number | null>(null);
   const workerRef = useRef<Worker | null>(null);
   const workerRequestIdRef = useRef(0);
   const onVisibleRangeChangeRef = useRef(onVisibleRangeChange);
+  const normalizedDataRef = useRef<NormalizedChartData>(normalizeChartData({
+    bars: [],
+    panelData: {},
+  }));
   const [normalizedData, setNormalizedData] = useState<NormalizedChartData>(() => normalizeChartData({
     bars: [],
     panelData: {},
@@ -323,6 +329,25 @@ export function TimelineCharts({
   useEffect(() => {
     onVisibleRangeChangeRef.current = onVisibleRangeChange;
   }, [onVisibleRangeChange]);
+
+  useEffect(() => {
+    normalizedDataRef.current = normalizedData;
+  }, [normalizedData]);
+
+  const suppressProgrammaticVisibleRangeChange = () => {
+    suppressVisibleRangeChangeRef.current = true;
+    if (suppressVisibleRangeTimerRef.current !== null) {
+      window.clearTimeout(suppressVisibleRangeTimerRef.current);
+    }
+    suppressVisibleRangeTimerRef.current = window.setTimeout(() => {
+      suppressVisibleRangeChangeRef.current = false;
+      suppressVisibleRangeTimerRef.current = null;
+    }, 80);
+    if (visibleRangeTimeoutRef.current !== null) {
+      window.clearTimeout(visibleRangeTimeoutRef.current);
+      visibleRangeTimeoutRef.current = null;
+    }
+  };
 
   useEffect(() => {
     const hasAllContainers = visiblePanels.every((panel) => containerRefs.current[panel.id]);
@@ -459,15 +484,24 @@ export function TimelineCharts({
         }
         syncingRangeRef.current = false;
         if (mode === "live") {
+          if (suppressVisibleRangeChangeRef.current) {
+            return;
+          }
           liveAutoFollowRef.current = sourceChart.timeScale().scrollPosition() <= 0.5;
         }
         if (mode === "replay" && onVisibleRangeChangeRef.current) {
+          if (suppressVisibleRangeChangeRef.current) {
+            return;
+          }
+          if (!fittedRef.current) {
+            return;
+          }
           if (visibleRangeTimeoutRef.current !== null) {
             window.clearTimeout(visibleRangeTimeoutRef.current);
           }
           const visibleRange = sourceChart.timeScale().getVisibleRange();
           const requestedRange = resolveRequestedVisibleRange(
-            normalizedData.bars,
+            normalizedDataRef.current.bars,
             logicalRange,
             visibleRange?.from as Time | undefined,
             visibleRange?.to as Time | undefined,
@@ -536,6 +570,11 @@ export function TimelineCharts({
         window.clearTimeout(visibleRangeTimeoutRef.current);
         visibleRangeTimeoutRef.current = null;
       }
+      if (suppressVisibleRangeTimerRef.current !== null) {
+        window.clearTimeout(suppressVisibleRangeTimerRef.current);
+        suppressVisibleRangeTimerRef.current = null;
+      }
+      suppressVisibleRangeChangeRef.current = false;
       resizeObserver.disconnect();
       for (const chart of allCharts) {
         chart.remove();
@@ -625,20 +664,67 @@ export function TimelineCharts({
       ? chartsRef.current.price?.timeScale().getVisibleLogicalRange() ?? null
       : null;
     const shouldRestoreLogicalRange = fittedRef.current && (mode !== "live" || !liveAutoFollowRef.current);
+    // Helper for incremental update
+    const syncSeriesData = (series: any, newData: any[], existingMap: Map<number, any>, updateMap?: Map<number, any>) => {
+      if (newData.length === 0) {
+        series.setData([]);
+        if (updateMap) updateMap.clear();
+        return;
+      }
+      if (existingMap.size === 0) {
+        series.setData(newData);
+        if (updateMap) {
+          for (const item of newData) updateMap.set(Number(item.time), item);
+        }
+        return;
+      }
+
+      let maxTime = -Infinity;
+      let minTime = Infinity;
+      for (const t of existingMap.keys()) {
+        if (t > maxTime) maxTime = t;
+        if (t < minTime) minTime = t;
+      }
+
+      const firstNewTime = Number(newData[0].time);
+      if (firstNewTime !== minTime || newData.length < existingMap.size - 2) {
+        series.setData(newData);
+        if (updateMap) {
+          updateMap.clear();
+          for (const item of newData) updateMap.set(Number(item.time), item);
+        }
+        return;
+      }
+
+      for (let i = 0; i < newData.length; i++) {
+        const t = Number(newData[i].time);
+        if (t >= maxTime) {
+          series.update(newData[i]);
+        }
+        if (updateMap && t >= maxTime) {
+          updateMap.set(t, newData[i]);
+        }
+      }
+    };
+
     if (showsPricePanel) {
       const { candle, volume, ma10, ma30, ma60 } = priceSeriesRef.current;
       if (!candle || !volume || !ma10 || !ma30 || !ma60) {
         return;
       }
-      candle.setData(normalizedBars);
-      volume.setData(normalizedVolume);
-      ma10.setData(normalizedData.ma10);
-      ma30.setData(normalizedData.ma30);
-      ma60.setData(normalizedData.ma60);
-      dataRef.current.price = new Map(normalizedBars.map((item) => [Number(item.time), item]));
+      const existingPriceMap = dataRef.current.price;
+      
+      syncSeriesData(candle, normalizedBars, existingPriceMap, existingPriceMap);
+      
+      // We don't need updateMap for these because we only use existingPriceMap to check the timeline
+      syncSeriesData(volume, normalizedVolume, existingPriceMap);
+      syncSeriesData(ma10, normalizedData.ma10, existingPriceMap);
+      syncSeriesData(ma30, normalizedData.ma30, existingPriceMap);
+      syncSeriesData(ma60, normalizedData.ma60, existingPriceMap);
+
       representativeSeriesRef.current.price = candle;
     } else {
-      dataRef.current.price = new Map();
+      dataRef.current.price.clear();
       representativeSeriesRef.current.price = null;
     }
 
@@ -647,46 +733,35 @@ export function TimelineCharts({
         continue;
       }
       let representativeSet = false;
-      const mergedData = new Map<number, LineData>();
+      const existingPanelMap = dataRef.current[panel.id] || new Map<number, any>();
+      
       for (const series of panelData[panel.id]) {
         if (series.kind === "histogram") {
           const target = indicatorHistogramRef.current[series.id];
-          if (!target) {
-            continue;
-          }
+          if (!target) continue;
+          
           const normalized = (normalizedData.panels[panel.id]?.[series.id] ?? []) as HistogramData[];
-          target.setData(normalized);
-          for (const item of normalized) {
-            if (!mergedData.has(Number(item.time))) {
-              mergedData.set(Number(item.time), {
-                time: item.time,
-                value: Number(item.value),
-              });
-            }
-          }
+          syncSeriesData(target, normalized, existingPanelMap, existingPanelMap);
+          
           if (!representativeSet && normalized.length > 0) {
             representativeSeriesRef.current[panel.id] = target;
             representativeSet = true;
           }
           continue;
         }
+        
         const target = indicatorSeriesRef.current[series.id];
-        if (!target) {
-          continue;
-        }
+        if (!target) continue;
+        
         const normalized = (normalizedData.panels[panel.id]?.[series.id] ?? []) as LineData[];
-        target.setData(normalized);
-        for (const item of normalized) {
-          if (!mergedData.has(Number(item.time))) {
-            mergedData.set(Number(item.time), item);
-          }
-        }
+        syncSeriesData(target, normalized, existingPanelMap, existingPanelMap);
+        
         if (!representativeSet && normalized.length > 0) {
           representativeSeriesRef.current[panel.id] = target;
           representativeSet = true;
         }
       }
-      dataRef.current[panel.id] = mergedData;
+      
       if (!representativeSet) {
         representativeSeriesRef.current[panel.id] = null;
       }
@@ -707,8 +782,15 @@ export function TimelineCharts({
     }
 
     if (!fittedRef.current) {
+      const initialRange = mode === "replay" ? initialReplayVisibleRange(normalizedData) : null;
+      suppressProgrammaticVisibleRangeChange();
       for (const panel of visiblePanels) {
-        chartsRef.current[panel.id]?.timeScale().fitContent();
+        const timeScale = chartsRef.current[panel.id]?.timeScale();
+        if (initialRange) {
+          timeScale?.setVisibleRange(initialRange);
+        } else {
+          timeScale?.fitContent();
+        }
       }
       fittedRef.current = true;
       return;
@@ -716,16 +798,19 @@ export function TimelineCharts({
 
     if (mode === "live") {
       if (liveAutoFollowRef.current) {
+        suppressProgrammaticVisibleRangeChange();
         for (const panel of visiblePanels) {
           chartsRef.current[panel.id]?.timeScale().scrollToRealTime();
         }
       } else if (shouldRestoreLogicalRange) {
+        suppressProgrammaticVisibleRangeChange();
         restoreSyncedVisibleRange(chartsRef.current, visiblePanels, previousTimeRange, previousLogicalRange);
       }
       return;
     }
 
     if (shouldRestoreLogicalRange) {
+      suppressProgrammaticVisibleRangeChange();
       restoreSyncedVisibleRange(chartsRef.current, visiblePanels, previousTimeRange, previousLogicalRange);
     }
   }, [mode, normalizedData, panelData, visiblePanels]);
@@ -756,6 +841,7 @@ export function TimelineCharts({
               containerRefs.current[panel.id] = node;
             }}
             className={styles.chartBox}
+            data-testid={`timeline-chart-${panel.id}`}
           />
           {panel.id === "price" ? null : (
             <div className={styles.seriesLegend}>
@@ -857,6 +943,16 @@ function restoreSyncedVisibleRange(
       // The previous logical range can briefly be outside the data bounds while panels bootstrap.
     }
   }
+}
+
+function initialReplayVisibleRange(data: NormalizedChartData): Range<Time> | null {
+  if (data.bars.length < 2) {
+    return null;
+  }
+  return {
+    from: data.bars[0].time,
+    to: data.bars[data.bars.length - 1].time,
+  };
 }
 
 export function resolveRequestedVisibleRange(

@@ -1,7 +1,7 @@
 import unittest
 from datetime import datetime, timedelta
 
-from qt_platform.backtest.engine import BacktestConfig, run_backtest
+from qt_platform.backtest.engine import BacktestConfig, indicator_series_to_context_extras, run_backtest
 from qt_platform.domain import Bar, Side, Signal
 from qt_platform.strategies.base import (
     BarCloseEvent,
@@ -45,6 +45,31 @@ class BacktestEngineTest(unittest.TestCase):
         self.assertEqual(len(result.fills), 1)
         self.assertEqual(result.fills[0].ts, start + timedelta(minutes=1))
         self.assertEqual(result.fills[0].price, 105)
+
+    def test_signal_metadata_is_preserved_on_fill(self) -> None:
+        class MetadataStrategy(BaseStrategy):
+            def on_bar(self, context: StrategyContext):
+                if context.bar_index != 0:
+                    return []
+                return [
+                    Signal(
+                        ts=context.bar.ts,
+                        side=Side.BUY,
+                        size=1,
+                        reason="entry",
+                        metadata={"signal_state": 1, "pressure_index": 62.5},
+                    )
+                ]
+
+        start = datetime(2024, 1, 1, 8, 45)
+        bars = [
+            Bar(start, start.date(), "MTX", "202401", "day", 100, 101, 99, 100, 10, None, "test"),
+            Bar(start + timedelta(minutes=1), start.date(), "MTX", "202401", "day", 105, 106, 104, 105, 10, None, "test"),
+        ]
+
+        result = run_backtest(bars=bars, strategy=MetadataStrategy(), config=BacktestConfig(starting_cash=1000))
+
+        self.assertEqual(result.fills[0].metadata, {"signal_state": 1, "pressure_index": 62.5})
 
     def test_strategy_definition_runs_indicator_signal_and_execution_layers(self) -> None:
         class ThresholdIndicator(BaseIndicator):
@@ -190,6 +215,61 @@ class BacktestEngineTest(unittest.TestCase):
         result = run_backtest(bars=bars, strategy=StopStrategy(), config=BacktestConfig(starting_cash=1000))
         self.assertEqual(len(result.fills), 2)
         self.assertEqual(result.fills[1].price, 95.0)
+        self.assertEqual(result.fills[1].metadata, {})
+
+    def test_indicator_series_are_available_as_strategy_context_extras(self) -> None:
+        class SignalStateStrategy(BaseStrategy):
+            def on_bar(self, context: StrategyContext):
+                if context.extras.get("signal_state") != 1:
+                    return []
+                return [Signal(ts=context.bar.ts, side=Side.BUY, size=1, reason="backend_signal")]
+
+        start = datetime(2024, 1, 1, 8, 45)
+        bars = [
+            Bar(start, start.date(), "MTX", "202401", "day", 100, 101, 99, 100, 10, None, "test"),
+            Bar(start + timedelta(minutes=1), start.date(), "MTX", "202401", "day", 105, 106, 104, 105, 10, None, "test"),
+        ]
+        result = run_backtest(
+            bars=bars,
+            strategy=SignalStateStrategy(),
+            config=BacktestConfig(starting_cash=1000),
+            indicator_series={
+                "signal_state": [{"time": start.isoformat(), "value": 1}],
+                "bias_signal": [{"time": start.isoformat(), "value": 1}],
+            },
+        )
+
+        self.assertEqual(len(result.fills), 1)
+        self.assertEqual(result.fills[0].ts, start + timedelta(minutes=1))
+        self.assertEqual(result.fills[0].reason, "backend_signal")
+
+    def test_indicator_series_context_extras_can_be_overridden_by_explicit_extras(self) -> None:
+        start = datetime(2024, 1, 1, 8, 45)
+
+        extras = indicator_series_to_context_extras(
+            {"signal_state": [{"time": start.isoformat(), "value": 1}]}
+        )
+
+        self.assertEqual(extras, {start: {"signal_state": 1}})
+
+        class CaptureStrategy(BaseStrategy):
+            def __init__(self) -> None:
+                self.values = []
+
+            def on_bar(self, context: StrategyContext):
+                self.values.append(context.extras.get("signal_state"))
+                return []
+
+        strategy = CaptureStrategy()
+        run_backtest(
+            bars=[Bar(start, start.date(), "MTX", "202401", "day", 100, 101, 99, 100, 10, None, "test")],
+            strategy=strategy,
+            config=BacktestConfig(starting_cash=1000),
+            context_extras_by_ts={start: {"signal_state": -1}},
+            indicator_series={"signal_state": [{"time": start.isoformat(), "value": 1}]},
+        )
+
+        self.assertEqual(strategy.values, [-1])
 
 
 if __name__ == "__main__":

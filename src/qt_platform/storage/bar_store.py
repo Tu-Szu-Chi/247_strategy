@@ -191,6 +191,18 @@ class SQLiteBarStore(BarRepository):
             return None
         return datetime.fromisoformat(row[0])
 
+    def bar_time_bounds(self, timeframe: str, symbol: str) -> tuple[datetime, datetime] | None:
+        table = _table_name(timeframe)
+        with sqlite3.connect(self.path) as conn:
+            cursor = conn.execute(
+                f"SELECT MIN(ts), MAX(ts) FROM {table} WHERE symbol = ?",
+                (symbol,),
+            )
+            row = cursor.fetchone()
+        if not row or row[0] is None or row[1] is None:
+            return None
+        return datetime.fromisoformat(row[0]), datetime.fromisoformat(row[1])
+
     def list_trading_days(
         self,
         timeframe: str,

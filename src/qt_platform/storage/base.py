@@ -21,6 +21,9 @@ class BarRepository(ABC):
     def latest_bar_ts(self, timeframe: str, symbol: str) -> datetime | None:
         raise NotImplementedError
 
+    def bar_time_bounds(self, timeframe: str, symbol: str) -> tuple[datetime, datetime] | None:
+        return None
+
     @abstractmethod
     def list_trading_days(
         self,

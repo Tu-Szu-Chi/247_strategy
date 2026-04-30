@@ -85,6 +85,19 @@ class PostgresBarStore(BarRepository):
             return None
         return _as_naive_local(row[0])
 
+    def bar_time_bounds(self, timeframe: str, symbol: str) -> tuple[datetime, datetime] | None:
+        table = _table_name(timeframe)
+        with psycopg.connect(self.dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT MIN(ts), MAX(ts) FROM {table} WHERE symbol = %s",
+                    (symbol,),
+                )
+                row = cur.fetchone()
+        if not row or row[0] is None or row[1] is None:
+            return None
+        return _as_naive_local(row[0]), _as_naive_local(row[1])
+
     def list_trading_days(
         self,
         timeframe: str,

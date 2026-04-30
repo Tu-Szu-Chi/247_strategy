@@ -143,6 +143,48 @@ class OptionPowerRuntimeService:
         )
         return snapshot.to_dict()
 
+    def live_latest_update(
+        self,
+        *,
+        since: datetime | None = None,
+        names: list[str] | None = None,
+        include_bar: bool = True,
+    ) -> dict[str, Any]:
+        with self._history_lock:
+            latest_entry = self._snapshot_history[-1] if self._snapshot_history else None
+            latest_bar = None
+            if include_bar:
+                latest_bar = _bar_state_to_chart_dict(self._open_bar_state)
+                if latest_bar is None and self._bars_history:
+                    latest_bar = self._bars_history[-1]
+
+        snapshot_time = latest_entry["simulated_at"] if latest_entry is not None else None
+        updated = False
+        if snapshot_time is not None:
+            updated = since is None or datetime.fromisoformat(snapshot_time) > since
+
+        payload: dict[str, Any] = {
+            "updated": updated,
+            "snapshot_time": snapshot_time,
+            "snapshot": None,
+            "contract_totals": None,
+            "series": {},
+            "latest_bar": latest_bar,
+        }
+        if not updated or latest_entry is None:
+            return payload
+
+        snapshot = latest_entry["snapshot"]
+        payload["snapshot"] = _compact_snapshot(snapshot)
+        payload["contract_totals"] = _snapshot_contract_totals(snapshot)
+        if names:
+            indicator_series = _build_indicator_series([snapshot_time], [snapshot])
+            payload["series"] = {
+                name: indicator_series.get(name, [])[-1:]
+                for name in names
+            }
+        return payload
+
     def live_metadata(self) -> dict[str, Any]:
         with self._history_lock:
             first_ts = self._snapshot_history[0]["simulated_at"] if self._snapshot_history else None
@@ -662,3 +704,40 @@ def _canonical_underlying_symbol(value: str) -> str:
     if normalized.startswith("TXF"):
         return "MTX"
     return normalized
+
+
+def _compact_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": snapshot.get("type"),
+        "generated_at": snapshot.get("generated_at"),
+        "run_id": snapshot.get("run_id"),
+        "session": snapshot.get("session"),
+        "option_root": snapshot.get("option_root"),
+        "underlying_reference_price": snapshot.get("underlying_reference_price"),
+        "underlying_reference_source": snapshot.get("underlying_reference_source"),
+        "raw_pressure": snapshot.get("raw_pressure"),
+        "pressure_index": snapshot.get("pressure_index"),
+        "raw_pressure_weighted": snapshot.get("raw_pressure_weighted"),
+        "pressure_index_weighted": snapshot.get("pressure_index_weighted"),
+        "regime": snapshot.get("regime"),
+        "iv_surface": snapshot.get("iv_surface"),
+        "contract_count": snapshot.get("contract_count"),
+        "status": snapshot.get("status"),
+        "stop_reason": snapshot.get("stop_reason"),
+        "warning": snapshot.get("warning"),
+    }
+
+
+def _snapshot_contract_totals(snapshot: dict[str, Any]) -> dict[str, dict[str, float]]:
+    totals = {
+        "call": {"cumulative_power": 0.0, "power_1m_delta": 0.0},
+        "put": {"cumulative_power": 0.0, "power_1m_delta": 0.0},
+    }
+    for expiry in snapshot.get("expiries") or []:
+        for contract in expiry.get("contracts") or []:
+            side = contract.get("call_put")
+            if side not in totals:
+                continue
+            totals[side]["cumulative_power"] += float(contract.get("cumulative_power") or 0.0)
+            totals[side]["power_1m_delta"] += float(contract.get("power_1m_delta") or 0.0)
+    return totals

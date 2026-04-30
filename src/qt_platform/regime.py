@@ -484,6 +484,16 @@ class MtxRegimeAnalyzer:
     def _ticks_as_list(self) -> list[_TickState]:
         return list(self._ticks)
 
+    def clone(self) -> "MtxRegimeAnalyzer":
+        cloned = MtxRegimeAnalyzer()
+        cloned._session = self._session
+        cloned._cum_pv = self._cum_pv
+        cloned._cum_volume = self._cum_volume
+        cloned._session_cvd = self._session_cvd
+        cloned._bars = deque(self._bars)
+        cloned._ticks = deque(self._ticks)
+        return cloned
+
 
 def regime_schema_dicts() -> list[dict]:
     return [field.to_dict() for field in REGIME_SCHEMA]

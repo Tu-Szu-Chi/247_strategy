@@ -1,16 +1,23 @@
 import { useEffect, useRef, useState } from "react";
-import { ApiError, getLiveBundle } from "./api";
-import type { ChartBarPoint, IndicatorSeriesMap, LiveMeta, OptionPowerSnapshot } from "./types";
+import { ApiError, getLiveBundle, getLiveLatest } from "./api";
+import type {
+  ChartBarPoint,
+  IndicatorSeriesMap,
+  LiveContractTotals,
+  LiveMeta,
+  LiveSnapshotSummary,
+} from "./types";
 
 type LiveState = {
   bars: ChartBarPoint[];
   meta: LiveMeta | null;
-  snapshot: OptionPowerSnapshot | null;
+  snapshot: LiveSnapshotSummary | null;
+  contractTotals: LiveContractTotals | null;
   loading: boolean;
   error: string | null;
 };
 
-const POLL_MS = 5000;
+const POLL_MS = 10000;
 
 export function useOptionPowerLive(seriesNames: string[], enabled: boolean, includeBars = true) {
   const seriesKey = seriesNames.join(",");
@@ -18,11 +25,13 @@ export function useOptionPowerLive(seriesNames: string[], enabled: boolean, incl
     bars: [],
     meta: null,
     snapshot: null,
+    contractTotals: null,
     loading: enabled,
     error: null,
   });
   const [series, setSeries] = useState<IndicatorSeriesMap>({});
   const timerRef = useRef<number | null>(null);
+  const latestSnapshotTimeRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!enabled) {
@@ -40,18 +49,41 @@ export function useOptionPowerLive(seriesNames: string[], enabled: boolean, incl
         setState((current) => ({ ...current, loading: true, error: null }));
       }
       try {
-        const bundle = await getLiveBundle(seriesNames, includeBars);
+        if (initial) {
+          const bundle = await getLiveBundle(seriesNames, includeBars);
+          if (cancelled) {
+            return;
+          }
+          setState({
+            bars: bundle.bars,
+            meta: bundle.meta,
+            snapshot: bundle.latest.snapshot,
+            contractTotals: bundle.latest.contract_totals,
+            loading: false,
+            error: null,
+          });
+          latestSnapshotTimeRef.current = bundle.latest.snapshot?.generated_at ?? null;
+          setSeries(bundle.series);
+          return;
+        }
+        const latest = await getLiveLatest(seriesNames, latestSnapshotTimeRef.current, includeBars);
         if (cancelled) {
           return;
         }
-        setState({
-          bars: bundle.bars,
-          meta: bundle.meta,
-          snapshot: bundle.latest.snapshot,
+        if (latest.snapshot?.generated_at) {
+          latestSnapshotTimeRef.current = latest.snapshot.generated_at;
+        }
+        setState((current) => ({
+          ...current,
+          bars: latest.latest_bar ? upsertBar(current.bars, latest.latest_bar) : current.bars,
+          snapshot: latest.snapshot ?? current.snapshot,
+          contractTotals: latest.contract_totals ?? current.contractTotals,
           loading: false,
           error: null,
-        });
-        setSeries(bundle.series);
+        }));
+        if (latest.updated) {
+          setSeries((current) => mergeSeries(current, latest.series));
+        }
       } catch (error) {
         if (cancelled) {
           return;
@@ -73,6 +105,7 @@ export function useOptionPowerLive(seriesNames: string[], enabled: boolean, incl
 
     return () => {
       cancelled = true;
+      latestSnapshotTimeRef.current = null;
       if (timerRef.current !== null) {
         window.clearTimeout(timerRef.current);
         timerRef.current = null;
@@ -84,4 +117,32 @@ export function useOptionPowerLive(seriesNames: string[], enabled: boolean, incl
     ...state,
     series,
   };
+}
+
+function upsertBar(bars: ChartBarPoint[], nextBar: ChartBarPoint): ChartBarPoint[] {
+  if (!bars.length) {
+    return [nextBar];
+  }
+  const lastBar = bars[bars.length - 1];
+  if (lastBar.time === nextBar.time) {
+    return [...bars.slice(0, -1), nextBar];
+  }
+  return [...bars, nextBar];
+}
+
+function mergeSeries(current: IndicatorSeriesMap, incoming: IndicatorSeriesMap): IndicatorSeriesMap {
+  const merged: IndicatorSeriesMap = { ...current };
+  for (const [name, nextPoints] of Object.entries(incoming)) {
+    if (!nextPoints.length) {
+      continue;
+    }
+    const existing = merged[name] ?? [];
+    const nextPoint = nextPoints[nextPoints.length - 1];
+    if (existing.length && existing[existing.length - 1].time === nextPoint.time) {
+      merged[name] = [...existing.slice(0, -1), nextPoint];
+      continue;
+    }
+    merged[name] = [...existing, nextPoint];
+  }
+  return merged;
 }

@@ -1,5 +1,6 @@
 import unittest
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
+from unittest.mock import patch
 
 from qt_platform.domain import Bar, CanonicalTick
 from qt_platform.option_power.replay import OptionPowerReplayService
@@ -10,11 +11,13 @@ class DummyStore:
         self.ticks = ticks
         self.bars = bars or []
         self.list_ticks_for_symbols_calls = 0
+        self.list_ticks_for_symbols_requests = []
         self.list_tick_symbol_stats_calls = 0
         self.list_bars_calls = 0
 
     def list_ticks_for_symbols(self, symbols, start, end):
         self.list_ticks_for_symbols_calls += 1
+        self.list_ticks_for_symbols_requests.append((tuple(symbols), start, end))
         selected = []
         allowed = set(symbols)
         for tick in self.ticks:
@@ -59,6 +62,12 @@ class DummyStore:
                 continue
             selected.append(bar)
         return selected
+
+    def bar_time_bounds(self, timeframe, symbol):
+        selected = [bar.ts for bar in self.bars if bar.symbol == symbol]
+        if not selected:
+            return None
+        return min(selected), max(selected)
 
 
 def _tick(
@@ -256,6 +265,130 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
         self.assertIsNotNone(snapshot_at)
         self.assertEqual(snapshot_at["index"], 1)
 
+    def test_build_backtest_indicator_series_returns_backend_series(self) -> None:
+        base_ts = datetime(2026, 4, 16, 9, 0, 0)
+        store = DummyStore(
+            [
+                _tick(
+                    ts=base_ts,
+                    symbol="MTX",
+                    price=19450.0,
+                    size=1,
+                    instrument_key="MTX202605",
+                ),
+                _tick(
+                    ts=base_ts + timedelta(seconds=1),
+                    symbol="TXX",
+                    price=120.0,
+                    size=10,
+                    instrument_key="TXX20260419400C",
+                    contract_month="202604",
+                    strike_price=19400.0,
+                    call_put="call",
+                    tick_direction="up",
+                ),
+            ],
+            bars=[
+                Bar(
+                    ts=base_ts,
+                    trading_day=date(2026, 4, 16),
+                    symbol="MTX",
+                    contract_month="202605",
+                    session="day",
+                    open=19440.0,
+                    high=19460.0,
+                    low=19430.0,
+                    close=19450.0,
+                    volume=1200.0,
+                    open_interest=None,
+                    source="stub_replay",
+                    instrument_key="MTX202605",
+                ),
+                Bar(
+                    ts=base_ts,
+                    trading_day=date(2026, 4, 16),
+                    symbol="TWII",
+                    contract_month="",
+                    session="day",
+                    open=19380.0,
+                    high=19410.0,
+                    low=19370.0,
+                    close=19400.0,
+                    volume=0.0,
+                    open_interest=None,
+                    source="stub_replay",
+                    instrument_key="index:TWII",
+                    build_source="live_snapshot_agg",
+                ),
+            ],
+        )
+        service = OptionPowerReplayService(
+            store=store,
+            option_root="AUTO",
+            expiry_count=2,
+            underlying_symbol="MTX",
+            snapshot_interval_seconds=60.0,
+        )
+
+        series = service.build_backtest_indicator_series(
+            start=base_ts,
+            end=base_ts + timedelta(minutes=1),
+            names=["raw_pressure", "signal_state"],
+            interval="1m",
+            wait_timeout=2.0,
+        )
+
+        self.assertEqual(sorted(series.keys()), ["raw_pressure", "signal_state"])
+        self.assertEqual(len(series["raw_pressure"]), 2)
+        self.assertEqual(series["raw_pressure"][1]["value"], 10)
+        self.assertEqual(len(series["signal_state"]), 2)
+
+    def test_create_session_normalizes_aware_inputs_to_local_domain_time(self) -> None:
+        local_start = datetime(2026, 4, 16, 9, 0, 0)
+        store = DummyStore(
+            [
+                _tick(
+                    ts=local_start,
+                    symbol="MTX",
+                    price=19450.0,
+                    size=1,
+                    instrument_key="MTX202605",
+                ),
+            ],
+            bars=[
+                Bar(
+                    ts=local_start,
+                    trading_day=date(2026, 4, 16),
+                    symbol="MTX",
+                    contract_month="202605",
+                    session="day",
+                    open=19440.0,
+                    high=19460.0,
+                    low=19430.0,
+                    close=19450.0,
+                    volume=1200.0,
+                    open_interest=None,
+                    source="stub_replay",
+                    instrument_key="MTX202605",
+                ),
+            ],
+        )
+        service = OptionPowerReplayService(
+            store=store,
+            option_root="AUTO",
+            expiry_count=2,
+            underlying_symbol="MTX",
+            snapshot_interval_seconds=60.0,
+        )
+
+        metadata = service.create_session(
+            start=datetime(2026, 4, 16, 1, 0, 0, tzinfo=timezone.utc),
+            end=datetime(2026, 4, 16, 1, 1, 0, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(metadata["start"], "2026-04-16T09:00:00")
+        self.assertEqual(metadata["end"], "2026-04-16T09:01:00")
+
     def test_create_session_reuses_covering_session(self) -> None:
         base_ts = datetime(2026, 4, 16, 9, 0, 0)
         store = DummyStore(
@@ -438,6 +571,294 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
         self.assertEqual(len(aggregated_30m_bars), 1)
         self.assertEqual(aggregated_30m_bars[0]["time"], base_ts.isoformat())
         self.assertEqual(aggregated_30m_bars[0]["close"], 19455.0)
+
+    def test_get_series_uses_chart_series_cache_for_repeated_interval_window(self) -> None:
+        base_ts = datetime(2026, 4, 16, 9, 0, 0)
+        ticks = [
+            _tick(
+                ts=base_ts + timedelta(minutes=index),
+                symbol="TXX",
+                price=120.0 + index,
+                size=10 + index,
+                instrument_key="TXX20260419400C",
+                contract_month="202604",
+                strike_price=19400.0,
+                call_put="call",
+                tick_direction="up",
+            )
+            for index in range(4)
+        ]
+        store = DummyStore(ticks)
+        service = OptionPowerReplayService(
+            store=store,
+            option_root="AUTO",
+            expiry_count=2,
+            underlying_symbol="MTX",
+            snapshot_interval_seconds=60.0,
+        )
+        metadata = service.create_session(
+            start=base_ts,
+            end=base_ts + timedelta(minutes=3),
+            set_as_default=True,
+        )
+        self.assertTrue(service.wait_until_ready(metadata["session_id"], timeout=2.0))
+
+        with patch("qt_platform.option_power.replay.build_indicator_series") as build:
+            from qt_platform.option_power.indicator_backend import build_indicator_series as real_build
+
+            build.side_effect = real_build
+            first = service.get_series(
+                metadata["session_id"],
+                ["raw_pressure"],
+                start=base_ts,
+                end=base_ts + timedelta(minutes=1),
+                interval="1m",
+            )
+            second = service.get_series(
+                metadata["session_id"],
+                ["raw_pressure"],
+                start=base_ts,
+                end=base_ts + timedelta(minutes=1),
+                interval="1m",
+            )
+
+        self.assertEqual(build.call_count, 1)
+        self.assertEqual(len(first["raw_pressure"]), 2)
+        self.assertEqual(len(second["raw_pressure"]), 2)
+
+    def test_interval_series_can_materialize_without_full_frame_cache(self) -> None:
+        base_ts = datetime(2026, 4, 16, 9, 0, 0)
+        ticks = [
+            _tick(
+                ts=base_ts + timedelta(minutes=index),
+                symbol="TXX",
+                price=120.0 + index,
+                size=10 + index,
+                instrument_key="TXX20260419400C",
+                contract_month="202604",
+                strike_price=19400.0,
+                call_put="call",
+                tick_direction="up",
+            )
+            for index in range(4)
+        ]
+        store = DummyStore(ticks)
+        service = OptionPowerReplayService(
+            store=store,
+            option_root="AUTO",
+            expiry_count=2,
+            underlying_symbol="MTX",
+            snapshot_interval_seconds=5.0,
+        )
+
+        with patch.object(OptionPowerReplayService, "_start_background_compute_locked", autospec=True):
+            metadata = service.create_session(
+                start=base_ts,
+                end=base_ts + timedelta(minutes=3),
+                set_as_default=True,
+            )
+
+        payload = service.get_series_payload(
+            metadata["session_id"],
+            ["raw_pressure"],
+            start=base_ts,
+            end=base_ts + timedelta(minutes=3),
+            interval="1m",
+        )
+
+        self.assertIsNotNone(payload)
+        self.assertFalse(payload["partial"])
+        self.assertEqual(len(payload["series"]["raw_pressure"]), 4)
+        session = service._sessions[metadata["session_id"]]
+        self.assertEqual(len(session.frame_cache), 0)
+
+    def test_adjacent_interval_series_reuses_chart_state_checkpoint(self) -> None:
+        base_ts = datetime(2026, 4, 16, 9, 0, 0)
+        ticks = [
+            _tick(
+                ts=base_ts + timedelta(minutes=index),
+                symbol="TXX",
+                price=120.0 + index,
+                size=10 + index,
+                instrument_key="TXX20260419400C",
+                contract_month="202604",
+                strike_price=19400.0,
+                call_put="call",
+                tick_direction="up",
+            )
+            for index in range(6)
+        ]
+        store = DummyStore(ticks)
+        service = OptionPowerReplayService(
+            store=store,
+            option_root="AUTO",
+            expiry_count=2,
+            underlying_symbol="MTX",
+            snapshot_interval_seconds=5.0,
+        )
+
+        with patch.object(OptionPowerReplayService, "_start_background_compute_locked", autospec=True):
+            metadata = service.create_session(
+                start=base_ts,
+                end=base_ts + timedelta(minutes=5),
+                set_as_default=True,
+            )
+
+        first = service.get_series_payload(
+            metadata["session_id"],
+            ["raw_pressure"],
+            start=base_ts,
+            end=base_ts + timedelta(minutes=1),
+            interval="1m",
+        )
+        second = service.get_series_payload(
+            metadata["session_id"],
+            ["raw_pressure"],
+            start=base_ts + timedelta(minutes=2),
+            end=base_ts + timedelta(minutes=3),
+            interval="1m",
+        )
+
+        self.assertIsNotNone(first)
+        self.assertIsNotNone(second)
+        self.assertGreaterEqual(len(store.list_ticks_for_symbols_requests), 2)
+        first_start = store.list_ticks_for_symbols_requests[0][1]
+        second_start = store.list_ticks_for_symbols_requests[1][1]
+        self.assertEqual(first_start, base_ts)
+        self.assertGreater(second_start, base_ts + timedelta(minutes=1))
+
+    def test_bundle_supports_max_points_downsampling_and_coverage(self) -> None:
+        base_ts = datetime(2026, 4, 16, 9, 0, 0)
+        ticks = [
+            _tick(
+                ts=base_ts + timedelta(minutes=index),
+                symbol="TXX",
+                price=120.0 + index,
+                size=10 + index,
+                instrument_key="TXX20260419400C",
+                contract_month="202604",
+                strike_price=19400.0,
+                call_put="call",
+                tick_direction="up",
+            )
+            for index in range(10)
+        ]
+        bars = [
+            Bar(
+                ts=base_ts + timedelta(minutes=index),
+                trading_day=date(2026, 4, 16),
+                symbol="MTX",
+                contract_month="202605",
+                session="day",
+                open=100.0 + index,
+                high=102.0 + index,
+                low=99.0 + index,
+                close=101.0 + index,
+                volume=10.0,
+                open_interest=None,
+                source="stub_replay",
+                instrument_key="MTX202605",
+            )
+            for index in range(10)
+        ]
+        store = DummyStore(ticks, bars=bars)
+        service = OptionPowerReplayService(
+            store=store,
+            option_root="AUTO",
+            expiry_count=2,
+            underlying_symbol="MTX",
+            snapshot_interval_seconds=60.0,
+        )
+        metadata = service.create_session(
+            start=base_ts,
+            end=base_ts + timedelta(minutes=9),
+            set_as_default=True,
+        )
+        self.assertTrue(service.wait_until_ready(metadata["session_id"], timeout=2.0))
+
+        payload = service.get_bundle(
+            metadata["session_id"],
+            ["raw_pressure", "signal_state"],
+            start=base_ts,
+            end=base_ts + timedelta(minutes=9),
+            interval="1m",
+            max_points=3,
+            request_id="viewport-1",
+        )
+
+        self.assertIsNotNone(payload)
+        self.assertLessEqual(len(payload["bars"]), 3)
+        self.assertEqual(len(payload["series"]["raw_pressure"]), 10)
+        self.assertEqual(len(payload["series"]["signal_state"]), 10)
+        self.assertIsNone(payload["coverage"]["max_points"])
+        self.assertEqual(payload["coverage"]["request_id"], "viewport-1")
+        self.assertTrue(payload["coverage"]["complete"])
+
+    def test_bundle_by_bars_max_points_only_downsamples_bars(self) -> None:
+        base_ts = datetime(2026, 4, 16, 9, 0, 0)
+        ticks = [
+            _tick(
+                ts=base_ts + timedelta(minutes=index),
+                symbol="TXX",
+                price=120.0 + index,
+                size=10 + index,
+                instrument_key="TXX20260419400C",
+                contract_month="202604",
+                strike_price=19400.0,
+                call_put="call",
+                tick_direction="up",
+            )
+            for index in range(10)
+        ]
+        bars = [
+            Bar(
+                ts=base_ts + timedelta(minutes=index),
+                trading_day=date(2026, 4, 16),
+                symbol="MTX",
+                contract_month="202605",
+                session="day",
+                open=100.0 + index,
+                high=102.0 + index,
+                low=99.0 + index,
+                close=101.0 + index,
+                volume=10.0,
+                open_interest=None,
+                source="stub_replay",
+                instrument_key="MTX202605",
+            )
+            for index in range(10)
+        ]
+        store = DummyStore(ticks, bars=bars)
+        service = OptionPowerReplayService(
+            store=store,
+            option_root="AUTO",
+            expiry_count=2,
+            underlying_symbol="MTX",
+            snapshot_interval_seconds=60.0,
+        )
+        metadata = service.create_session(
+            start=base_ts,
+            end=base_ts + timedelta(minutes=9),
+            set_as_default=True,
+        )
+        self.assertTrue(service.wait_until_ready(metadata["session_id"], timeout=2.0))
+
+        payload = service.get_bundle_by_bars(
+            metadata["session_id"],
+            ["raw_pressure"],
+            anchor=base_ts,
+            direction="next",
+            bar_count=10,
+            interval="1m",
+            max_points=3,
+            request_id="cursor-1",
+        )
+
+        self.assertIsNotNone(payload)
+        self.assertLessEqual(len(payload["bars"]), 3)
+        self.assertEqual(len(payload["series"]["raw_pressure"]), 9)
+        self.assertIsNone(payload["series_coverage"]["max_points"])
+        self.assertEqual(payload["series_coverage"]["request_id"], "cursor-1")
 
     def test_get_bars_excludes_unknown_session_boundary_bars_before_aggregation(self) -> None:
         base_ts = datetime(2026, 4, 16, 8, 44, 0)
@@ -672,6 +1093,8 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
         metadata = service.create_session(
             start=monday,
             end=monday,
+            available_start=friday,
+            available_end=monday,
             set_as_default=True,
         )
 
@@ -687,8 +1110,84 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
         self.assertIsNotNone(payload)
         self.assertEqual(payload["bars"][0]["time"], "2026-04-17T13:44:00")
         self.assertEqual(payload["session"]["session_id"], metadata["session_id"])
-        self.assertTrue(payload["partial"])
-        self.assertEqual(payload["series"], {"raw_pressure": []})
+        self.assertFalse(payload["partial"])
+
+    def test_get_bundle_by_bars_computes_indicator_series_beyond_initial_view(self) -> None:
+        base_ts = datetime(2026, 4, 16, 9, 0, 0)
+        ticks = [
+            _tick(
+                ts=base_ts + timedelta(minutes=index),
+                symbol="MTX",
+                price=19450.0 + index,
+                size=1,
+                instrument_key="MTX202605",
+            )
+            for index in range(11)
+        ] + [
+            _tick(
+                ts=base_ts + timedelta(minutes=index),
+                symbol="TXX",
+                price=120.0 + index,
+                size=10 + index,
+                instrument_key="TXX20260419400C",
+                contract_month="202604",
+                strike_price=19400.0,
+                call_put="call",
+                tick_direction="up",
+            )
+            for index in range(11)
+        ]
+        bars = [
+            Bar(
+                ts=base_ts + timedelta(minutes=index),
+                trading_day=date(2026, 4, 16),
+                symbol="MTX",
+                contract_month="202605",
+                session="day",
+                open=19440.0 + index,
+                high=19460.0 + index,
+                low=19430.0 + index,
+                close=19450.0 + index,
+                volume=1000.0 + index,
+                open_interest=None,
+                source="stub_replay",
+                instrument_key="MTX202605",
+            )
+            for index in range(11)
+        ]
+        store = DummyStore(ticks, bars=bars)
+        service = OptionPowerReplayService(
+            store=store,
+            option_root="AUTO",
+            expiry_count=2,
+            underlying_symbol="MTX",
+            snapshot_interval_seconds=60.0,
+        )
+        metadata = service.create_session(
+            start=base_ts,
+            end=base_ts + timedelta(minutes=5),
+            available_start=base_ts,
+            available_end=base_ts + timedelta(minutes=10),
+            set_as_default=True,
+        )
+        self.assertTrue(service.wait_until_ready(metadata["session_id"], timeout=2.0))
+
+        payload = service.get_bundle_by_bars(
+            metadata["session_id"],
+            ["raw_pressure"],
+            anchor=base_ts + timedelta(minutes=5),
+            direction="next",
+            bar_count=2,
+            interval="1m",
+        )
+
+        self.assertIsNotNone(payload)
+        self.assertEqual([bar["time"] for bar in payload["bars"]], [
+            "2026-04-16T09:06:00",
+            "2026-04-16T09:07:00",
+        ])
+        self.assertEqual(len(payload["series"]["raw_pressure"]), 2)
+        self.assertFalse(payload["partial"])
 
 
 if __name__ == "__main__":

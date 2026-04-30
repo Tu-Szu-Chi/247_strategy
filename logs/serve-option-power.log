@@ -22,3 +22,11 @@
 {"status": "subscribed", "run_id": "live-20260420T210317-35a1d0c7", "topic_count": 165, "option_roots": ["TX4", "TXY"], "expiry_count": 2, "atm_window": 20, "reference_price": 37435.0}
 {"status": "web_ready", "run_id": "live-20260420T210317-35a1d0c7", "host": "127.0.0.1", "port": 8000, "url": "http://127.0.0.1:8000/"}
 {"status": "waiting_for_session", "run_id": "live-20260420T210317-35a1d0c7", "now": "2026-04-21T05:00:30.621574", "wake_at": "2026-04-21T08:44:40", "session_wake_at": "2026-04-21T08:45:00", "subscribe_lead_seconds": 20.0, "session_scope": "day_and_night"}
+{"status": "connected", "provider": "shioaji", "run_id": "live-20260430T222939-cb8a9481"}
+{"status": "waiting_for_option_roots", "run_id": "live-20260430T222939-cb8a9481", "message": "No option contracts found for roots '[]'.", "retry_in_seconds": 5.0, "available_option_roots": ["TX1", "TX2", "TXO", "TXU", "TXV"], "root_diagnostics": [{"root": "TX1", "contracts": 284, "dated_contracts": 284, "nearest_expiry": "2026-05-06"}, {"root": "TX2", "contracts": 218, "dated_contracts": 218, "nearest_expiry": "2026-05-13"}, {"root": "TXO", "contracts": 1596, "dated_contracts": 1596, "nearest_expiry": "2026-05-20"}, {"root": "TXU", "contracts": 314, "dated_contracts": 314, "nearest_expiry": "2026-05-04"}, {"root": "TXV", "contracts": 280, "dated_contracts": 280, "nearest_expiry": "2026-05-08"}]}
+{"status": "web_ready", "run_id": "live-20260430T222939-cb8a9481", "host": "127.0.0.1", "port": 8000, "url": "http://127.0.0.1:8000/"}
+{"status": "connected", "provider": "shioaji", "run_id": "live-20260430T222939-cb8a9481"}
+{"status": "subscribed", "run_id": "live-20260430T222939-cb8a9481", "topic_count": 165, "option_roots": ["TXU", "TX1"], "expiry_count": 2, "atm_window": 20, "reference_price": 39611.0, "indicator_symbol": "TWII"}
+{"status": "connected", "provider": "shioaji", "run_id": "live-20260430T223814-c0f3a992"}
+{"status": "subscribed", "run_id": "live-20260430T223814-c0f3a992", "topic_count": 165, "option_roots": ["TXU", "TX1"], "expiry_count": 2, "atm_window": 20, "reference_price": 39594.0, "indicator_symbol": "TWII"}
+{"status": "web_ready", "run_id": "live-20260430T223814-c0f3a992", "host": "127.0.0.1", "port": 8000, "url": "http://127.0.0.1:8000/"}

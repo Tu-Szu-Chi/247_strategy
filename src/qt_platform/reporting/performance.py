@@ -1,10 +1,32 @@
 from __future__ import annotations
 
+import csv
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from qt_platform.domain import BacktestResult
+
+FILL_SUMMARY_FIELDS = [
+    "ts",
+    "side",
+    "price",
+    "size",
+    "reason",
+    "signal_state",
+    "bias_signal",
+    "target_direction",
+    "bias_direction",
+    "pressure_index",
+    "raw_pressure",
+    "regime_state",
+    "structure_state",
+    "trend_quality_score",
+    "trend_bias_state",
+    "flow_impulse_score",
+    "flow_state",
+    "range_state",
+]
 
 
 def build_backtest_report_payload(result: BacktestResult, name: str) -> dict[str, Any]:
@@ -25,6 +47,7 @@ def build_backtest_report_payload(result: BacktestResult, name: str) -> dict[str
                 "price": fill.price,
                 "size": fill.size,
                 "reason": fill.reason,
+                "metadata": fill.metadata,
             }
             for fill in result.fills
         ],
@@ -53,6 +76,52 @@ def write_json_report(result: BacktestResult, output_dir: str, name: str) -> Pat
         encoding="utf-8",
     )
     return target
+
+
+def build_annotated_fill_summary_rows(result: BacktestResult) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for fill in result.fills:
+        metadata = fill.metadata or {}
+        rows.append(
+            {
+                "ts": fill.ts.isoformat(),
+                "side": fill.side.value,
+                "price": fill.price,
+                "size": fill.size,
+                "reason": fill.reason,
+                "signal_state": _fill_metadata_value(metadata, "signal_state"),
+                "bias_signal": _fill_metadata_value(metadata, "bias_signal"),
+                "target_direction": _fill_metadata_value(metadata, "target_direction"),
+                "bias_direction": _fill_metadata_value(metadata, "bias_direction"),
+                "pressure_index": _fill_metadata_value(metadata, "pressure_index"),
+                "raw_pressure": _fill_metadata_value(metadata, "raw_pressure"),
+                "regime_state": _fill_metadata_value(metadata, "regime_state"),
+                "structure_state": _fill_metadata_value(metadata, "structure_state"),
+                "trend_quality_score": _fill_metadata_value(metadata, "trend_quality_score"),
+                "trend_bias_state": _fill_metadata_value(metadata, "trend_bias_state"),
+                "flow_impulse_score": _fill_metadata_value(metadata, "flow_impulse_score"),
+                "flow_state": _fill_metadata_value(metadata, "flow_state"),
+                "range_state": _fill_metadata_value(metadata, "range_state"),
+            }
+        )
+    return rows
+
+
+def write_annotated_fill_summary_csv(result: BacktestResult, output_dir: str, name: str) -> Path:
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    target = Path(output_dir) / f"{name}-fills.csv"
+    with target.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=FILL_SUMMARY_FIELDS)
+        writer.writeheader()
+        writer.writerows(build_annotated_fill_summary_rows(result))
+    return target
+
+
+def _fill_metadata_value(metadata: dict[str, Any], name: str) -> Any:
+    indicator_values = metadata.get("indicator_values")
+    if isinstance(indicator_values, dict) and name in indicator_values:
+        return indicator_values[name]
+    return metadata.get(name)
 
 
 def write_html_report(result: BacktestResult, output_dir: str, name: str) -> Path:

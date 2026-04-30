@@ -61,6 +61,7 @@ class Signal:
     reason: str = ""
     execution_mode: str = "next_open"
     target_price: float | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -70,6 +71,7 @@ class Fill:
     price: float
     size: int
     reason: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

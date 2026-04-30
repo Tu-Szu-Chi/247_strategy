@@ -135,10 +135,26 @@ export type OptionPowerSnapshot = {
   warning?: string | null;
 };
 
+export type ContractSideTotals = {
+  cumulative_power: number;
+  power_1m_delta: number;
+};
+
+export type LiveContractTotals = {
+  call: ContractSideTotals;
+  put: ContractSideTotals;
+};
+
+export type LiveSnapshotSummary = Omit<OptionPowerSnapshot, "expiries"> & {
+  underlying_reference_source?: string | null;
+};
+
 export type ReplaySession = {
   session_id: string;
   start: string;
   end: string;
+  available_start?: string | null;
+  available_end?: string | null;
   snapshot_interval_seconds: number;
   option_root: string;
   underlying_symbol: string;
@@ -160,12 +176,26 @@ export type ReplaySession = {
 
 export type ReplaySeriesResponse = {
   series: IndicatorSeriesMap;
+  coverage?: ReplaySeriesCoverage | ReplayBundleCoverage;
   status: ReplayComputeStatus;
   compute_status: ReplayComputeStatus;
   partial: boolean;
   computed_until: string | null;
   progress_ratio: number;
   checkpoint_count: number;
+};
+
+export type ReplaySeriesCoverage = {
+  requested_start: string;
+  requested_end: string;
+  query_start: string;
+  query_end: string;
+  computed_start: string | null;
+  computed_until: string | null;
+  complete: boolean;
+  frame_count: number;
+  max_points?: number | null;
+  request_id?: string | null;
 };
 
 export type ReplayBundleCoverage = {
@@ -182,6 +212,7 @@ export type ReplayBundleCoverage = {
 export type ReplayBundleByBarsResponse = ReplaySeriesResponse & {
   bars: ChartBarPoint[];
   coverage: ReplayBundleCoverage;
+  series_coverage?: ReplaySeriesCoverage;
   session?: ReplaySession;
 };
 
@@ -209,6 +240,15 @@ export type LiveMeta = {
 
 export type LiveSnapshotLatestResponse = {
   snapshot: OptionPowerSnapshot;
+};
+
+export type LiveSnapshotCompactResponse = {
+  updated: boolean;
+  snapshot_time: string | null;
+  snapshot: LiveSnapshotSummary | null;
+  contract_totals: LiveContractTotals | null;
+  series: IndicatorSeriesMap;
+  latest_bar: ChartBarPoint | null;
 };
 
 export type IndicatorSeriesMap = Record<string, ChartSeriesPoint[]>;

@@ -197,6 +197,7 @@ class FixedSizeExecutionPolicy(BaseExecutionPolicy):
                     side=side,
                     size=size,
                     reason=intent.reason,
+                    metadata=dict(intent.metadata),
                 )
             )
         return orders
@@ -249,6 +250,7 @@ class StrategyRuntime:
                 reason=order.reason,
                 execution_mode=order.execution_mode,
                 target_price=order.target_price,
+                metadata=dict(order.metadata),
             )
             for order in orders
         ]

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from qt_platform.domain import BacktestResult, Bar, Fill, Side, Signal, Trade
@@ -26,6 +28,7 @@ def run_backtest(
     strategy: BaseStrategy | BaseStrategyDefinition,
     config: BacktestConfig,
     context_extras_by_ts: dict[Any, dict[str, Any]] | None = None,
+    indicator_series: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
 ) -> BacktestResult:
     cash = config.starting_cash
     pending_signals: list[Signal] = []
@@ -34,6 +37,7 @@ def run_backtest(
     equity_curve: list[tuple] = []
     open_fills: list[Fill] = []
     runtime = StrategyRuntime(strategy) if isinstance(strategy, BaseStrategyDefinition) else None
+    indicator_extras_by_ts = indicator_series_to_context_extras(indicator_series or {})
 
     for index, bar in enumerate(bars):
         if pending_signals:
@@ -43,14 +47,24 @@ def run_backtest(
                     still_pending.append(signal)
                     continue
                 fill_price = signal.target_price if signal.target_price is not None else bar.open
-                fill = Fill(ts=bar.ts, side=signal.side, price=fill_price, size=signal.size, reason=signal.reason)
+                fill = Fill(
+                    ts=bar.ts,
+                    side=signal.side,
+                    price=fill_price,
+                    size=signal.size,
+                    reason=signal.reason,
+                    metadata=dict(signal.metadata),
+                )
                 fills.append(fill)
                 cash = _apply_fill(fill, open_fills, trades, cash)
             pending_signals = still_pending
 
         position_size = _position_size(open_fills)
         average_entry_price = _average_entry_price(open_fills)
-        extras = (context_extras_by_ts or {}).get(bar.ts, {})
+        extras = {
+            **indicator_extras_by_ts.get(bar.ts, {}),
+            **(context_extras_by_ts or {}).get(bar.ts, {}),
+        }
         context = StrategyContext(
             bar=bar,
             minute_features=compute_minute_force_features(bar),
@@ -83,7 +97,14 @@ def run_backtest(
 
         for signal in immediate_signals:
             fill_price = signal.target_price if signal.target_price is not None else bar.close
-            fill = Fill(ts=bar.ts, side=signal.side, price=fill_price, size=signal.size, reason=signal.reason)
+            fill = Fill(
+                ts=bar.ts,
+                side=signal.side,
+                price=fill_price,
+                size=signal.size,
+                reason=signal.reason,
+                metadata=dict(signal.metadata),
+            )
             fills.append(fill)
             cash = _apply_fill(fill, open_fills, trades, cash)
 
@@ -108,6 +129,20 @@ def run_backtest(
         trades=trades,
         metrics=metrics,
     )
+
+
+def indicator_series_to_context_extras(
+    series: Mapping[str, Sequence[Mapping[str, Any]]],
+) -> dict[datetime, dict[str, Any]]:
+    extras_by_ts: dict[datetime, dict[str, Any]] = {}
+    for name, points in series.items():
+        for point in points:
+            raw_time = point.get("time")
+            if raw_time is None:
+                continue
+            ts = raw_time if isinstance(raw_time, datetime) else datetime.fromisoformat(str(raw_time))
+            extras_by_ts.setdefault(ts, {})[name] = point.get("value")
+    return extras_by_ts
 
 
 def _apply_fill(fill: Fill, open_fills: list[Fill], trades: list[Trade], cash: float) -> float:
@@ -145,6 +180,7 @@ def _apply_fill(fill: Fill, open_fills: list[Fill], trades: list[Trade], cash: f
                 price=entry_fill.price,
                 size=entry_fill.size - matched,
                 reason=entry_fill.reason,
+                metadata=dict(entry_fill.metadata),
             )
 
     if remaining > 0:
@@ -155,6 +191,7 @@ def _apply_fill(fill: Fill, open_fills: list[Fill], trades: list[Trade], cash: f
                 price=fill.price,
                 size=remaining,
                 reason=fill.reason,
+                metadata=dict(fill.metadata),
             )
         )
     return cash

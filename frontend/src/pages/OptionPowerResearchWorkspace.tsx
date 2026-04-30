@@ -7,16 +7,55 @@ import {
 import {
   INDICATOR_INTERVAL_OPTIONS,
   resampleSeries,
-  summarizeContractsBySide,
 } from "../features/option-power/series";
-import { selectExpiry } from "../features/option-power/selectors";
 import { useOptionPowerLive } from "../features/option-power/useOptionPowerLive";
 import { useOptionPowerReplay } from "../features/option-power/useOptionPowerReplay";
-import type { IndicatorInterval, OptionPowerSnapshot } from "../features/option-power/types";
+import type { IndicatorInterval, LiveContractTotals, LiveSnapshotSummary } from "../features/option-power/types";
 import styles from "./ResearchPage.module.css";
 
 type OptionPowerResearchWorkspaceProps = {
   mode: "live" | "replay";
+};
+
+export const OPTION_POWER_RESEARCH_SERIES = [
+  "pressure_index",
+  "raw_pressure",
+  "pressure_index_weighted",
+  "raw_pressure_weighted",
+  "regime_state",
+  "structure_state",
+  "trend_score",
+  "chop_score",
+  "reversal_risk",
+  "vwap_distance_bps",
+  "trade_intensity_ratio_30b",
+  "adx_14",
+  "plus_di_14",
+  "minus_di_14",
+  "di_bias_14",
+  "choppiness_14",
+  "compression_score",
+  "expansion_score",
+  "compression_expansion_state",
+  "session_cvd",
+  "cvd_5b_delta",
+  "cvd_15b_delta",
+  "cvd_5b_slope",
+  "cvd_price_alignment",
+  "price_cvd_divergence_15b",
+  "iv_skew",
+  "trend_quality_score",
+  "trend_bias_state",
+  "flow_impulse_score",
+  "flow_state",
+  "range_state",
+  "bias_signal",
+  "signal_state",
+];
+
+const EMPTY_CONTRACT_TOTALS: LiveContractTotals = {
+  call: { cumulative_power: 0, power_1m_delta: 0 },
+  put: { cumulative_power: 0, power_1m_delta: 0 },
 };
 
 export function OptionPowerResearchWorkspace({
@@ -30,45 +69,14 @@ export function OptionPowerResearchWorkspace({
   const [indicatorInterval, setIndicatorInterval] = useState<IndicatorInterval>(
     mode === "replay" ? "5m" : "1m",
   );
-  const [selectedExpiry, setSelectedExpiry] = useState("");
-  const [snapshot, setSnapshot] = useState<OptionPowerSnapshot | null>(null);
+  const [snapshot, setSnapshot] = useState<LiveSnapshotSummary | null>(null);
   const [cursorTime, setCursorTime] = useState("-");
   const [cursorIsoTime, setCursorIsoTime] = useState<string | null>(null);
   const [replayStart, setReplayStart] = useState("");
   const [replayEnd, setReplayEnd] = useState("");
   const [pageError, setPageError] = useState<string | null>(null);
 
-  const requestedSeries = useMemo(
-    () => [
-      "pressure_index",
-      "raw_pressure",
-      "pressure_index_weighted",
-      "raw_pressure_weighted",
-      "regime_state",
-      "structure_state",
-      "trend_score",
-      "chop_score",
-      "reversal_risk",
-      "vwap_distance_bps",
-      "trade_intensity_ratio_30b",
-      "adx_14",
-      "plus_di_14",
-      "minus_di_14",
-      "di_bias_14",
-      "choppiness_14",
-      "compression_score",
-      "expansion_score",
-      "compression_expansion_state",
-      "session_cvd",
-      "cvd_5b_delta",
-      "cvd_15b_delta",
-      "cvd_5b_slope",
-      "cvd_price_alignment",
-      "price_cvd_divergence_15b",
-      "iv_skew",
-    ],
-    [],
-  );
+  const requestedSeries = useMemo(() => OPTION_POWER_RESEARCH_SERIES, []);
   const live = useOptionPowerLive(requestedSeries, mode === "live", liveShowsPricePanel);
   const replay = useOptionPowerReplay(requestedSeries, mode === "replay", indicatorInterval);
 
@@ -93,13 +101,6 @@ export function OptionPowerResearchWorkspace({
       setCursorTime(formatDateTime(snapshot.generated_at));
     }
   }, [snapshot?.generated_at]);
-
-  useEffect(() => {
-    const nextExpiry = snapshot?.expiries?.[0]?.contract_month ?? "";
-    if (nextExpiry && !snapshot?.expiries.some((item) => item.contract_month === selectedExpiry)) {
-      setSelectedExpiry(nextExpiry);
-    }
-  }, [selectedExpiry, snapshot]);
 
   useEffect(() => {
     if (mode === "live") {
@@ -221,13 +222,13 @@ export function OptionPowerResearchWorkspace({
       {
         id: "trend_quality_score",
         label: "Trend Quality",
-        points: deriveTrendQualitySeries(activeSeries, indicatorInterval),
+        points: resampleSeries(activeSeries.trend_quality_score ?? [], indicatorInterval),
         color: "#38bdf8",
       },
       {
         id: "trend_bias_state",
         label: "Trend Bias",
-        points: deriveTrendBiasSeries(activeSeries, indicatorInterval),
+        points: resampleSeries(activeSeries.trend_bias_state ?? [], indicatorInterval),
         color: "#f59e0b",
         kind: "histogram",
         priceScaleId: "left",
@@ -240,13 +241,13 @@ export function OptionPowerResearchWorkspace({
       {
         id: "flow_impulse_score",
         label: "Flow Impulse",
-        points: deriveFlowImpulseSeries(activeSeries, indicatorInterval),
+        points: resampleSeries(activeSeries.flow_impulse_score ?? [], indicatorInterval),
         color: "#22c55e",
       },
       {
         id: "flow_state",
         label: "Flow State",
-        points: deriveFlowStateSeries(activeSeries, indicatorInterval),
+        points: resampleSeries(activeSeries.flow_state ?? [], indicatorInterval),
         color: "#eab308",
         kind: "histogram",
         priceScaleId: "left",
@@ -259,7 +260,7 @@ export function OptionPowerResearchWorkspace({
       {
         id: "range_state",
         label: "Range State",
-        points: deriveRangeStateSeries(activeSeries, indicatorInterval),
+        points: resampleSeries(activeSeries.range_state ?? [], indicatorInterval),
         color: "#c084fc",
         kind: "histogram",
         priceScaleId: "left",
@@ -283,7 +284,7 @@ export function OptionPowerResearchWorkspace({
       {
         id: "signal_state",
         label: "Signal State",
-        points: deriveSignalSeries(activeSeries, indicatorInterval),
+        points: resampleSeries(activeSeries.signal_state ?? [], indicatorInterval),
         color: "#f97316",
         kind: "histogram",
       },
@@ -295,7 +296,7 @@ export function OptionPowerResearchWorkspace({
       {
         id: "bias_signal",
         label: "Bias Signal",
-        points: deriveBiasSeries(activeSeries, indicatorInterval),
+        points: resampleSeries(activeSeries.bias_signal ?? [], indicatorInterval),
         color: "#10b981",
         kind: "histogram",
       },
@@ -322,11 +323,7 @@ export function OptionPowerResearchWorkspace({
     ? `${formatDateTime(replay.windowStart)} -> ${formatDateTime(replay.windowEnd)}`
     : "-";
 
-  const selectedContracts = selectExpiry(snapshot, selectedExpiry)?.contracts ?? [];
-  const contractTotals = useMemo(
-    () => summarizeContractsBySide(selectedContracts),
-    [selectedContracts],
-  );
+  const contractTotals = live.contractTotals ?? EMPTY_CONTRACT_TOTALS;
   const metricTime = mode === "replay"
     ? cursorIsoTime ?? latestSeriesTime(activeSeries)
     : snapshot?.generated_at ?? null;
@@ -514,7 +511,7 @@ export function OptionPowerResearchWorkspace({
           mode={mode}
           onCursorTimeChange={handleCursorTime}
           onVisibleRangeChange={handleVisibleRangeChange}
-          viewKey={mode === "replay" ? `${mode}:${replay.windowStart ?? ""}:${replay.windowEnd ?? ""}` : mode}
+          viewKey={mode === "replay" ? `${mode}:${replay.session?.session_id ?? ""}:${indicatorInterval}` : mode}
         />
       </section>
 
@@ -751,449 +748,4 @@ function regimeLabelFromState(value: number) {
     return "trend_down";
   }
   return "no_data";
-}
-
-function deriveSignalSeries(
-  activeSeries: Record<string, { time: string; value: number }[]>,
-  interval: IndicatorInterval,
-) {
-  const pressureIndex = activeSeries.pressure_index ?? [];
-  const rawPressure = activeSeries.raw_pressure ?? [];
-  const regimeState = activeSeries.regime_state ?? [];
-  const structureState = activeSeries.structure_state ?? [];
-  const intensity = activeSeries.trade_intensity_ratio_30b ?? [];
-  const chop = activeSeries.chop_score ?? [];
-  const adx = activeSeries.adx_14 ?? [];
-  const choppiness = activeSeries.choppiness_14 ?? [];
-  const diBias = activeSeries.di_bias_14 ?? [];
-  const cvdSlope = activeSeries.cvd_5b_slope ?? [];
-  const cvdAlignment = activeSeries.cvd_price_alignment ?? [];
-  const cvdDivergence = activeSeries.price_cvd_divergence_15b ?? [];
-  const rangeState = activeSeries.compression_expansion_state ?? [];
-  const timeSet = new Set<string>();
-  for (const series of [
-    pressureIndex,
-    rawPressure,
-    regimeState,
-    structureState,
-    intensity,
-    chop,
-    adx,
-    choppiness,
-    diBias,
-    cvdSlope,
-    cvdAlignment,
-    cvdDivergence,
-    rangeState,
-  ]) {
-    for (const point of series) {
-      timeSet.add(point.time);
-    }
-  }
-  const pressureIndexMap = new Map(pressureIndex.map((point) => [point.time, Number(point.value ?? 0)]));
-  const rawPressureMap = new Map(rawPressure.map((point) => [point.time, Number(point.value ?? 0)]));
-  const regimeStateMap = new Map(regimeState.map((point) => [point.time, Number(point.value ?? 0)]));
-  const structureStateMap = new Map(structureState.map((point) => [point.time, Number(point.value ?? 0)]));
-  const intensityMap = new Map(intensity.map((point) => [point.time, Number(point.value ?? 0)]));
-  const chopMap = new Map(chop.map((point) => [point.time, Number(point.value ?? 0)]));
-  const adxMap = new Map(adx.map((point) => [point.time, Number(point.value ?? 0)]));
-  const choppinessMap = new Map(choppiness.map((point) => [point.time, Number(point.value ?? 0)]));
-  const diBiasMap = new Map(diBias.map((point) => [point.time, Number(point.value ?? 0)]));
-  const cvdSlopeMap = new Map(cvdSlope.map((point) => [point.time, Number(point.value ?? 0)]));
-  const cvdAlignmentMap = new Map(cvdAlignment.map((point) => [point.time, Number(point.value ?? 0)]));
-  const cvdDivergenceMap = new Map(cvdDivergence.map((point) => [point.time, Number(point.value ?? 0)]));
-  const rangeStateMap = new Map(rangeState.map((point) => [point.time, Number(point.value ?? 0)]));
-
-  const orderedTimes = Array.from(timeSet).sort();
-  const signalPoints = orderedTimes.map((time, timeIndex) => {
-    const previousTime = timeIndex > 0 ? orderedTimes[timeIndex - 1] : null;
-    const now = new Date(time);
-    const pressureHistory = rollingWindowValues(pressureIndexMap, orderedTimes, now, 30);
-    const rawHistory = rollingWindowValues(rawPressureMap, orderedTimes, now, 30);
-    const slopeHistory = rollingWindowValues(cvdSlopeMap, orderedTimes, now, 30);
-    const pressureAbsHistory = pressureHistory.map((value) => Math.abs(value));
-    const rawAbsHistory = rawHistory.map((value) => Math.abs(value));
-    const slopeAbsHistory = slopeHistory.map((value) => Math.abs(value));
-    const biasValue = deriveBiasValue({
-      pressureIndex: pressureIndexMap.get(time) ?? 0,
-      previousPressureIndex: previousTime ? (pressureIndexMap.get(previousTime) ?? 0) : null,
-      regimeState: regimeStateMap.get(time) ?? 0,
-      structureState: structureStateMap.get(time) ?? 0,
-      intensityRatio: intensityMap.get(time) ?? 0,
-    });
-    return {
-      time,
-      value: deriveSignalStateValue({
-      biasValue,
-      regimeState: regimeStateMap.get(time) ?? 0,
-      structureState: structureStateMap.get(time) ?? 0,
-      intensityRatio: intensityMap.get(time) ?? 0,
-      chopScore: chopMap.get(time) ?? 0,
-      pressureIndex: pressureIndexMap.get(time) ?? 0,
-      previousPressureIndex: previousTime ? (pressureIndexMap.get(previousTime) ?? 0) : null,
-      rawPressure: rawPressureMap.get(time) ?? 0,
-      adxValue: adxMap.get(time) ?? 0,
-      choppinessValue: choppinessMap.get(time) ?? 0,
-      diBiasValue: diBiasMap.get(time) ?? 0,
-      cvdSlopeValue: cvdSlopeMap.get(time) ?? 0,
-      cvdAlignmentValue: cvdAlignmentMap.get(time) ?? 0,
-      cvdDivergenceValue: cvdDivergenceMap.get(time) ?? 0,
-      rangeStateValue: rangeStateMap.get(time) ?? 0,
-      strongPressureThreshold: Math.max(rollingQuantile(pressureAbsHistory, 0.60), 3),
-      rawPressureThreshold: Math.max(rollingQuantile(rawAbsHistory, 0.55), 3),
-      flowThreshold: Math.max(rollingQuantile(slopeAbsHistory, 0.65), 1),
-      }),
-    };
-  });
-
-  return resampleSeries(signalPoints, interval);
-}
-
-function deriveBiasSeries(
-  activeSeries: Record<string, { time: string; value: number }[]>,
-  interval: IndicatorInterval,
-) {
-  const pressureIndex = activeSeries.pressure_index ?? [];
-  const regimeState = activeSeries.regime_state ?? [];
-  const structureState = activeSeries.structure_state ?? [];
-  const intensity = activeSeries.trade_intensity_ratio_30b ?? [];
-  const timeSet = new Set<string>();
-  for (const series of [pressureIndex, regimeState, structureState, intensity]) {
-    for (const point of series) {
-      timeSet.add(point.time);
-    }
-  }
-  const pressureIndexMap = new Map(pressureIndex.map((point) => [point.time, Number(point.value ?? 0)]));
-  const regimeStateMap = new Map(regimeState.map((point) => [point.time, Number(point.value ?? 0)]));
-  const structureStateMap = new Map(structureState.map((point) => [point.time, Number(point.value ?? 0)]));
-  const intensityMap = new Map(intensity.map((point) => [point.time, Number(point.value ?? 0)]));
-
-  return resampleSeries(
-    Array.from(timeSet)
-      .sort()
-      .map((time, index, orderedTimes) => {
-        const previousTime = index > 0 ? orderedTimes[index - 1] : null;
-        return {
-          time,
-          value: deriveBiasValue({
-            pressureIndex: pressureIndexMap.get(time) ?? 0,
-            previousPressureIndex: previousTime ? (pressureIndexMap.get(previousTime) ?? 0) : null,
-            regimeState: regimeStateMap.get(time) ?? 0,
-            structureState: structureStateMap.get(time) ?? 0,
-            intensityRatio: intensityMap.get(time) ?? 0,
-          }),
-        };
-      }),
-    interval,
-  );
-}
-
-function deriveTrendQualitySeries(
-  activeSeries: Record<string, { time: string; value: number }[]>,
-  interval: IndicatorInterval,
-) {
-  const adx = activeSeries.adx_14 ?? [];
-  const choppiness = activeSeries.choppiness_14 ?? [];
-  const timeSet = new Set<string>();
-  for (const series of [adx, choppiness]) {
-    for (const point of series) {
-      timeSet.add(point.time);
-    }
-  }
-  const adxMap = new Map(adx.map((point) => [point.time, Number(point.value ?? 0)]));
-  const chopMap = new Map(choppiness.map((point) => [point.time, Number(point.value ?? 0)]));
-  return resampleSeries(
-    Array.from(timeSet)
-      .sort()
-      .map((time) => {
-        const adxValue = adxMap.get(time) ?? 0;
-        const chopValue = chopMap.get(time) ?? 0;
-        const trendQuality = clampNumber((adxValue * 1.4 + (100 - chopValue)) / 2.4, 0, 100);
-        return { time, value: trendQuality };
-      }),
-    interval,
-  );
-}
-
-function deriveTrendBiasSeries(
-  activeSeries: Record<string, { time: string; value: number }[]>,
-  interval: IndicatorInterval,
-) {
-  const adx = activeSeries.adx_14 ?? [];
-  const diBias = activeSeries.di_bias_14 ?? [];
-  const timeSet = new Set<string>();
-  for (const series of [adx, diBias]) {
-    for (const point of series) {
-      timeSet.add(point.time);
-    }
-  }
-  const adxMap = new Map(adx.map((point) => [point.time, Number(point.value ?? 0)]));
-  const diBiasMap = new Map(diBias.map((point) => [point.time, Number(point.value ?? 0)]));
-  return resampleSeries(
-    Array.from(timeSet)
-      .sort()
-      .map((time) => {
-        const adxValue = adxMap.get(time) ?? 0;
-        const biasValue = diBiasMap.get(time) ?? 0;
-        let state = 0;
-        if (adxValue >= 18 && biasValue >= 8) {
-          state = 1;
-        } else if (adxValue >= 18 && biasValue <= -8) {
-          state = -1;
-        }
-        return { time, value: state };
-      }),
-    interval,
-  );
-}
-
-function deriveFlowImpulseSeries(
-  activeSeries: Record<string, { time: string; value: number }[]>,
-  interval: IndicatorInterval,
-) {
-  const cvdSlope = activeSeries.cvd_5b_slope ?? [];
-  const timeSet = new Set<string>();
-  for (const point of cvdSlope) {
-    timeSet.add(point.time);
-  }
-  const slopeMap = new Map(cvdSlope.map((point) => [point.time, Number(point.value ?? 0)]));
-  const orderedTimes = Array.from(timeSet).sort();
-  return resampleSeries(
-    orderedTimes.map((time) => {
-      const now = new Date(time);
-      const slopeHistory = rollingWindowValues(slopeMap, orderedTimes, now, 30).map((value) => Math.abs(value));
-      const slopeThreshold = Math.max(rollingQuantile(slopeHistory, 0.8), 1);
-      const currentSlope = slopeMap.get(time) ?? 0;
-      const impulse = clampNumber((currentSlope / slopeThreshold) * 100, -100, 100);
-      return { time, value: impulse };
-    }),
-    interval,
-  );
-}
-
-function deriveFlowStateSeries(
-  activeSeries: Record<string, { time: string; value: number }[]>,
-  interval: IndicatorInterval,
-) {
-  const alignment = activeSeries.cvd_price_alignment ?? [];
-  const divergence = activeSeries.price_cvd_divergence_15b ?? [];
-  const timeSet = new Set<string>();
-  for (const series of [alignment, divergence]) {
-    for (const point of series) {
-      timeSet.add(point.time);
-    }
-  }
-  const alignmentMap = new Map(alignment.map((point) => [point.time, Number(point.value ?? 0)]));
-  const divergenceMap = new Map(divergence.map((point) => [point.time, Number(point.value ?? 0)]));
-  return resampleSeries(
-    Array.from(timeSet)
-      .sort()
-      .map((time) => {
-        const alignmentValue = alignmentMap.get(time) ?? 0;
-        const divergenceValue = divergenceMap.get(time) ?? 0;
-        if (divergenceValue > 0) {
-          return { time, value: 1 };
-        }
-        if (divergenceValue < 0) {
-          return { time, value: -1 };
-        }
-        return { time, value: alignmentValue };
-      }),
-    interval,
-  );
-}
-
-function deriveRangeStateSeries(
-  activeSeries: Record<string, { time: string; value: number }[]>,
-  interval: IndicatorInterval,
-) {
-  const state = activeSeries.compression_expansion_state ?? [];
-  return resampleSeries(
-    state.map((point) => {
-      const value = Number(point.value ?? 0);
-      if (value < 0) {
-        return { time: point.time, value: -1 };
-      }
-      if (value > 0) {
-        return { time: point.time, value: 1 };
-      }
-      return { time: point.time, value: 0 };
-    }),
-    interval,
-  );
-}
-
-export function deriveSignalStateValue(input: {
-  biasValue: number;
-  regimeState: number;
-  structureState: number;
-  intensityRatio: number;
-  chopScore: number;
-  pressureIndex: number;
-  previousPressureIndex: number | null;
-  rawPressure: number;
-  adxValue: number;
-  choppinessValue: number;
-  diBiasValue: number;
-  cvdSlopeValue: number;
-  cvdAlignmentValue: number;
-  cvdDivergenceValue: number;
-  rangeStateValue: number;
-  strongPressureThreshold: number;
-  rawPressureThreshold: number;
-  flowThreshold: number;
-}) {
-  const pressureSide = resolvePressureSide(input.pressureIndex);
-  const pressureSlope = resolvePressureSlope(input.pressureIndex, input.previousPressureIndex);
-  const active = input.intensityRatio >= 0.95;
-  const strongPressure = Math.abs(input.pressureIndex) >= input.strongPressureThreshold;
-  const supportedRawPressure = Math.abs(input.rawPressure) >= input.rawPressureThreshold;
-  const trendBiasDirection = input.diBiasValue > 8 ? 1 : input.diBiasValue < -8 ? -1 : 0;
-  const flowDirection = input.cvdSlopeValue > input.flowThreshold ? 1 : input.cvdSlopeValue < -input.flowThreshold ? -1 : 0;
-  const trendReady = input.adxValue >= 18 && input.choppinessValue <= 62;
-  if (!active || input.biasValue === 0 || input.rangeStateValue < 0 || input.chopScore > 30) {
-    return 0;
-  }
-  const opposingDivergence = input.cvdDivergenceValue === -input.biasValue;
-  if (opposingDivergence) {
-    return 0;
-  }
-  let supportScore = 0;
-  if (input.structureState === input.biasValue) {
-    supportScore += 2;
-  }
-  if (input.regimeState === input.biasValue) {
-    supportScore += 1;
-  }
-  if (trendBiasDirection === input.biasValue) {
-    supportScore += 1;
-  }
-  if (flowDirection === input.biasValue) {
-    supportScore += 1;
-  }
-  if (input.cvdAlignmentValue === input.biasValue) {
-    supportScore += 1;
-  }
-  if (pressureSupportsBias(pressureSide, pressureSlope, input.biasValue)) {
-    supportScore += 1;
-  }
-  if (trendReady) {
-    supportScore += 1;
-  }
-  if (strongPressure) {
-    supportScore += 1;
-  }
-  if (supportedRawPressure) {
-    supportScore += 1;
-  }
-  if (input.rangeStateValue > 0) {
-    supportScore += 1;
-  }
-  if (supportScore >= 6) {
-    return input.biasValue;
-  }
-  return 0;
-}
-
-export function deriveBiasValue(input: {
-  pressureIndex: number;
-  previousPressureIndex: number | null;
-  regimeState: number;
-  structureState: number;
-  intensityRatio: number;
-}) {
-  const structureDirection = input.structureState > 0 ? 1 : input.structureState < 0 ? -1 : 0;
-  const regimeDirection = input.regimeState > 0 ? 1 : input.regimeState < 0 ? -1 : 0;
-  const pressureSide = resolvePressureSide(input.pressureIndex);
-  const pressureSlope = resolvePressureSlope(input.pressureIndex, input.previousPressureIndex);
-  const active = input.intensityRatio >= 0.95;
-  if (!active) {
-    return 0;
-  }
-  if (
-    input.structureState > 0
-    && pressureSupportsBias(pressureSide, pressureSlope, 1)
-    && input.regimeState >= 0
-  ) {
-    return 1;
-  }
-  if (
-    input.structureState < 0
-    && pressureSupportsBias(pressureSide, pressureSlope, -1)
-    && input.regimeState <= 0
-  ) {
-    return -1;
-  }
-  if (input.structureState > 0 && input.regimeState > 0) {
-    return 1;
-  }
-  if (input.structureState < 0 && input.regimeState < 0) {
-    return -1;
-  }
-  return 0;
-}
-
-export function resolvePressureSide(value: number) {
-  if (value >= 2) {
-    return 1;
-  }
-  if (value <= -2) {
-    return -1;
-  }
-  return 0;
-}
-
-export function resolvePressureSlope(value: number, previousValue: number | null) {
-  if (previousValue === null) {
-    return 0;
-  }
-  const delta = value - previousValue;
-  if (delta >= 2) {
-    return 1;
-  }
-  if (delta <= -2) {
-    return -1;
-  }
-  return 0;
-}
-
-function pressureSupportsBias(side: number, slope: number, bias: number) {
-  if (side !== bias) {
-    return false;
-  }
-  if (bias > 0) {
-    return slope >= 0;
-  }
-  return slope <= 0;
-}
-
-function rollingWindowValues(
-  valueMap: Map<string, number>,
-  orderedTimes: string[],
-  now: Date,
-  minutes: number,
-) {
-  const cutoff = now.getTime() - minutes * 60 * 1000;
-  const values: number[] = [];
-  for (const time of orderedTimes) {
-    const ts = new Date(time).getTime();
-    if (Number.isNaN(ts) || ts < cutoff || ts > now.getTime()) {
-      continue;
-    }
-    values.push(valueMap.get(time) ?? 0);
-  }
-  return values;
-}
-
-function rollingQuantile(values: number[], quantile: number) {
-  if (!values.length) {
-    return 0;
-  }
-  const ordered = [...values].sort((left, right) => left - right);
-  const index = Math.max(0, Math.min(ordered.length - 1, Math.ceil(quantile * ordered.length) - 1));
-  return ordered[index];
-}
-
-function clampNumber(value: number, lower: number, upper: number) {
-  return Math.max(lower, Math.min(value, upper));
 }

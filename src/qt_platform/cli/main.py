@@ -34,7 +34,10 @@ from qt_platform.contracts import (
 )
 from qt_platform.maintenance.service import MaintenanceService
 from qt_platform.providers.finmind import FinMindAdapter
-from qt_platform.reporting.performance import write_backtest_report_bundle
+from qt_platform.reporting.performance import (
+    write_annotated_fill_summary_csv,
+    write_backtest_report_bundle,
+)
 from qt_platform.session import (
     is_in_activation_scope,
     is_in_session_scope,
@@ -43,6 +46,7 @@ from qt_platform.session import (
 )
 from qt_platform.settings import Settings, load_settings
 from qt_platform.storage.factory import build_bar_repository
+from qt_platform.strategies.option_power_signal import OptionPowerSignalStrategy
 from qt_platform.strategies.sma_cross import SmaCrossStrategy
 from qt_platform.symbol_registry import load_symbol_registry
 from qt_platform.web import build_option_power_app
@@ -74,10 +78,21 @@ def main() -> None:
     backtest.add_argument("--strategy", default="sma-cross")
     backtest.add_argument("--fast-window", type=int, default=5)
     backtest.add_argument("--slow-window", type=int, default=20)
+    backtest.add_argument("--trade-size", type=int, default=1)
+    backtest.add_argument("--max-position", type=int, default=1)
     backtest.add_argument("--min-force-score", type=float, default=500.0)
     backtest.add_argument("--min-tick-bias-ratio", type=float, default=0.1)
     backtest.add_argument("--long-only", action="store_true")
     backtest.add_argument("--reference-symbol", default="2330")
+    backtest.add_argument("--with-option-power-indicators", action="store_true")
+    backtest.add_argument("--no-bias-alignment", action="store_true")
+    backtest.add_argument("--hold-through-neutral", action="store_true")
+    backtest.add_argument("--option-root", default="AUTO")
+    backtest.add_argument("--expiry-count", type=int, default=2)
+    backtest.add_argument("--indicator-snapshot-interval-seconds", type=float, default=60.0)
+    backtest.add_argument("--indicator-series", default="")
+    backtest.add_argument("--indicator-wait-timeout-seconds", type=float)
+    backtest.add_argument("--fill-summary-csv", action="store_true")
 
     doctor = subparsers.add_parser("doctor")
     doctor.add_argument("--database-url")
@@ -227,33 +242,85 @@ def _scan_gaps(args: argparse.Namespace, settings: Settings) -> None:
 
 def _backtest(args: argparse.Namespace, settings: Settings) -> None:
     store = build_bar_repository(_database_url(args, settings))
+    start = datetime.fromisoformat(args.start)
+    end = datetime.fromisoformat(args.end)
     bars = store.list_bars(
         timeframe=args.timeframe,
         symbol=root_symbol_for(args.symbol),
-        start=datetime.fromisoformat(args.start),
-        end=datetime.fromisoformat(args.end),
+        start=start,
+        end=end,
     )
     bars = select_symbol_view(args.symbol, bars)
     strategy = _build_strategy(args)
+    indicator_series = _build_backtest_indicator_series(args, store, start, end)
     result = run_backtest(
         bars=bars,
         strategy=strategy,
         config=BacktestConfig(),
+        indicator_series=indicator_series,
     )
+    report_dir = _report_dir(args, settings)
+    report_name = f"{args.symbol}-backtest"
     report, report_json = write_backtest_report_bundle(
         result,
-        _report_dir(args, settings),
-        f"{args.symbol}-backtest",
+        report_dir,
+        report_name,
     )
+    fill_summary = None
+    if getattr(args, "fill_summary_csv", False) or args.strategy == "option-power-signal":
+        fill_summary = write_annotated_fill_summary_csv(result, report_dir, report_name)
     print(f"ending_cash={result.ending_cash:.2f}")
     print(f"report={report}")
     print(f"report_json={report_json}")
+    if fill_summary is not None:
+        print(f"fill_summary_csv={fill_summary}")
 
 
 def _build_strategy(args: argparse.Namespace):
     if args.strategy == "sma-cross":
         return SmaCrossStrategy(fast_window=args.fast_window, slow_window=args.slow_window)
+    if args.strategy == "option-power-signal":
+        return OptionPowerSignalStrategy(
+            trade_size=args.trade_size,
+            max_position=args.max_position,
+            require_bias_alignment=not args.no_bias_alignment,
+            exit_on_neutral=not args.hold_through_neutral,
+        )
     raise ValueError(f"Unsupported strategy: {args.strategy}")
+
+
+def _build_backtest_indicator_series(
+    args: argparse.Namespace,
+    store,
+    start: datetime,
+    end: datetime,
+) -> dict[str, list[dict]] | None:
+    if not _requires_backtest_indicator_series(args):
+        return None
+
+    names = [
+        item.strip()
+        for item in str(getattr(args, "indicator_series", "") or "").split(",")
+        if item.strip()
+    ]
+    replay = OptionPowerReplayService(
+        store=store,
+        option_root=args.option_root,
+        expiry_count=args.expiry_count,
+        underlying_symbol=root_symbol_for(args.symbol),
+        snapshot_interval_seconds=args.indicator_snapshot_interval_seconds,
+    )
+    return replay.build_backtest_indicator_series(
+        start=start,
+        end=end,
+        names=names or None,
+        interval=args.timeframe,
+        wait_timeout=args.indicator_wait_timeout_seconds,
+    )
+
+
+def _requires_backtest_indicator_series(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "with_option_power_indicators", False)) or args.strategy == "option-power-signal"
 
 
 def _build_reference_growth_context(bars: list) -> dict[datetime, dict]:
@@ -880,9 +947,19 @@ def _serve_option_power_replay(args: argparse.Namespace, settings: Settings) -> 
         underlying_symbol=args.underlying_symbol,
         snapshot_interval_seconds=args.snapshot_interval_seconds,
     )
+    requested_start = datetime.fromisoformat(args.start)
+    requested_end = datetime.fromisoformat(args.end)
+    available_start, available_end = _replay_available_bounds(
+        store,
+        symbol=args.underlying_symbol,
+        requested_start=requested_start,
+        requested_end=requested_end,
+    )
     metadata = replay.create_session(
-        start=datetime.fromisoformat(args.start),
-        end=datetime.fromisoformat(args.end),
+        start=requested_start,
+        end=requested_end,
+        available_start=available_start,
+        available_end=available_end,
         set_as_default=True,
     )
     app = build_option_power_app(replay_service=replay)
@@ -903,6 +980,21 @@ def _serve_option_power_replay(args: argparse.Namespace, settings: Settings) -> 
         args.log_file,
     )
     uvicorn.run(app, host=args.host, port=args.port, log_level="info", access_log=False)
+
+
+def _replay_available_bounds(
+    store,
+    *,
+    symbol: str,
+    requested_start: datetime,
+    requested_end: datetime,
+) -> tuple[datetime, datetime]:
+    if hasattr(store, "bar_time_bounds"):
+        bounds = store.bar_time_bounds("1m", symbol)
+        if bounds is not None:
+            start, end = bounds
+            return min(start, requested_start), max(end, requested_end)
+    return requested_start, requested_end
 
 
 def _benchmark_replay(args: argparse.Namespace, settings: Settings) -> None:

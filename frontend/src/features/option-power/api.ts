@@ -3,7 +3,7 @@ import type {
   IndicatorSeriesMap,
   IndicatorInterval,
   LiveMeta,
-  LiveSnapshotLatestResponse,
+  LiveSnapshotCompactResponse,
   ReplayBundleByBarsResponse,
   ReplayProgress,
   ReplaySeriesResponse,
@@ -44,9 +44,25 @@ export async function getLiveBundle(seriesNames: string[], includeBars = true) {
       ? fetchJson<ChartBarPoint[]>("/api/option-power/live/bars")
       : Promise.resolve([] as ChartBarPoint[]),
     fetchJson<IndicatorSeriesMap>(`/api/option-power/live/series?names=${names}`),
-    fetchJson<LiveSnapshotLatestResponse>("/api/option-power/live/snapshot/latest"),
+    fetchJson<LiveSnapshotCompactResponse>(`/api/option-power/live/snapshot/latest?compact=true&names=${names}&include_bar=${includeBars ? "true" : "false"}`),
   ]);
   return { meta, bars, series, latest };
+}
+
+export async function getLiveLatest(
+  seriesNames: string[],
+  since?: string | null,
+  includeBar = true,
+): Promise<LiveSnapshotCompactResponse> {
+  const search = new URLSearchParams({
+    compact: "true",
+    names: seriesNames.join(","),
+    include_bar: includeBar ? "true" : "false",
+  });
+  if (since) {
+    search.set("since", since);
+  }
+  return fetchJson<LiveSnapshotCompactResponse>(`/api/option-power/live/snapshot/latest?${search.toString()}`);
 }
 
 export async function getReplayDefault(): Promise<ReplaySession> {
@@ -68,6 +84,8 @@ export async function getReplayBundle(
   interval: IndicatorInterval,
   seriesNames: string[],
   signal?: AbortSignal,
+  maxPoints?: number,
+  requestId?: string,
 ) {
   const names = encodeURIComponent(seriesNames.join(","));
   const search = new URLSearchParams({
@@ -75,6 +93,12 @@ export async function getReplayBundle(
     end,
     interval,
   });
+  if (maxPoints !== undefined) {
+    search.set("max_points", String(maxPoints));
+  }
+  if (requestId !== undefined) {
+    search.set("request_id", requestId);
+  }
   const payload = await fetchJson<ReplaySeriesResponse & { bars: ChartBarPoint[] }>(
     `/api/option-power/replay/sessions/${sessionId}/bundle?names=${names}&${search.toString()}`,
     { signal },
@@ -90,6 +114,8 @@ export async function getReplayBundleByBars(
   interval: IndicatorInterval,
   seriesNames: string[],
   signal?: AbortSignal,
+  maxPoints?: number,
+  requestId?: string,
 ) {
   const names = encodeURIComponent(seriesNames.join(","));
   const search = new URLSearchParams({
@@ -98,6 +124,12 @@ export async function getReplayBundleByBars(
     bar_count: String(barCount),
     interval,
   });
+  if (maxPoints !== undefined) {
+    search.set("max_points", String(maxPoints));
+  }
+  if (requestId !== undefined) {
+    search.set("request_id", requestId);
+  }
   const payload = await fetchJson<ReplayBundleByBarsResponse>(
     `/api/option-power/replay/sessions/${sessionId}/bundle-by-bars?names=${names}&${search.toString()}`,
     { signal },

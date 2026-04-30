@@ -153,12 +153,25 @@ def build_option_power_app(runtime_service=None, replay_service=None):
             raise HTTPException(status_code=404, detail="Replay session not found.")
 
         async def event_stream():
+            last_ready_until: str | None = None
             while True:
                 payload = replay_service.get_progress(session_id)
                 if payload is None:
                     yield "event: error\ndata: {}\n\n"
                     return
                 yield f"event: progress\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                computed_until = payload.get("computed_until")
+                if computed_until and computed_until != last_ready_until:
+                    metadata = replay_service.get_session_metadata(session_id) or {}
+                    range_payload = {
+                        "session_id": session_id,
+                        "start": metadata.get("start"),
+                        "end": computed_until,
+                        "computed_until": computed_until,
+                        "compute_status": payload.get("compute_status"),
+                    }
+                    yield f"event: range_ready\ndata: {json.dumps(range_payload, ensure_ascii=False)}\n\n"
+                    last_ready_until = computed_until
                 if payload.get("compute_status") in {"ready", "failed"}:
                     return
                 await asyncio.sleep(0.5)
@@ -180,6 +193,7 @@ def build_option_power_app(runtime_service=None, replay_service=None):
         start: str | None = Query(None),
         end: str | None = Query(None),
         interval: str = Query("1m"),
+        max_points: int | None = Query(None),
     ):
         if replay_service is None:
             raise HTTPException(status_code=404, detail="Replay service is not enabled.")
@@ -187,6 +201,7 @@ def build_option_power_app(runtime_service=None, replay_service=None):
             resolved_start = datetime.fromisoformat(start) if start else None
             resolved_end = datetime.fromisoformat(end) if end else None
             _validate_replay_interval(interval)
+            _validate_max_points(max_points)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         payload = replay_service.get_bars(
@@ -194,6 +209,7 @@ def build_option_power_app(runtime_service=None, replay_service=None):
             start=resolved_start,
             end=resolved_end,
             interval=interval,
+            max_points=max_points,
         )
         if payload is None:
             raise HTTPException(status_code=404, detail="Replay session not found.")
@@ -206,6 +222,8 @@ def build_option_power_app(runtime_service=None, replay_service=None):
         start: str | None = Query(None),
         end: str | None = Query(None),
         interval: str = Query("1m"),
+        max_points: int | None = Query(None),
+        request_id: str | None = Query(None),
     ):
         if replay_service is None:
             raise HTTPException(status_code=404, detail="Replay service is not enabled.")
@@ -214,6 +232,7 @@ def build_option_power_app(runtime_service=None, replay_service=None):
             resolved_start = datetime.fromisoformat(start) if start else None
             resolved_end = datetime.fromisoformat(end) if end else None
             _validate_replay_interval(interval)
+            _validate_max_points(max_points)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         payload = replay_service.get_series_payload(
@@ -222,6 +241,8 @@ def build_option_power_app(runtime_service=None, replay_service=None):
             start=resolved_start,
             end=resolved_end,
             interval=interval,
+            max_points=max_points,
+            request_id=request_id,
         )
         if payload is None:
             raise HTTPException(status_code=404, detail="Replay session not found.")
@@ -234,6 +255,8 @@ def build_option_power_app(runtime_service=None, replay_service=None):
         start: str | None = Query(None),
         end: str | None = Query(None),
         interval: str = Query("1m"),
+        max_points: int | None = Query(None),
+        request_id: str | None = Query(None),
     ):
         if replay_service is None:
             raise HTTPException(status_code=404, detail="Replay service is not enabled.")
@@ -242,6 +265,7 @@ def build_option_power_app(runtime_service=None, replay_service=None):
             resolved_start = datetime.fromisoformat(start) if start else None
             resolved_end = datetime.fromisoformat(end) if end else None
             _validate_replay_interval(interval)
+            _validate_max_points(max_points)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         payload = replay_service.get_bundle(
@@ -250,6 +274,8 @@ def build_option_power_app(runtime_service=None, replay_service=None):
             start=resolved_start,
             end=resolved_end,
             interval=interval,
+            max_points=max_points,
+            request_id=request_id,
         )
         if payload is None:
             raise HTTPException(status_code=404, detail="Replay session not found.")
@@ -263,6 +289,8 @@ def build_option_power_app(runtime_service=None, replay_service=None):
         direction: str = Query("next"),
         bar_count: int = Query(300),
         interval: str = Query("1m"),
+        max_points: int | None = Query(None),
+        request_id: str | None = Query(None),
     ):
         if replay_service is None:
             raise HTTPException(status_code=404, detail="Replay service is not enabled.")
@@ -274,6 +302,7 @@ def build_option_power_app(runtime_service=None, replay_service=None):
                 raise ValueError(f"Unsupported replay bar direction: {direction}")
             if bar_count <= 0:
                 raise ValueError("Replay bar_count must be greater than 0.")
+            _validate_max_points(max_points)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         payload = replay_service.get_bundle_by_bars(
@@ -283,6 +312,8 @@ def build_option_power_app(runtime_service=None, replay_service=None):
             direction=direction,
             bar_count=bar_count,
             interval=interval,
+            max_points=max_points,
+            request_id=request_id,
         )
         if payload is None:
             raise HTTPException(status_code=404, detail="Replay session not found.")
@@ -321,9 +352,27 @@ def build_option_power_app(runtime_service=None, replay_service=None):
         return ApiJSONResponse(runtime_service.live_series(requested_names))
 
     @app.get("/api/option-power/live/snapshot/latest")
-    async def live_snapshot_latest():
+    async def live_snapshot_latest(
+        since: str | None = Query(None),
+        names: str | None = Query(None),
+        compact: bool = Query(False),
+        include_bar: bool = Query(True),
+    ):
         if runtime_service is None:
             raise HTTPException(status_code=404, detail="Live service is not enabled.")
+        if compact:
+            try:
+                resolved_since = datetime.fromisoformat(since) if since else None
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail="Invalid since format.") from exc
+            requested_names = [name.strip() for name in names.split(",") if name.strip()] if names else []
+            return ApiJSONResponse(
+                runtime_service.live_latest_update(
+                    since=resolved_since,
+                    names=requested_names,
+                    include_bar=include_bar,
+                )
+            )
         return ApiJSONResponse({"snapshot": runtime_service.current_snapshot()})
 
     @app.get("/api/option-power/live/snapshot-at")
@@ -345,3 +394,8 @@ def build_option_power_app(runtime_service=None, replay_service=None):
 def _validate_replay_interval(interval: str) -> None:
     if interval not in {"1m", "5m", "15m", "30m"}:
         raise ValueError("Replay interval must be one of: 1m, 5m, 15m, 30m.")
+
+
+def _validate_max_points(max_points: int | None) -> None:
+    if max_points is not None and max_points <= 0:
+        raise ValueError("max_points must be greater than 0.")

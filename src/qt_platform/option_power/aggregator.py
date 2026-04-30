@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import re
 from threading import Lock
+from typing import Any
 
 from qt_platform.domain import CanonicalTick
 from qt_platform.option_iv.surface import build_iv_surface
@@ -13,19 +14,17 @@ from qt_platform.option_power.domain import (
     OptionExpirySnapshot,
     OptionPowerSnapshot,
 )
+from qt_platform.option_power.indicator_backend import (
+    compute_pressure_metrics,
+    directional_flow,
+    normalized_pressure,
+)
 from qt_platform.regime import RegimeFeatureSnapshot
 
 
 MONTH_CONTRACT_PATTERN = re.compile(r"^(?P<year>\d{4})(?P<month>\d{2})$")
 DATE_CONTRACT_PATTERN = re.compile(r"^(?P<year>\d{4})(?P<month>\d{2})(?P<day>\d{2})$")
 WEEKLY_CONTRACT_PATTERN = re.compile(r"^(?P<year>\d{4})(?P<month>\d{2})W(?P<week>\d+)$")
-BASE_PRESSURE_BUY_WEIGHT = 1.0
-BASE_PRESSURE_SELL_WEIGHT = 1.0
-WEIGHTED_PRESSURE_BUY_WEIGHT = 1.0
-WEIGHTED_PRESSURE_SELL_WEIGHT = 1.2
-PRESSURE_SIGMA = 2.0
-SECOND_EXPIRY_WEIGHT = 0.75
-
 
 @dataclass
 class _VolumeEvent:
@@ -226,6 +225,71 @@ class OptionPowerAggregator:
                 warning=warning,
             )
 
+    def indicator_snapshot(
+        self,
+        *,
+        generated_at: datetime,
+        underlying_reference_price: float | None,
+        underlying_reference_source: str | None,
+        regime: RegimeFeatureSnapshot | None = None,
+        include_iv_surface: bool = False,
+    ) -> dict[str, Any]:
+        with self._lock:
+            states = list(self._states.values())
+            pressure_metrics = _compute_pressure_metrics(
+                states=states,
+                underlying_reference_price=underlying_reference_price,
+            )
+            payload: dict[str, Any] = {
+                "generated_at": generated_at.isoformat(),
+                **pressure_metrics,
+                "regime": regime.to_dict() if regime is not None else None,
+            }
+            if include_iv_surface:
+                iv_surface = build_iv_surface(
+                    generated_at=generated_at,
+                    underlying_reference_price=underlying_reference_price,
+                    underlying_reference_source=underlying_reference_source,
+                    expiries=_indicator_expiries(states),
+                )
+                payload["iv_surface"] = iv_surface.to_dict() if iv_surface is not None else None
+            return payload
+
+    def clone(self) -> "OptionPowerAggregator":
+        cloned = OptionPowerAggregator(
+            option_root=self.option_root,
+            rolling_window_seconds=max(1, int(self.rolling_window.total_seconds())),
+        )
+        with self._lock:
+            cloned._session = self._session
+            cloned._states = {
+                key: _ContractState(
+                    instrument_key=state.instrument_key,
+                    symbol=state.symbol,
+                    contract_month=state.contract_month,
+                    strike_price=state.strike_price,
+                    call_put=state.call_put,
+                    last_price=state.last_price,
+                    cumulative_buy_volume=state.cumulative_buy_volume,
+                    cumulative_sell_volume=state.cumulative_sell_volume,
+                    unknown_volume=state.unknown_volume,
+                    rolling_buy_volume=state.rolling_buy_volume,
+                    rolling_sell_volume=state.rolling_sell_volume,
+                    last_tick_ts=state.last_tick_ts,
+                    events=deque(
+                        _VolumeEvent(
+                            ts=event.ts,
+                            buy_volume=event.buy_volume,
+                            sell_volume=event.sell_volume,
+                            unknown_volume=event.unknown_volume,
+                        )
+                        for event in state.events
+                    ),
+                )
+                for key, state in self._states.items()
+            }
+        return cloned
+
     def _rolling_totals(self, state: _ContractState, now: datetime) -> tuple[float, float]:
         self._evict_expired_events(state, now)
         return state.rolling_buy_volume, state.rolling_sell_volume
@@ -267,79 +331,50 @@ def _compute_pressure_metrics(
     states: list[_ContractState],
     underlying_reference_price: float | None,
 ) -> dict[str, int]:
-    if not states or underlying_reference_price is None:
-        return {
-            "raw_pressure": 0,
-            "pressure_index": 0,
-            "raw_pressure_weighted": 0,
-            "pressure_index_weighted": 0,
-        }
+    return compute_pressure_metrics(
+        contracts=[
+            {
+                "contract_month": state.contract_month,
+                "strike_price": state.strike_price,
+                "call_put": state.call_put,
+                "cumulative_buy_volume": state.cumulative_buy_volume,
+                "cumulative_sell_volume": state.cumulative_sell_volume,
+            }
+            for state in states
+        ],
+        underlying_reference_price=underlying_reference_price,
+    )
 
-    strike_step = _infer_strike_step(states)
-    expiry_weights = _expiry_weights(states)
-    raw_score_sum = 0.0
-    raw_abs_sum = 0.0
-    weighted_raw_score_sum = 0.0
-    weighted_raw_abs_sum = 0.0
 
+def _indicator_expiries(states: list[_ContractState]) -> list[dict[str, Any]]:
+    expiries: dict[str, list[dict[str, Any]]] = {}
     for state in states:
-        distance = abs(state.strike_price - underlying_reference_price) / strike_step
-        expiry_weight = expiry_weights.get(state.contract_month, SECOND_EXPIRY_WEIGHT)
-        contract_weight = expiry_weight * _gaussian_weight(distance)
-        buy_volume = state.cumulative_buy_volume
-        sell_volume = state.cumulative_sell_volume
-        raw_score_sum += contract_weight * _directional_flow(
-            call_put=state.call_put,
-            buy_volume=buy_volume,
-            sell_volume=sell_volume,
-            buy_weight=BASE_PRESSURE_BUY_WEIGHT,
-            sell_weight=BASE_PRESSURE_SELL_WEIGHT,
+        expiries.setdefault(state.contract_month, []).append(
+            {
+                "instrument_key": state.instrument_key,
+                "symbol": state.symbol,
+                "contract_month": state.contract_month,
+                "strike_price": state.strike_price,
+                "call_put": state.call_put,
+                "last_price": state.last_price,
+                "last_tick_ts": state.last_tick_ts.isoformat() if state.last_tick_ts else None,
+            }
         )
-        raw_abs_sum += contract_weight * (
-            BASE_PRESSURE_BUY_WEIGHT * buy_volume + BASE_PRESSURE_SELL_WEIGHT * sell_volume
-        )
-        weighted_raw_score_sum += contract_weight * _directional_flow(
-            call_put=state.call_put,
-            buy_volume=buy_volume,
-            sell_volume=sell_volume,
-            buy_weight=WEIGHTED_PRESSURE_BUY_WEIGHT,
-            sell_weight=WEIGHTED_PRESSURE_SELL_WEIGHT,
-        )
-        weighted_raw_abs_sum += contract_weight * (
-            WEIGHTED_PRESSURE_BUY_WEIGHT * buy_volume + WEIGHTED_PRESSURE_SELL_WEIGHT * sell_volume
-        )
-
-    return {
-        "raw_pressure": round(raw_score_sum),
-        "pressure_index": _normalized_pressure(raw_score_sum, raw_abs_sum),
-        "raw_pressure_weighted": round(weighted_raw_score_sum),
-        "pressure_index_weighted": _normalized_pressure(weighted_raw_score_sum, weighted_raw_abs_sum),
-    }
-
-
-def _infer_strike_step(states: list[_ContractState]) -> float:
-    strikes = sorted({state.strike_price for state in states})
-    if len(strikes) < 2:
-        return 1.0
-
-    positive_diffs = [curr - prev for prev, curr in zip(strikes, strikes[1:]) if curr > prev]
-    if not positive_diffs:
-        return 1.0
-    return min(positive_diffs)
-
-
-def _expiry_weights(states: list[_ContractState]) -> dict[str, float]:
-    ordered_contract_months = sorted({state.contract_month for state in states})
-    if not ordered_contract_months:
-        return {}
-    weights = {ordered_contract_months[0]: 1.0}
-    for contract_month in ordered_contract_months[1:]:
-        weights[contract_month] = SECOND_EXPIRY_WEIGHT
-    return weights
-
-
-def _gaussian_weight(distance: float) -> float:
-    return pow(2.718281828459045, -((distance * distance) / (2 * PRESSURE_SIGMA * PRESSURE_SIGMA)))
+    return [
+        {
+            "contract_month": contract_month,
+            "label": _format_expiry_label(contract_month),
+            "contracts": sorted(
+                contracts,
+                key=lambda item: (
+                    float(item["strike_price"]),
+                    0 if item["call_put"] == "call" else 1,
+                    item["instrument_key"],
+                ),
+            ),
+        }
+        for contract_month, contracts in sorted(expiries.items())
+    ]
 
 
 def _directional_flow(
@@ -350,13 +385,14 @@ def _directional_flow(
     buy_weight: float,
     sell_weight: float,
 ) -> float:
-    normalized = (call_put or "").strip().lower()
-    if normalized == "put":
-        return sell_weight * sell_volume - buy_weight * buy_volume
-    return buy_weight * buy_volume - sell_weight * sell_volume
+    return directional_flow(
+        call_put=call_put,
+        buy_volume=buy_volume,
+        sell_volume=sell_volume,
+        buy_weight=buy_weight,
+        sell_weight=sell_weight,
+    )
 
 
 def _normalized_pressure(score_sum: float, abs_sum: float) -> int:
-    if abs_sum <= 0:
-        return 0
-    return round(100 * score_sum / abs_sum)
+    return normalized_pressure(score_sum, abs_sum)
