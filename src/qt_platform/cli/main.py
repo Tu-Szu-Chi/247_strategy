@@ -23,9 +23,19 @@ from qt_platform.csv_import import import_csv_folder
 from qt_platform.domain import LiveRunMetadata
 from qt_platform.features import compute_minute_force_feature_series
 from qt_platform.history_sync import build_history_entries, sync_history_days
+from qt_platform.kronos import (
+    build_probability_indicator_series,
+    parse_probability_target,
+)
+from qt_platform.kronos.adapter import KronosModelConfig, KronosPathPredictor
 from qt_platform.live.recorder import LiveRecordResult, LiveRecorderService
 from qt_platform.live.shioaji_provider import ShioajiLiveProvider
+from qt_platform.live.universe import (
+    live_symbol_for_registry_future,
+    load_registry_stock_symbols,
+)
 from qt_platform.option_power import OptionPowerReplayService, OptionPowerRuntimeService
+from qt_platform.option_power.replay import load_external_indicator_series
 from qt_platform.contracts import (
     is_continuous_symbol,
     resolve_mtx_monthly_contract,
@@ -158,6 +168,7 @@ def main() -> None:
     serve_option_power.add_argument("--expiry-count", type=int, default=2)
     serve_option_power.add_argument("--atm-window", type=int, default=20)
     serve_option_power.add_argument("--underlying-future-symbol", default="MXFR1")
+    serve_option_power.add_argument("--registry")
     serve_option_power.add_argument("--call-put", default="both")
     serve_option_power.add_argument("--batch-size", type=int, default=500)
     serve_option_power.add_argument("--idle-timeout-seconds", type=float, default=30.0)
@@ -180,6 +191,7 @@ def main() -> None:
     serve_option_power_replay.add_argument("--snapshot-interval-seconds", type=float, default=10.0)
     serve_option_power_replay.add_argument("--start", required=True)
     serve_option_power_replay.add_argument("--end", required=True)
+    serve_option_power_replay.add_argument("--kronos-series-json")
     serve_option_power_replay.add_argument("--log-file", default="logs/serve-option-power-replay.log")
 
     benchmark_replay = subparsers.add_parser("benchmark-replay")
@@ -193,6 +205,31 @@ def main() -> None:
     benchmark_replay.add_argument("--window-bars", type=int, default=200)
     benchmark_replay.add_argument("--runs", type=int, default=5)
     benchmark_replay.add_argument("--report-dir", default="reports/benchmarks")
+
+    mtx_probability = subparsers.add_parser("build-mtx-probability-series")
+    mtx_probability.add_argument("--database-url")
+    mtx_probability.add_argument("--symbol", default="MTX")
+    mtx_probability.add_argument("--start", default="2026-04-13T00:00:00")
+    mtx_probability.add_argument("--end", required=True)
+    mtx_probability.add_argument("--history-start")
+    mtx_probability.add_argument("--timeframe", default="1m")
+    mtx_probability.add_argument("--report-dir")
+    mtx_probability.add_argument("--lookback", type=int, default=256)
+    mtx_probability.add_argument("--stride", type=int, default=1)
+    mtx_probability.add_argument("--max-decisions", type=int)
+    mtx_probability.add_argument("--target", action="append")
+    mtx_probability.add_argument("--sample-count", type=int, default=64)
+    mtx_probability.add_argument("--temperature", type=float, default=1.0)
+    mtx_probability.add_argument("--top-k", type=int, default=0)
+    mtx_probability.add_argument("--top-p", type=float, default=0.9)
+    mtx_probability.add_argument("--model", default="NeoQuasar/Kronos-mini")
+    mtx_probability.add_argument("--tokenizer", default="NeoQuasar/Kronos-Tokenizer-2k")
+    mtx_probability.add_argument("--model-revision")
+    mtx_probability.add_argument("--tokenizer-revision")
+    mtx_probability.add_argument("--device")
+    mtx_probability.add_argument("--max-context", type=int, default=512)
+    mtx_probability.add_argument("--output")
+    mtx_probability.add_argument("--verbose", action="store_true")
 
     resolve_contract = subparsers.add_parser("resolve-contract")
     resolve_contract.add_argument("--symbol", default="MTX")
@@ -222,6 +259,8 @@ def main() -> None:
         _serve_option_power_replay(args, settings)
     elif args.command == "benchmark-replay":
         _benchmark_replay(args, settings)
+    elif args.command == "build-mtx-probability-series":
+        _build_mtx_probability_series(args, settings)
     elif args.command == "resolve-contract":
         _resolve_contract(args)
 
@@ -323,6 +362,100 @@ def _requires_backtest_indicator_series(args: argparse.Namespace) -> bool:
     return bool(getattr(args, "with_option_power_indicators", False)) or args.strategy == "option-power-signal"
 
 
+def _build_mtx_probability_series(args: argparse.Namespace, settings: Settings) -> None:
+    store = build_bar_repository(_database_url(args, settings))
+    start = datetime.fromisoformat(args.start)
+    end = datetime.fromisoformat(args.end)
+    history_start = datetime.fromisoformat(args.history_start) if args.history_start else start
+    if history_start > start:
+        raise ValueError("--history-start must be earlier than or equal to --start")
+    bars = store.list_bars(
+        timeframe=args.timeframe,
+        symbol=root_symbol_for(args.symbol),
+        start=history_start,
+        end=end,
+    )
+    bars = select_symbol_view(args.symbol, bars)
+    targets = _parse_probability_targets(args.target)
+    predictor = _build_kronos_path_predictor(args)
+    series = build_probability_indicator_series(
+        bars,
+        predictor=predictor,
+        lookback=args.lookback,
+        targets=targets,
+        sample_count=args.sample_count,
+        temperature=args.temperature,
+        top_k=args.top_k,
+        top_p=args.top_p,
+        verbose=args.verbose,
+        stride=args.stride,
+        max_decisions=args.max_decisions,
+        decision_start=start,
+        decision_end=end,
+    )
+    output_path = _mtx_probability_output_path(args, settings)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "metadata": {
+            "symbol": args.symbol,
+            "root_symbol": root_symbol_for(args.symbol),
+            "timeframe": args.timeframe,
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "history_start": history_start.isoformat(),
+            "bar_count": len(bars),
+            "lookback": args.lookback,
+            "stride": args.stride,
+            "max_decisions": args.max_decisions,
+            "targets": [f"{target.minutes}m:{target.points:g}" for target in targets],
+            "sample_count": args.sample_count,
+            "temperature": args.temperature,
+            "top_k": args.top_k,
+            "top_p": args.top_p,
+            "model": args.model,
+            "tokenizer": args.tokenizer,
+            "model_revision": args.model_revision,
+            "tokenizer_revision": args.tokenizer_revision,
+            "device": args.device,
+            "max_context": args.max_context,
+            "series_names": sorted(series),
+            "point_count": sum(len(points) for points in series.values()),
+        },
+        "series": series,
+    }
+    output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    print(json.dumps({"output": str(output_path), **payload["metadata"]}, ensure_ascii=False, indent=2))
+
+
+def _parse_probability_targets(raw_targets: list[str] | None) -> list:
+    target_values = raw_targets or ["10m:50"]
+    targets = [parse_probability_target(item) for item in target_values if item]
+    if not targets:
+        raise ValueError("at least one --target is required")
+    return targets
+
+
+def _build_kronos_path_predictor(args: argparse.Namespace) -> KronosPathPredictor:
+    return KronosPathPredictor(
+        KronosModelConfig(
+            model_id=args.model,
+            tokenizer_id=args.tokenizer,
+            model_revision=args.model_revision,
+            tokenizer_revision=args.tokenizer_revision,
+            device=args.device,
+            max_context=args.max_context,
+        )
+    )
+
+
+def _mtx_probability_output_path(args: argparse.Namespace, settings: Settings) -> Path:
+    if args.output:
+        return Path(args.output)
+    report_dir = Path(_report_dir(args, settings))
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return report_dir / f"{args.symbol}-mtx-probability-series-{timestamp}.json"
+
+
 def _build_reference_growth_context(bars: list) -> dict[datetime, dict]:
     five_minute = _aggregate_reference_5m(bars)
     context: dict[datetime, dict] = {}
@@ -367,26 +500,9 @@ def _aggregate_reference_5m(bars: list) -> list[dict]:
 
 
 def _runtime_universe_from_registry(registry_path: str) -> tuple[list[str], set[str]]:
-    registry_entries = load_symbol_registry(registry_path)
-    stock_symbols = sorted(
-        {
-            entry.symbol
-            for entry in registry_entries
-            if entry.instrument_type == "stock"
-        }
-    )
-    exact_symbols = sorted({_live_symbol_for_registry_future("MTX"), *stock_symbols})
+    stock_symbols = load_registry_stock_symbols(registry_path)
+    exact_symbols = sorted({live_symbol_for_registry_future("MTX"), *stock_symbols})
     return exact_symbols, {"TXO"}
-
-
-def _live_symbol_for_registry_future(symbol: str) -> str:
-    mapping = {
-        "MTX": "MXFR1",
-        "MXF": "MXFR1",
-        "TX": "MXFR1",
-        "TXF": "MXFR1",
-    }
-    return mapping.get(symbol, mapping.get(root_symbol_for(symbol), symbol))
 
 
 def _resolve_registry_live_universe(
@@ -665,7 +781,8 @@ def _run_runtime_cycle(args: argparse.Namespace, settings: Settings) -> LiveReco
     )
     service = LiveRecorderService(provider=provider, store=store)
     run_id = _new_live_run_id()
-    registry_path = args.registry or settings.sync.registry_path
+    sync_settings = getattr(settings, "sync", None)
+    registry_path = args.registry or getattr(sync_settings, "registry_path", "config/symbols.csv")
     exact_symbols, option_roots = _runtime_universe_from_registry(registry_path)
     provider.connect()
     _emit_runtime_status(
@@ -884,6 +1001,9 @@ def _serve_option_power(args: argparse.Namespace, settings: Settings) -> None:
             "uvicorn is required for serve-option-power. Install with: pip install -e .[web]"
         ) from exc
 
+    registry_path = args.registry or settings.sync.registry_path
+    registry_stock_symbols = load_registry_stock_symbols(registry_path)
+
     provider = ShioajiLiveProvider(
         settings=settings.shioaji,
         idle_timeout_seconds=args.idle_timeout_seconds,
@@ -897,6 +1017,8 @@ def _serve_option_power(args: argparse.Namespace, settings: Settings) -> None:
         expiry_count=args.expiry_count,
         atm_window=args.atm_window,
         underlying_future_symbol=args.underlying_future_symbol,
+        registry_path=registry_path,
+        registry_stock_symbols=registry_stock_symbols,
         call_put=args.call_put,
         session_scope=args.session_scope,
         batch_size=args.batch_size,
@@ -940,12 +1062,14 @@ def _serve_option_power_replay(args: argparse.Namespace, settings: Settings) -> 
         ) from exc
 
     store = build_bar_repository(_database_url(args, settings))
+    external_indicator_series = load_external_indicator_series(args.kronos_series_json)
     replay = OptionPowerReplayService(
         store=store,
         option_root=args.option_root,
         expiry_count=args.expiry_count,
         underlying_symbol=args.underlying_symbol,
         snapshot_interval_seconds=args.snapshot_interval_seconds,
+        external_indicator_series=external_indicator_series,
     )
     requested_start = datetime.fromisoformat(args.start)
     requested_end = datetime.fromisoformat(args.end)
@@ -974,6 +1098,7 @@ def _serve_option_power_replay(args: argparse.Namespace, settings: Settings) -> 
             "snapshot_count": metadata["snapshot_count"],
             "selected_option_roots": metadata["selected_option_roots"],
             "underlying_symbol": metadata["underlying_symbol"],
+            "external_indicator_series": sorted(external_indicator_series),
             "start": metadata["start"],
             "end": metadata["end"],
         },
@@ -1030,11 +1155,34 @@ def _benchmark_replay(args: argparse.Namespace, settings: Settings) -> None:
     background_compute_total_time = time.perf_counter() - compute_started
     progress = replay.get_progress(metadata["session_id"]) or {}
 
+    cold_profile_replay = OptionPowerReplayService(
+        store=store,
+        option_root=args.option_root,
+        expiry_count=args.expiry_count,
+        underlying_symbol=args.symbol,
+        snapshot_interval_seconds=args.snapshot_interval_seconds,
+    )
+    cold_profile_metadata = cold_profile_replay.create_session(start=start, end=end, set_as_default=False)
+    cold_profile_replay.wait_until_ready(
+        cold_profile_metadata["session_id"],
+        timeout=max(1.0, (end - start).total_seconds()),
+    )
+    cold_chart_series_profile = cold_profile_replay.profile_chart_series_payload(
+        cold_profile_metadata["session_id"],
+        series_names,
+        start=start,
+        end=window_end,
+        interval="1m",
+    )
+
     bars_latencies: list[float] = []
     series_latencies: list[float] = []
     snapshot_latencies: list[float] = []
     json_encode_latencies: list[float] = []
     payload_bytes: list[int] = []
+    series_profile_totals: dict[str, float] | None = None
+    series_profile_rows: list[int] = []
+    series_profile_total_seconds: list[float] = []
 
     for _ in range(max(args.runs, 1)):
         started = time.perf_counter()
@@ -1051,6 +1199,30 @@ def _benchmark_replay(args: argparse.Namespace, settings: Settings) -> None:
         ) or {"series": {}}
         series_latencies.append(time.perf_counter() - started)
 
+        profile_payload = replay.profile_chart_series_payload(
+            metadata["session_id"],
+            series_names,
+            start=start,
+            end=window_end,
+            interval="1m",
+        ) or {}
+        profile = profile_payload.get("profile")
+        if isinstance(profile, dict):
+            if series_profile_totals is None:
+                series_profile_totals = {
+                    key: float(value)
+                    for key, value in profile.items()
+                    if isinstance(value, (int, float)) and not isinstance(value, bool)
+                }
+            else:
+                for key, value in profile.items():
+                    if isinstance(value, (int, float)) and not isinstance(value, bool):
+                        series_profile_totals[key] = series_profile_totals.get(key, 0.0) + float(value)
+        if profile_payload.get("series_row_count") is not None:
+            series_profile_rows.append(int(profile_payload["series_row_count"]))
+        if profile_payload.get("total_seconds") is not None:
+            series_profile_total_seconds.append(float(profile_payload["total_seconds"]))
+
         snapshot_at = start + (window_end - start) / 2
         started = time.perf_counter()
         snapshot = replay.get_snapshot_at(metadata["session_id"], snapshot_at) or {}
@@ -1064,6 +1236,11 @@ def _benchmark_replay(args: argparse.Namespace, settings: Settings) -> None:
         ).encode("utf-8")
         json_encode_latencies.append(time.perf_counter() - started)
         payload_bytes.append(len(encoded))
+
+    averaged_series_profile = None
+    if series_profile_totals is not None:
+        run_count = float(max(args.runs, 1))
+        averaged_series_profile = {key: value / run_count for key, value in series_profile_totals.items()}
 
     report = {
         "generated_at": datetime.now().isoformat(),
@@ -1089,6 +1266,12 @@ def _benchmark_replay(args: argparse.Namespace, settings: Settings) -> None:
         "json_encode_time_p95": _percentile(json_encode_latencies, 0.95),
         "payload_bytes_p50": _percentile([float(value) for value in payload_bytes], 0.50),
         "payload_bytes_p95": _percentile([float(value) for value in payload_bytes], 0.95),
+        "cold_chart_series_profile": cold_chart_series_profile,
+        "warm_chart_series_profile_avg": averaged_series_profile,
+        "warm_chart_series_profile_total_p50": _percentile(series_profile_total_seconds, 0.50),
+        "warm_chart_series_profile_total_p95": _percentile(series_profile_total_seconds, 0.95),
+        "warm_chart_series_profile_rows_p50": _percentile([float(value) for value in series_profile_rows], 0.50),
+        "warm_chart_series_profile_rows_p95": _percentile([float(value) for value in series_profile_rows], 0.95),
         "compute_status": progress.get("compute_status"),
         "progress_ratio": progress.get("progress_ratio"),
     }

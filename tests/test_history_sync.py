@@ -44,11 +44,12 @@ class RecordingProvider:
 
 
 class HistorySyncTest(unittest.TestCase):
-    def test_build_history_entries_includes_builtins_and_registry_stocks_only(self) -> None:
+    def test_build_history_entries_uses_registry_entries_only(self) -> None:
         entries = build_history_entries(
             [
                 SymbolRegistryEntry(symbol="2330", root_symbol="2330", market="TWSE", instrument_type="stock"),
                 SymbolRegistryEntry(symbol="MTX", root_symbol="MTX", market="TAIFEX", instrument_type="future"),
+                SymbolRegistryEntry(symbol="TWII", root_symbol="TWII", market="TWSE", instrument_type="index"),
                 SymbolRegistryEntry(symbol="TXO", root_symbol="TXO", market="TAIFEX", instrument_type="option"),
             ]
         )
@@ -60,7 +61,6 @@ class HistorySyncTest(unittest.TestCase):
                 ("2330", "stock"),
                 ("MTX", "future"),
                 ("TWII", "index"),
-                ("TWOTC", "index"),
             },
         )
 
@@ -101,22 +101,20 @@ class HistorySyncTest(unittest.TestCase):
                 progress_callback=logs.append,
             )
 
-        self.assertEqual(result.total_candidates, 4)
-        self.assertEqual(result.processed, 4)
+        self.assertEqual(result.total_candidates, 1)
+        self.assertEqual(result.processed, 1)
         self.assertEqual(result.skipped, 1)
-        self.assertEqual(result.synced, 3)
+        self.assertEqual(result.synced, 0)
         self.assertEqual(result.failed, 0)
-        self.assertEqual({call[0] for call in provider.calls}, {"MTX", "TWII", "TWOTC"})
+        self.assertEqual(provider.calls, [])
         skipped_log = next(item for item in logs if item["status"] == "history_day_skipped")
         self.assertEqual(skipped_log["symbol"], "2330")
         self.assertEqual(skipped_log["trading_day"], "2024-01-01")
         self.assertEqual(skipped_log["action"], "skipped")
         self.assertEqual(skipped_log["message"], "existing_trading_day")
         self.assertEqual(skipped_log["rows_upserted"], 0)
-        self.assertEqual(skipped_log["total_candidates"], 4)
-        self.assertEqual(skipped_log["processed"], 4)
-        synced_symbols = {item["symbol"] for item in logs if item["status"] == "history_day_synced"}
-        self.assertEqual(synced_symbols, {"MTX", "TWII", "TWOTC"})
+        self.assertEqual(skipped_log["total_candidates"], 1)
+        self.assertEqual(skipped_log["processed"], 1)
 
 
 if __name__ == "__main__":

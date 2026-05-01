@@ -4,6 +4,7 @@ import sqlite3
 from dataclasses import asdict
 from datetime import date, datetime
 from pathlib import Path
+from time import perf_counter
 from typing import Iterable
 
 from qt_platform.domain import Bar, CanonicalTick, LiveRunMetadata
@@ -165,7 +166,18 @@ class SQLiteBarStore(BarRepository):
         return len(rows)
 
     def list_bars(self, timeframe: str, symbol: str, start: datetime, end: datetime) -> list[Bar]:
+        rows, _ = self.list_bars_profiled(timeframe, symbol, start, end)
+        return rows
+
+    def list_bars_profiled(
+        self,
+        timeframe: str,
+        symbol: str,
+        start: datetime,
+        end: datetime,
+    ) -> tuple[list[Bar], dict]:
         table = _table_name(timeframe)
+        query_started = perf_counter()
         with sqlite3.connect(self.path) as conn:
             cursor = conn.execute(
                 f"""
@@ -177,7 +189,15 @@ class SQLiteBarStore(BarRepository):
                 (symbol, start.isoformat(), end.isoformat()),
             )
             rows = cursor.fetchall()
-        return [self._row_to_bar(row) for row in rows]
+        db_fetch_seconds = perf_counter() - query_started
+        decode_started = perf_counter()
+        bars = [self._row_to_bar(row) for row in rows]
+        decode_seconds = perf_counter() - decode_started
+        return bars, {
+            "db_fetch_seconds": db_fetch_seconds,
+            "decode_seconds": decode_seconds,
+            "row_count": len(rows),
+        }
 
     def latest_bar_ts(self, timeframe: str, symbol: str) -> datetime | None:
         table = _table_name(timeframe)
@@ -321,9 +341,19 @@ class SQLiteBarStore(BarRepository):
         start: datetime,
         end: datetime,
     ) -> list[CanonicalTick]:
+        rows, _ = self.list_ticks_for_symbols_profiled(symbols, start, end)
+        return rows
+
+    def list_ticks_for_symbols_profiled(
+        self,
+        symbols: list[str],
+        start: datetime,
+        end: datetime,
+    ) -> tuple[list[CanonicalTick], dict]:
         if not symbols:
-            return []
+            return [], {"db_fetch_seconds": 0.0, "decode_seconds": 0.0, "row_count": 0}
         placeholders = ",".join("?" for _ in symbols)
+        query_started = perf_counter()
         with sqlite3.connect(self.path) as conn:
             cursor = conn.execute(
                 f"""
@@ -335,7 +365,46 @@ class SQLiteBarStore(BarRepository):
                 [*symbols, start.isoformat(), end.isoformat()],
             )
             rows = cursor.fetchall()
-        return [self._row_to_tick(row) for row in rows]
+        db_fetch_seconds = perf_counter() - query_started
+        decode_started = perf_counter()
+        ticks = [self._row_to_tick(row) for row in rows]
+        decode_seconds = perf_counter() - decode_started
+        return ticks, {
+            "db_fetch_seconds": db_fetch_seconds,
+            "decode_seconds": decode_seconds,
+            "row_count": len(rows),
+        }
+
+    def list_ticks_for_symbols_replay_profiled(
+        self,
+        symbols: list[str],
+        start: datetime,
+        end: datetime,
+    ) -> tuple[list[CanonicalTick], dict]:
+        if not symbols:
+            return [], {"db_fetch_seconds": 0.0, "decode_seconds": 0.0, "row_count": 0}
+        placeholders = ",".join("?" for _ in symbols)
+        query_started = perf_counter()
+        with sqlite3.connect(self.path) as conn:
+            cursor = conn.execute(
+                f"""
+                SELECT ts, trading_day, symbol, instrument_key, contract_month, strike_price, call_put, session, price, size, tick_direction, source
+                FROM raw_ticks
+                WHERE symbol IN ({placeholders}) AND ts >= ? AND ts <= ?
+                ORDER BY ts, instrument_key, price, size, source
+                """,
+                [*symbols, start.isoformat(), end.isoformat()],
+            )
+            rows = cursor.fetchall()
+        db_fetch_seconds = perf_counter() - query_started
+        decode_started = perf_counter()
+        ticks = [self._row_to_replay_tick(row) for row in rows]
+        decode_seconds = perf_counter() - decode_started
+        return ticks, {
+            "db_fetch_seconds": db_fetch_seconds,
+            "decode_seconds": decode_seconds,
+            "row_count": len(rows),
+        }
 
     def list_tick_symbol_stats(
         self,
@@ -659,6 +728,23 @@ class SQLiteBarStore(BarRepository):
             ask_side_total_vol=float(row[13]) if row[13] is not None else None,
             source=row[14],
             payload_json=row[15],
+        )
+
+    @staticmethod
+    def _row_to_replay_tick(row: tuple) -> CanonicalTick:
+        return CanonicalTick(
+            ts=datetime.fromisoformat(row[0]),
+            trading_day=datetime.fromisoformat(f"{row[1]}T00:00:00").date(),
+            symbol=row[2],
+            instrument_key=row[3],
+            contract_month=row[4],
+            strike_price=float(row[5]) if row[5] is not None else None,
+            call_put=row[6],
+            session=row[7],
+            price=float(row[8]),
+            size=float(row[9]),
+            tick_direction=row[10],
+            source=row[11],
         )
 
     @staticmethod

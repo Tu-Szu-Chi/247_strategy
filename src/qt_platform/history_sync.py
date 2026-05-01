@@ -10,9 +10,6 @@ from qt_platform.storage.base import BarRepository
 from qt_platform.symbol_registry import SymbolRegistryEntry
 
 
-HISTORY_INDEX_SYMBOLS = ("TWII", "TWOTC")
-
-
 @dataclass(frozen=True)
 class HistorySyncItem:
     symbol: str
@@ -44,29 +41,15 @@ class HistorySyncResult:
 
 
 def build_history_entries(registry_entries: list[SymbolRegistryEntry]) -> list[SymbolRegistryEntry]:
-    entries_by_key: dict[tuple[str, str], SymbolRegistryEntry] = {
-        ("MTX", "future"): SymbolRegistryEntry(
-            symbol="MTX",
-            root_symbol="MTX",
-            market="TAIFEX",
-            instrument_type="future",
-        )
-    }
-    for symbol in HISTORY_INDEX_SYMBOLS:
-        entries_by_key[(symbol, "index")] = SymbolRegistryEntry(
-            symbol=symbol,
-            root_symbol=symbol,
-            market="TWSE",
-            instrument_type="index",
-        )
+    entries_by_key: dict[tuple[str, str], SymbolRegistryEntry] = {}
     for entry in registry_entries:
-        if entry.instrument_type != "stock":
+        if entry.instrument_type not in {"stock", "future", "index"}:
             continue
-        entries_by_key[(entry.root_symbol, "stock")] = SymbolRegistryEntry(
+        entries_by_key[(entry.root_symbol, entry.instrument_type)] = SymbolRegistryEntry(
             symbol=entry.symbol,
             root_symbol=entry.root_symbol,
             market=entry.market,
-            instrument_type="stock",
+            instrument_type=entry.instrument_type,
         )
     return list(entries_by_key.values())
 

@@ -1,8 +1,18 @@
 PyYAML<7.0,>=6.0
+polars<2.0,>=1.0
 psycopg[binary]<4.0,>=3.2
 
 [dev]
 pytest<9.0,>=8.0
+
+[kronos]
+einops<0.9,>=0.8
+huggingface_hub<1.0,>=0.24
+numpy<3.0,>=1.26
+pandas<3.0,>=2.0
+safetensors<1.0,>=0.6
+torch<3.0,>=2.0
+tqdm<5.0,>=4.0
 
 [live]
 shioaji<2.0,>=1.2
@@ -12,4 +22,5 @@ quantstats<0.1,>=0.0.62
 
 [web]
 fastapi<1.0,>=0.115
+orjson<4.0,>=3.10
 uvicorn<1.0,>=0.30

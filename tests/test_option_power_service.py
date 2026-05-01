@@ -31,6 +31,7 @@ class DummyProvider:
 class DummyStore:
     def __init__(self) -> None:
         self.upserted_bars = []
+        self.live_runs = []
 
     def append_ticks(self, ticks):
         return 0
@@ -43,15 +44,25 @@ class DummyStore:
         return 0
 
     def create_live_run(self, metadata) -> None:
+        self.live_runs.append(metadata)
         return None
 
 
 class StreamingProvider(DummyProvider):
-    def __init__(self, ticks, contracts, underlying_contract, indicator_contract=None, indicator_price=19555.0) -> None:
+    def __init__(
+        self,
+        ticks,
+        contracts,
+        underlying_contract,
+        indicator_contract=None,
+        indicator_price=19555.0,
+        symbol_contracts=None,
+    ) -> None:
         super().__init__()
         self._ticks = ticks
         self._contracts = {}
         self._resolved_contract = underlying_contract
+        self._symbol_contracts = symbol_contracts or {}
         self._indicator_contract = indicator_contract or type(
             "IndicatorContract",
             (),
@@ -67,6 +78,8 @@ class StreamingProvider(DummyProvider):
         return ["TX4"], self._option_contracts, 20000.0
 
     def _resolve_contract(self, symbol):
+        if symbol in self._symbol_contracts:
+            return self._symbol_contracts[symbol]
         return self._resolved_contract
 
     def resolve_taiex_contract(self):
@@ -468,6 +481,86 @@ class OptionPowerRuntimeServiceTest(unittest.TestCase):
         self.assertIn("regime_state", metadata["available_series"])
         self.assertIn("adx_14", metadata["available_series"])
         self.assertIn("regime_schema", metadata)
+
+    def test_run_cycle_includes_registry_stocks_in_metadata_and_subscription_log(self) -> None:
+        option_contract = type(
+            "OptionContract",
+            (),
+            {
+                "code": "TX420260420000C",
+                "symbol": "TX4C",
+                "delivery_date": "2026/04/22",
+                "strike_price": 20000.0,
+                "option_right": "call",
+            },
+        )()
+        underlying_contract = type(
+            "UnderlyingContract",
+            (),
+            {
+                "code": "MXF202604",
+                "symbol": "MXFR1",
+                "target_code": "MXFR1",
+            },
+        )()
+        stock_contract = type(
+            "StockContract",
+            (),
+            {
+                "code": "2330",
+                "symbol": "2330",
+                "target_code": "",
+            },
+        )()
+        ticks = [
+            CanonicalTick(
+                ts=datetime(2026, 4, 20, 9, 0, 1),
+                trading_day=date(2026, 4, 20),
+                symbol="2330",
+                instrument_key="2330",
+                contract_month=None,
+                strike_price=None,
+                call_put=None,
+                session="day",
+                price=950.0,
+                size=1.0,
+                tick_direction="up",
+                source="shioaji_live",
+            )
+        ]
+        store = DummyStore()
+        logs = []
+        service = OptionPowerRuntimeService(
+            provider=StreamingProvider(
+                ticks,
+                [option_contract],
+                underlying_contract,
+                symbol_contracts={"2330": stock_contract, "MXFR1": underlying_contract},
+            ),
+            store=store,
+            option_root="AUTO",
+            expiry_count=2,
+            atm_window=20,
+            underlying_future_symbol="MXFR1",
+            call_put="both",
+            session_scope="day_and_night",
+            batch_size=500,
+            snapshot_interval_seconds=5.0,
+            log_callback=logs.append,
+            registry_path="config/symbols.csv",
+            registry_stock_symbols=["2330"],
+        )
+        service.run_id = "test-run"
+
+        service._run_cycle()
+
+        started_runs = [run for run in store.live_runs if run.status == "started"]
+        self.assertTrue(started_runs)
+        self.assertIn('"2330"', started_runs[0].symbols_json)
+        subscribed = next(item for item in logs if item["status"] == "subscribed")
+        self.assertEqual(subscribed["registry_path"], "config/symbols.csv")
+        self.assertEqual(subscribed["registry_stock_count"], 1)
+        self.assertEqual(subscribed["registry_stock_symbols"], ["2330"])
 
 
 if __name__ == "__main__":

@@ -12,6 +12,9 @@ describe("option power research series contract", () => {
         "range_state",
         "bias_signal",
         "signal_state",
+        "mtx_up_50_in_10m_probability",
+        "mtx_down_50_in_10m_probability",
+        "mtx_expected_close_delta_10m",
       ]),
     );
   });

@@ -1,5 +1,6 @@
 param(
     [string]$ConfigPath = "config/config.yaml",
+    [string]$RegistryPath = "config/symbols.csv",
     [string]$UnderlyingFutureSymbol = "MXFR1",
     [string]$ReplayUnderlyingSymbol = "MTX",
     [int]$ExpiryCount = 2,
@@ -42,6 +43,7 @@ $CliArgs = @(
     "-m", "qt_platform.cli.main",
     "--config", $ConfigPath,
     "serve-option-power",
+    "--registry", $RegistryPath,
     "--expiry-count", $ExpiryCount,
     "--atm-window", $AtmWindow,
     "--underlying-future-symbol", $UnderlyingFutureSymbol,
@@ -65,6 +67,7 @@ if ($DatabaseUrl) {
         "--config", $ConfigPath,
         "serve-option-power",
         "--database-url", $DatabaseUrl,
+        "--registry", $RegistryPath,
         "--expiry-count", $ExpiryCount,
         "--atm-window", $AtmWindow,
         "--underlying-future-symbol", $UnderlyingFutureSymbol,
@@ -85,6 +88,7 @@ if ($DatabaseUrl) {
 Write-Host "Starting option power web..." -ForegroundColor Cyan
 Write-Host "Repo root: $RepoRoot"
 Write-Host "Config: $ConfigFullPath"
+Write-Host "Registry: $(Join-Path $RepoRoot $RegistryPath)"
 Write-Host "Live underlying future symbol: $UnderlyingFutureSymbol"
 Write-Host "Replay underlying symbol: $ReplayUnderlyingSymbol"
 Write-Host "Option roots: AUTO nearest $ExpiryCount"

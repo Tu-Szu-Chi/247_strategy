@@ -210,3 +210,200 @@ Not included yet:
 - do not bind strategy code directly to broker SDK payloads
 - do not let UI read database/vendor-specific raw payloads as its primary contract
 - do not mix live orchestration logic into `sync-registry` or historical maintenance paths
+
+## 2026-05-01 Option Power Registry Subscription Plan
+
+Context:
+- `scripts/start-option-power.ps1` currently launches `serve-option-power`.
+- `serve-option-power` subscribes only to:
+  - `underlying_future_symbol`
+  - resolved option contracts from `resolve_option_universe(...)`
+- `runtime` already has the missing piece for registry-driven stock subscription:
+  - load `config/symbols.csv`
+  - keep enabled `instrument_type=stock`
+  - resolve those contracts through `ShioajiLiveProvider`
+  - persist ticks and aggregate `bars_1m`
+- operationally, `runtime` is now deprecated, so registry stock capture must move into the `serve-option-power` process.
+
+Target:
+- make `serve-option-power` optionally subscribe live ticks for `symbols.csv` stocks in the same process that powers the option-power UI
+- keep one long-running process for:
+  - option-power live computation
+  - underlying future live capture
+  - registry stock live capture
+- avoid a second parallel runtime process
+
+### Design Decision
+
+Recommended direction:
+- do not embed the old `_runtime_universe_from_registry()` flow directly into CLI glue only
+- instead, move registry stock resolution into a reusable helper that both `runtime` and `serve-option-power` can call
+- keep option-power as the orchestrator, but let its runtime service own one combined subscription universe
+
+Reason:
+- current `runtime` and `OptionPowerRuntimeService` already duplicate pieces of:
+  - `provider.connect()`
+  - contract resolution
+  - tick persistence
+  - `bars_1m` aggregation
+- copying one more registry branch into `serve-option-power` would increase divergence again
+- the clean direction is "shared universe builder + shared tick persistence semantics", while keeping the option snapshot logic local to option-power
+
+### Proposed Scope
+
+1. CLI and script surface
+- add `--registry` to `serve-option-power`
+- default to `settings.sync.registry_path` when omitted
+- add a switch like `--subscribe-registry-stocks` if you want explicit opt-in
+- simpler default is to always load registry stocks when `registry` exists; this matches the current operational intent better
+- update `scripts/start-option-power.ps1` to pass `--registry config/symbols.csv`
+
+2. Shared registry helpers
+- extract a reusable helper from `cli/main.py`:
+  - current source is `_runtime_universe_from_registry(registry_path)`
+- move it into a dedicated module, for example:
+  - `src/qt_platform/live/universe.py`
+- helper output should be more explicit than the current tuple:
+  - `registry_stock_symbols`
+  - maybe later `registry_future_symbols`
+  - maybe later `registry_option_roots`
+- for this slice, only `stock` entries need to become live subscriptions
+
+3. Option-power runtime subscription model
+- extend `OptionPowerRuntimeService` constructor with registry inputs, for example:
+  - `registry_path: str | None`
+  - or already-parsed `registry_stock_symbols: list[str]`
+- inside `_run_cycle()`:
+  - resolve option contracts as today
+  - resolve `underlying_future_symbol` as today
+  - additionally resolve each registry stock contract through `provider._resolve_contract(symbol)`
+  - build one unified `all_contracts` list:
+    - underlying future
+    - registry stocks
+    - resolved option contracts
+  - de-duplicate by `code` / `target_code`
+  - stream through one `stream_ticks_from_contracts(...)`
+
+4. Persistence expectations
+- no new storage table is required
+- existing live tick persistence path already writes:
+  - `raw_ticks`
+  - aggregated `bars_1m`
+  - minute force features
+- this means once registry stocks are in the unified contract list, `2330` and peers will automatically land in `bars_1m`
+- `LiveRunMetadata.symbols_json` and `codes_json` should include registry stocks so post-run inspection is accurate
+
+5. Logging and observability
+- current option-power logs report subscription status, but not registry composition
+- add fields such as:
+  - `registry_path`
+  - `registry_stock_count`
+  - `registry_stock_symbols`
+  - `topic_count`
+- when registry loading fails:
+  - fail fast if the feature is considered required for production
+  - otherwise emit warning and continue with option-only mode
+- for your current setup, fail fast is safer; silent degradation is exactly how `2330` got stale unnoticed
+
+### Refactor Boundary
+
+Keep:
+- option-power-specific snapshot generation
+- option-power replay service
+- option root resolution logic
+
+Share or extract:
+- registry parsing and filtering
+- live universe assembly
+- contract de-duplication
+
+Do not do in this slice:
+- merge the entire deprecated `runtime` scheduler into option-power
+- add multi-threaded dual consumers on the same provider queue
+- create a second independent `LiveRecorderService.record(...)` loop inside option-power
+
+Reason:
+- `ShioajiLiveProvider` exposes a single streaming queue
+- two concurrent consumers in one process would race and split ticks unpredictably
+- the correct model is one stream consumer, one persistence path, one runtime owner
+
+### Implementation Sketch
+
+Suggested sequence:
+
+1. Add a small shared helper module for registry live symbols
+- move registry stock extraction out of `cli/main.py`
+- keep behavior identical to current `runtime`
+
+2. Extend `serve-option-power` parser
+- add `--registry`
+- wire it into `_serve_option_power(...)`
+
+3. Extend `OptionPowerRuntimeService`
+- accept `registry_stock_symbols`
+- resolve and append stock contracts inside `_run_cycle()`
+- include them in metadata and subscription log payloads
+
+4. Update `scripts/start-option-power.ps1`
+- pass the registry path explicitly
+- print the registry path in startup output
+
+5. Update docs
+- `README.md`
+- maybe `docs/OPERATIONS.md`
+- clarify that `serve-option-power` is now the canonical live recorder for:
+  - option-power universe
+  - registry stocks
+
+### Testing Plan
+
+Unit tests:
+- registry helper returns only enabled `instrument_type=stock`
+- `serve-option-power` parser accepts `--registry`
+- runtime metadata includes registry symbols when configured
+- contract de-duplication still works when stock, underlying, and option lists overlap
+
+Integration tests:
+- stub provider emits ticks for:
+  - one underlying future
+  - one option contract
+  - one registry stock such as `2330`
+- verify one run persists all three into:
+  - `raw_ticks`
+  - `bars_1m`
+- verify `LiveRunMetadata.symbols_json` contains `2330`
+
+Operational verification:
+- launch `start-option-power.ps1`
+- confirm log contains `registry_stock_count > 0`
+- query PostgreSQL:
+  - latest `bars_1m.ts` for `2330`
+  - latest `bars_1m.ts` for `MXFR1`
+  - recent `live_run_metadata.symbols_json`
+
+### Risks
+
+- More subscribed stock symbols means higher quote traffic and Shioaji usage consumption.
+- The option-power runtime may hit usage thresholds earlier than before.
+- If `symbols.csv` grows large, startup contract resolution latency will increase.
+- UI runtime and data-recorder runtime are now even more tightly coupled, so process failure impacts both monitoring and stock ingestion.
+
+### Mitigations
+
+- start with `stock` entries only, not all registry instrument types
+- log usage status and subscribed topic count prominently
+- consider a future cap such as `enabled` plus `live_subscribe=true` if registry size grows
+- keep `history-sync` as the repair/backfill path for missed intraday sessions
+
+### Recommended Decision
+
+Recommended implementation:
+- make `serve-option-power` the single canonical live process
+- add registry-stock subscription directly into `OptionPowerRuntimeService`
+- reuse the existing registry parsing logic via a shared helper
+- fail fast when the configured registry file is missing or invalid
+
+This gives you one process with clear operational semantics:
+- option-power UI works
+- underlying future and options keep updating
+- `symbols.csv` stocks such as `2330` keep writing into `bars_1m`

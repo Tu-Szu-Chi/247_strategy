@@ -130,3 +130,53 @@ class StorageTimeframesTest(unittest.TestCase):
         self.assertEqual(stats, [{"symbol": "TX4", "first_contract_month": "202604", "tick_count": 2}])
         self.assertIn("idx_raw_ticks_symbol_ts", {row[0] for row in index_rows})
         self.assertIn("idx_bars_1m_symbol_ts", {row[0] for row in index_rows})
+
+    def test_profiled_queries_preserve_results_and_report_counts(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            store = SQLiteBarStore(f"{temp_dir}/bars.db")
+            bar = Bar(
+                ts=datetime(2024, 1, 2, 8, 45),
+                trading_day=datetime(2024, 1, 2).date(),
+                symbol="MTX",
+                contract_month="202401",
+                session="day",
+                open=1,
+                high=2,
+                low=0.5,
+                close=1.5,
+                volume=10,
+                open_interest=None,
+                source="test",
+            )
+            tick = CanonicalTick(
+                ts=datetime(2024, 1, 2, 8, 45),
+                trading_day=datetime(2024, 1, 2).date(),
+                symbol="MTX",
+                instrument_key="MTX202401",
+                contract_month="202401",
+                session="day",
+                price=1.5,
+                size=2.0,
+                source="test",
+            )
+            store.upsert_bars("1m", [bar])
+            store.append_ticks([tick])
+
+            bars, bars_profile = store.list_bars_profiled(
+                "1m",
+                "MTX",
+                datetime(2024, 1, 2, 0, 0),
+                datetime(2024, 1, 2, 23, 59),
+            )
+            ticks, ticks_profile = store.list_ticks_for_symbols_profiled(
+                ["MTX"],
+                datetime(2024, 1, 2, 0, 0),
+                datetime(2024, 1, 2, 23, 59),
+            )
+
+        self.assertEqual(len(bars), 1)
+        self.assertEqual(len(ticks), 1)
+        self.assertEqual(bars_profile["row_count"], 1)
+        self.assertEqual(ticks_profile["row_count"], 1)
+        self.assertGreaterEqual(bars_profile["db_fetch_seconds"], 0.0)
+        self.assertGreaterEqual(ticks_profile["db_fetch_seconds"], 0.0)

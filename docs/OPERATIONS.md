@@ -191,9 +191,7 @@ psql postgresql://postgres:postgres@localhost:5432/trading < trading.sql
 ```
 
 這個指令會：
-- 補 `MTX`
-- 補 `TWII` / `TWOTC`
-- 補 `config/symbols.csv` 裡屬於 `stock` 的 symbol
+- 補 `config/symbols.csv` 裡明確列出的 symbol
 - 補 `1d` 與 `1m`
 - 預設只補到昨天
 - 每個 `timeframe + symbol + trading_day` 都會檢查是否已存在
@@ -254,6 +252,7 @@ psql postgresql://postgres:postgres@localhost:5432/trading < trading.sql
 
 - `serve-option-power`
 - `MXFR1` 作為 live underlying future，寫入後 symbol 正規化為 `MTX`
+- `config/symbols.csv` 內啟用的 `stock` 也會一起訂閱並寫入 `bars_1m`
 - live data + research chart UI
 - 網址：`http://127.0.0.1:8000/`
 - UI 入口：`http://127.0.0.1:8000/research/live`、`http://127.0.0.1:8000/research/replay`

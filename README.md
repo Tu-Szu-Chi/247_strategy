@@ -71,6 +71,7 @@ build 完成後，`serve-option-power` / `serve-option-power-replay` 的 `/` 與
 
 - live data subscribe
 - live data record
+- `symbols.csv` 內 `stock` 的 live ticks 與 `bars_1m`
 - 手動建立 replay session：`POST /api/option-power/replay/sessions`
 
 也就是說，若你的需求是同時看 `Research Live` 與 `Research Replay`，通常只需要啟動一個 `serve-option-power` process。
@@ -99,7 +100,7 @@ PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml do
 ```
 
 ### `history-sync`
-- 用途: 補 `MTX`、`TWII`、`TWOTC`、以及 `symbols.csv` 內 `stock` 的 `1d/1m`
+- 用途: 完全依照 `symbols.csv` 回補 registry 內標的的 `1d/1m`
 - 規則:
   - 預設只補到昨天
   - 逐個檢查 `timeframe + symbol + trading_day`
@@ -171,6 +172,8 @@ PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml im
 
 ### `runtime`
 - 用途: 長時間常駐的 live 錄製程式
+- 備註:
+  - 目前仍可用，但正式 live 主流程已優先改由 `serve-option-power` 承接
 - 固定 universe:
   - `MTX` live tick
   - 最近兩檔台指選擇權 roots 的 live tick
@@ -248,13 +251,13 @@ PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml mi
 - `MTX_MAIN` is supported as a continuous monthly-contract view for read-side workflows such as backtest and doctor.
 - `history-sync` uses `timeframe + symbol + trading_day` existence checks before requesting data.
 - `history-sync` only syncs through yesterday, so it does not compete with `runtime` for same-day writes.
-- `history-sync` currently covers `MTX`, `TWII`, `TWOTC`, and `symbols.csv` entries with `instrument_type=stock`.
+- `history-sync` is registry-driven and only covers symbols explicitly present in `config/symbols.csv`.
 - `import-csv-folder` can import broker-exported 1-minute OHLCV CSV files directly into the repository layer.
 - The current CSV importer expects columns `Symbol,Date,Time,Open,High,Low,Close,TotalVolume`, while optional `UpTicks/DownTicks` are supported when present.
 - Broker CSV import stores optional `UpTicks/DownTicks` into `bars_1m.up_ticks` / `bars_1m.down_ticks`.
 - `raw_ticks` is now a first-class table for future live recording. The current stub recorder can already persist canonical ticks and aggregate them into `bars_1m`.
 - `TWOTC` is stored as an index-like series with `instrument_key=index:TWOTC`. A bare `instrument_key=index` would be too ambiguous once more indices are imported.
-- `config/symbols.csv` is now used operationally only for registry stocks in `runtime` and `history-sync`.
+- `config/symbols.csv` is now used operationally for registry stocks in `serve-option-power`, `runtime`, and `history-sync`.
 - `TaiwanFuturesTick` requires a Sponsor-capable FinMind account. With a free-level token, `1m` backfill will fail upstream even though the pipeline is implemented.
 - Important data structures are documented in `docs/SCHEMA.md`.
 - Data-source boundaries and pipeline design are documented in `docs/DATA_PIPELINE.md`.

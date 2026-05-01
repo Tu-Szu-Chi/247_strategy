@@ -51,6 +51,9 @@ export const OPTION_POWER_RESEARCH_SERIES = [
   "range_state",
   "bias_signal",
   "signal_state",
+  "mtx_up_50_in_10m_probability",
+  "mtx_down_50_in_10m_probability",
+  "mtx_expected_close_delta_10m",
 ];
 
 const EMPTY_CONTRACT_TOTALS: LiveContractTotals = {
@@ -303,6 +306,30 @@ export function OptionPowerResearchWorkspace({
     ],
     [activeSeries, indicatorInterval],
   );
+  const kronosPanelSeries = useMemo<IndicatorPanelSeries[]>(
+    () => [
+      {
+        id: "mtx_up_50_in_10m_probability",
+        label: "Up 50 / 10m",
+        points: resampleSeries(activeSeries.mtx_up_50_in_10m_probability ?? [], indicatorInterval),
+        color: "#22c55e",
+      },
+      {
+        id: "mtx_down_50_in_10m_probability",
+        label: "Down 50 / 10m",
+        points: resampleSeries(activeSeries.mtx_down_50_in_10m_probability ?? [], indicatorInterval),
+        color: "#ef4444",
+      },
+      {
+        id: "mtx_expected_close_delta_10m",
+        label: "Expected Delta",
+        points: resampleSeries(activeSeries.mtx_expected_close_delta_10m ?? [], indicatorInterval),
+        color: "#38bdf8",
+        dashed: true,
+      },
+    ],
+    [activeSeries, indicatorInterval],
+  );
 
   const activeStatus = mode === "live"
     ? live.meta?.status ?? live.error ?? "-"
@@ -503,6 +530,7 @@ export function OptionPowerResearchWorkspace({
           cvdSeries={cvdPanelSeries}
           rangeStateSeries={rangeStatePanelSeries}
           ivSkewSeries={ivSkewPanelSeries}
+          kronosSeries={kronosPanelSeries}
           visiblePanelIds={
             mode === "live"
               ? ["pressure", "regime", "bias", "signal", "chop", "structure", "cvd", "rangeState", "ivSkew"]

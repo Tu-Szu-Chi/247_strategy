@@ -71,6 +71,8 @@ class OptionPowerRuntimeService:
         batch_size: int,
         snapshot_interval_seconds: float,
         log_callback,
+        registry_path: str | None = None,
+        registry_stock_symbols: list[str] | None = None,
     ) -> None:
         self.provider = provider
         self.store = store
@@ -78,6 +80,8 @@ class OptionPowerRuntimeService:
         self.expiry_count = expiry_count
         self.atm_window = atm_window
         self.underlying_future_symbol = underlying_future_symbol
+        self.registry_path = registry_path
+        self.registry_stock_symbols = sorted(set(registry_stock_symbols or []))
         self.call_put = call_put
         self.session_scope = session_scope
         self.batch_size = batch_size
@@ -362,6 +366,10 @@ class OptionPowerRuntimeService:
             symbols = [str(getattr(contract, "symbol", "")) for contract in contracts]
             codes = [str(getattr(contract, "code", "")) for contract in contracts]
             underlying_contract = self.provider._resolve_contract(self.underlying_future_symbol)
+            registry_contracts = [
+                self.provider._resolve_contract(symbol)
+                for symbol in self.registry_stock_symbols
+            ]
             indicator_contract = None
             try:
                 indicator_contract = self.provider.resolve_taiex_contract()
@@ -369,7 +377,14 @@ class OptionPowerRuntimeService:
                 self._refresh_day_indicator_snapshot(datetime.now())
             except Exception as exc:
                 self.warning = str(exc)
-            all_contracts = [underlying_contract, *contracts]
+            stock_symbols = [str(getattr(contract, "symbol", "")) for contract in registry_contracts]
+            stock_codes = [str(getattr(contract, "code", "")) for contract in registry_contracts]
+            all_contracts = [underlying_contract, *registry_contracts, *contracts]
+            unique_all_contracts = {}
+            for contract in all_contracts:
+                key = str(getattr(contract, "code", None) or getattr(contract, "symbol", None))
+                unique_all_contracts[key] = contract
+            all_contracts = list(unique_all_contracts.values())
             underlying_code = str(getattr(underlying_contract, "code", "") or self.underlying_future_symbol)
             underlying_target_code = str(getattr(underlying_contract, "target_code", "") or "")
             underlying_identifiers = {
@@ -393,11 +408,11 @@ class OptionPowerRuntimeService:
                 session_scope=self.session_scope,
                 topic_count=len(all_contracts),
                 symbols_json=json.dumps(
-                    [self.underlying_future_symbol, *symbols],
+                    [self.underlying_future_symbol, *stock_symbols, *symbols],
                     ensure_ascii=False,
                 ),
                 codes_json=json.dumps(
-                    [underlying_code, *codes],
+                    [underlying_code, *stock_codes, *codes],
                     ensure_ascii=False,
                 ),
                 option_root=",".join(selected_roots),
@@ -416,6 +431,9 @@ class OptionPowerRuntimeService:
                     "run_id": self.run_id,
                     "topic_count": len(all_contracts),
                     "option_roots": selected_roots,
+                    "registry_path": self.registry_path,
+                    "registry_stock_count": len(self.registry_stock_symbols),
+                    "registry_stock_symbols": self.registry_stock_symbols,
                     "expiry_count": self.expiry_count,
                     "atm_window": self.atm_window,
                     "reference_price": self.subscription_reference_price,

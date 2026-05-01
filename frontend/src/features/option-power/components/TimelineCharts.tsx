@@ -60,6 +60,7 @@ type TimelineChartsProps = {
   cvdSeries: IndicatorPanelSeries[];
   rangeStateSeries: IndicatorPanelSeries[];
   ivSkewSeries: IndicatorPanelSeries[];
+  kronosSeries: IndicatorPanelSeries[];
   visiblePanelIds?: PanelId[];
   mode: "live" | "replay";
   onCursorTimeChange: (ts: string | null) => void;
@@ -67,7 +68,7 @@ type TimelineChartsProps = {
   viewKey?: string;
 };
 
-type PanelId = "price" | "pressure" | "regime" | "bias" | "signal" | "chop" | "structure" | "context" | "trendQuality" | "cvd" | "rangeState" | "ivSkew";
+type PanelId = "price" | "pressure" | "regime" | "bias" | "signal" | "chop" | "structure" | "context" | "trendQuality" | "cvd" | "rangeState" | "ivSkew" | "kronos";
 
 const PANEL_SPECS: Array<{
   id: PanelId;
@@ -173,6 +174,14 @@ const PANEL_SPECS: Array<{
     legend: "call wing - put wing",
     height: 132,
   },
+  {
+    id: "kronos",
+    slot: "indicator",
+    label: "Kronos",
+    title: "Kronos Probability",
+    legend: "up/down hit probability + expected delta",
+    height: 150,
+  },
 ];
 
 export function TimelineCharts({
@@ -188,6 +197,7 @@ export function TimelineCharts({
   cvdSeries,
   rangeStateSeries,
   ivSkewSeries,
+  kronosSeries,
   visiblePanelIds,
   mode,
   onCursorTimeChange,
@@ -207,8 +217,9 @@ export function TimelineCharts({
       cvd: cvdSeries,
       rangeState: rangeStateSeries,
       ivSkew: ivSkewSeries,
+      kronos: kronosSeries,
     }),
-    [biasSeries, chopSeries, contextSeries, cvdSeries, ivSkewSeries, pressureSeries, rangeStateSeries, rawPressureSeries, signalSeries, structureSeries, trendQualitySeries],
+    [biasSeries, chopSeries, contextSeries, cvdSeries, ivSkewSeries, kronosSeries, pressureSeries, rangeStateSeries, rawPressureSeries, signalSeries, structureSeries, trendQualitySeries],
   );
   const visiblePanelKey = visiblePanelIds?.join(",") ?? "";
   const visiblePanels = useMemo(() => {
@@ -249,6 +260,7 @@ export function TimelineCharts({
     cvd: null,
     rangeState: null,
     ivSkew: null,
+    kronos: null,
   });
   const chartsRef = useRef<Record<PanelId, IChartApi | null>>({
     price: null,
@@ -263,6 +275,7 @@ export function TimelineCharts({
     cvd: null,
     rangeState: null,
     ivSkew: null,
+    kronos: null,
   });
   const indicatorSeriesRef = useRef<Record<string, ISeriesApi<"Line">>>({});
   const indicatorHistogramRef = useRef<Record<string, ISeriesApi<"Histogram">>>({});
@@ -292,6 +305,7 @@ export function TimelineCharts({
     cvd: null,
     rangeState: null,
     ivSkew: null,
+    kronos: null,
   });
   const fittedRef = useRef(false);
   const liveAutoFollowRef = useRef(true);
@@ -324,6 +338,7 @@ export function TimelineCharts({
     cvd: new Map(),
     rangeState: new Map(),
     ivSkew: new Map(),
+    kronos: new Map(),
   });
 
   useEffect(() => {
@@ -560,6 +575,7 @@ export function TimelineCharts({
       cvd: charts.cvd ?? null,
       rangeState: charts.rangeState ?? null,
       ivSkew: charts.ivSkew ?? null,
+      kronos: charts.kronos ?? null,
     };
     priceSeriesRef.current = { candle, volume, ma10, ma30, ma60 };
     indicatorSeriesRef.current = indicatorSeries;
@@ -592,6 +608,7 @@ export function TimelineCharts({
         cvd: null,
         rangeState: null,
         ivSkew: null,
+        kronos: null,
       };
       indicatorSeriesRef.current = {};
       indicatorHistogramRef.current = {};
@@ -615,6 +632,7 @@ export function TimelineCharts({
         cvd: null,
         rangeState: null,
         ivSkew: null,
+        kronos: null,
       };
       fittedRef.current = false;
     };

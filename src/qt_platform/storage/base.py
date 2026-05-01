@@ -17,6 +17,20 @@ class BarRepository(ABC):
     def list_bars(self, timeframe: str, symbol: str, start: datetime, end: datetime) -> list[Bar]:
         raise NotImplementedError
 
+    def list_bars_profiled(
+        self,
+        timeframe: str,
+        symbol: str,
+        start: datetime,
+        end: datetime,
+    ) -> tuple[list[Bar], dict]:
+        rows = self.list_bars(timeframe, symbol, start, end)
+        return rows, {
+            "db_fetch_seconds": None,
+            "decode_seconds": None,
+            "row_count": len(rows),
+        }
+
     @abstractmethod
     def latest_bar_ts(self, timeframe: str, symbol: str) -> datetime | None:
         raise NotImplementedError
@@ -71,6 +85,27 @@ class BarRepository(ABC):
         end: datetime,
     ) -> list[CanonicalTick]:
         raise NotImplementedError
+
+    def list_ticks_for_symbols_profiled(
+        self,
+        symbols: list[str],
+        start: datetime,
+        end: datetime,
+    ) -> tuple[list[CanonicalTick], dict]:
+        rows = self.list_ticks_for_symbols(symbols, start, end)
+        return rows, {
+            "db_fetch_seconds": None,
+            "decode_seconds": None,
+            "row_count": len(rows),
+        }
+
+    def list_ticks_for_symbols_replay_profiled(
+        self,
+        symbols: list[str],
+        start: datetime,
+        end: datetime,
+    ) -> tuple[list[CanonicalTick], dict]:
+        return self.list_ticks_for_symbols_profiled(symbols, start, end)
 
     def list_tick_symbol_stats(
         self,

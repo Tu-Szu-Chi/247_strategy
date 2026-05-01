@@ -1,6 +1,5 @@
-phandas/
-Kronos/
-backtrader/
+/phandas/
+/backtrader/
 .idea/
 .venv/
 frontend/node_modules/

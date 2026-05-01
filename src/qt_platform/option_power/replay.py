@@ -4,8 +4,11 @@ from bisect import bisect_left, bisect_right
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+import json
 from math import ceil
+from pathlib import Path
 from threading import Lock, Thread, Timer
+from time import perf_counter
 from typing import Callable
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -140,12 +143,14 @@ class OptionPowerReplayService:
         expiry_count: int,
         underlying_symbol: str,
         snapshot_interval_seconds: float,
+        external_indicator_series: dict[str, list[dict]] | None = None,
     ) -> None:
         self.store = store
         self.option_root = option_root
         self.expiry_count = expiry_count
         self.underlying_symbol = underlying_symbol
         self.snapshot_interval_seconds = snapshot_interval_seconds
+        self.external_indicator_series = _normalize_external_indicator_series(external_indicator_series or {})
         self._lock = Lock()
         self._sessions: dict[str, ReplaySession] = {}
         self._default_session_id: str | None = None
@@ -440,6 +445,17 @@ class OptionPowerReplayService:
                     name=name,
                     max_points=max_points,
                 )
+            elif name in self.external_indicator_series:
+                payload[name] = _downsample_series(
+                    _slice_and_resample_series(
+                        self.external_indicator_series[name],
+                        start=query_start,
+                        end=query_end,
+                        interval=interval,
+                    ),
+                    name=name,
+                    max_points=max_points,
+                )
         partial = not self._window_is_cached(session, query_start, query_end)
         coverage = _series_coverage(
             session,
@@ -602,6 +618,58 @@ class OptionPowerReplayService:
             "session": session.metadata(),
         }
 
+    def profile_chart_series_payload(
+        self,
+        session_id: str,
+        names: list[str],
+        *,
+        start: datetime,
+        end: datetime,
+        interval: str,
+    ) -> dict | None:
+        session = self._sessions.get(session_id)
+        if session is None:
+            return None
+        resolved_start, resolved_end = _resolve_window(session, start, end)
+        query_start, query_end = _expand_window_for_interval(resolved_start, resolved_end, interval)
+        profile: dict[str, float | int | None | str] = {
+            "requested_start": resolved_start.isoformat(),
+            "requested_end": resolved_end.isoformat(),
+            "query_start": query_start.isoformat(),
+            "query_end": query_end.isoformat(),
+            "interval": interval,
+            "include_regime": int(_series_requires_regime(names)),
+            "include_iv_surface": int("iv_skew" in names),
+            "tick_fetch_db_seconds": 0.0,
+            "tick_fetch_decode_seconds": 0.0,
+            "tick_rows_fetched": 0,
+            "bar_fetch_db_seconds": 0.0,
+            "bar_fetch_decode_seconds": 0.0,
+            "bar_rows_fetched": 0,
+            "contract_seed_seconds": 0.0,
+            "replay_loop_seconds": 0.0,
+            "indicator_snapshot_seconds": 0.0,
+            "indicator_series_build_seconds": 0.0,
+            "evaluation_points": 0,
+            "window_count": 0,
+        }
+        started = perf_counter()
+        series = self._build_chart_series_window(
+            session,
+            start=query_start,
+            end=query_end,
+            interval=interval,
+            include_regime=bool(profile["include_regime"]),
+            include_iv_surface=bool(profile["include_iv_surface"]),
+            profile=profile,
+        )
+        total_seconds = perf_counter() - started
+        return {
+            "series_row_count": len(series.get("raw_pressure", [])),
+            "profile": profile,
+            "total_seconds": total_seconds,
+        }
+
     def get_snapshot_at(self, session_id: str, ts: datetime) -> dict | None:
         session = self._sessions.get(session_id)
         if session is None or session.snapshot_count <= 0:
@@ -731,7 +799,7 @@ class OptionPowerReplayService:
             underlying_symbol=self.underlying_symbol,
             selected_option_roots=selected_option_roots,
             snapshot_count=snapshot_count,
-            available_series=_indicator_series_names(),
+            available_series=_indicator_series_names(self.external_indicator_series),
         )
 
     def _build_window_frames(
@@ -885,8 +953,9 @@ class OptionPowerReplayService:
         max_points: int | None,
         request_id: str | None,
     ) -> dict:
-        include_regime = _series_requires_regime(names)
-        include_iv_surface = "iv_skew" in names
+        builtin_names = [name for name in names if name not in self.external_indicator_series]
+        include_regime = _series_requires_regime(builtin_names)
+        include_iv_surface = "iv_skew" in builtin_names
         cache_key = (
             "chart-series",
             query_start,
@@ -896,7 +965,7 @@ class OptionPowerReplayService:
             int(include_iv_surface),
         )
         cached = self._chart_cache_get(session, cache_key)
-        if cached is None:
+        if cached is None and builtin_names:
             indicator_series = self._build_chart_series_window(
                 session,
                 start=query_start,
@@ -924,15 +993,34 @@ class OptionPowerReplayService:
                 },
             )
             cached = self._chart_cache_get(session, cache_key)
+        if cached is None:
+            cached = {
+                "series": {},
+                "coverage": _series_coverage(
+                    session,
+                    requested_start=resolved_start,
+                    requested_end=resolved_end,
+                    query_start=query_start,
+                    query_end=query_end,
+                    complete=True,
+                    computed_start=query_start,
+                    computed_until=query_end,
+                    frame_count=0,
+                ),
+            }
 
-        assert cached is not None
         payload: dict[str, list[dict]] = {}
         for name in names:
-            payload[name] = _downsample_series(
-                list(cached["series"].get(name, [])),
-                name=name,
-                max_points=max_points,
-            )
+            if name in cached["series"]:
+                points = list(cached["series"].get(name, []))
+            else:
+                points = _slice_and_resample_series(
+                    self.external_indicator_series.get(name, []),
+                    start=query_start,
+                    end=query_end,
+                    interval=interval,
+                )
+            payload[name] = _downsample_series(points, name=name, max_points=max_points)
         coverage = dict(cached["coverage"])
         coverage["request_id"] = request_id
         return {
@@ -951,6 +1039,7 @@ class OptionPowerReplayService:
         interval: str,
         include_regime: bool,
         include_iv_surface: bool,
+        profile: dict | None = None,
     ) -> dict[str, list[dict]]:
         snapshot_times: list[str] = []
         snapshots: list[dict] = []
@@ -959,6 +1048,8 @@ class OptionPowerReplayService:
             emit_end = min(end, window_end)
             if emit_end < emit_start:
                 continue
+            if profile is not None:
+                profile["window_count"] = int(profile.get("window_count", 0) or 0) + 1
             window_times, window_snapshots = self._materialize_chart_session_window(
                 session,
                 warm_start=window_start,
@@ -968,10 +1059,18 @@ class OptionPowerReplayService:
                 interval=interval,
                 include_regime=include_regime,
                 include_iv_surface=include_iv_surface,
+                profile=profile,
             )
             snapshot_times.extend(window_times)
             snapshots.extend(window_snapshots)
-        return _build_indicator_series(snapshot_times, snapshots)
+        build_started = perf_counter()
+        indicator_series = _build_indicator_series(snapshot_times, snapshots)
+        if profile is not None:
+            profile["indicator_series_build_seconds"] = (
+                float(profile.get("indicator_series_build_seconds", 0.0) or 0.0)
+                + (perf_counter() - build_started)
+            )
+        return indicator_series
 
     def _materialize_chart_session_window(
         self,
@@ -984,6 +1083,7 @@ class OptionPowerReplayService:
         interval: str,
         include_regime: bool,
         include_iv_surface: bool,
+        profile: dict | None = None,
     ) -> tuple[list[str], list[dict]]:
         checkpoint = self._chart_state_checkpoint_get(
             session,
@@ -997,6 +1097,19 @@ class OptionPowerReplayService:
         latest_future_reference_price: float | None = None
         latest_day_indicator_price: float | None = None
         raw_ticks: list[CanonicalTick] | None = None
+        day_indicator_bars: list[Bar] = []
+        if classify_session(warm_start) == "day" and replay_start <= emit_end:
+            day_indicator_bars = self._session_symbol_bars(
+                session,
+                symbol=DAY_INDICATOR_SYMBOL,
+                window_start=warm_start,
+                window_end=warm_end,
+                start=replay_start,
+                end=emit_end,
+                cache_end=cache_end,
+                profile=profile,
+            )
+        needs_underlying_ticks = include_regime or classify_session(warm_start) != "day" or not day_indicator_bars
         if checkpoint is not None:
             aggregator = checkpoint.aggregator.clone()
             replay_start = checkpoint.processed_until + timedelta(microseconds=1)
@@ -1016,7 +1129,10 @@ class OptionPowerReplayService:
                 start=warm_start,
                 end=emit_end,
                 cache_end=cache_end,
+                include_underlying=needs_underlying_ticks,
+                profile=profile,
             )
+            seed_started = perf_counter()
             option_seed_ticks = [
                 tick
                 for tick in raw_ticks
@@ -1031,6 +1147,11 @@ class OptionPowerReplayService:
                     call_put=contract.call_put or "",
                     session=replay_session if replay_session in {"day", "night"} else "day",
                 )
+            if profile is not None:
+                profile["contract_seed_seconds"] = (
+                    float(profile.get("contract_seed_seconds", 0.0) or 0.0)
+                    + (perf_counter() - seed_started)
+                )
             regime = MtxRegimeAnalyzer()
 
         if raw_ticks is None:
@@ -1041,6 +1162,8 @@ class OptionPowerReplayService:
                 start=replay_start,
                 end=emit_end,
                 cache_end=cache_end,
+                include_underlying=needs_underlying_ticks,
+                profile=profile,
             ) if replay_start <= emit_end else []
         option_ticks = [
             tick
@@ -1053,17 +1176,6 @@ class OptionPowerReplayService:
             key=lambda tick: (tick.ts, tick.instrument_key or "", tick.price, tick.size, tick.source),
         )
 
-        day_indicator_bars: list[Bar] = []
-        if classify_session(warm_start) == "day" and replay_start <= emit_end:
-            day_indicator_bars = self._session_symbol_bars(
-                session,
-                symbol=DAY_INDICATOR_SYMBOL,
-                window_start=warm_start,
-                window_end=warm_end,
-                start=replay_start,
-                end=emit_end,
-                cache_end=cache_end,
-            )
         underlying_bars: list[Bar] = []
         if include_regime and replay_start <= emit_end:
             underlying_bars = self._session_symbol_bars(
@@ -1074,6 +1186,7 @@ class OptionPowerReplayService:
                 start=replay_start,
                 end=emit_end,
                 cache_end=cache_end,
+                profile=profile,
             )
 
         evaluation_times = _interval_evaluation_points(emit_start, emit_end, interval)
@@ -1085,6 +1198,7 @@ class OptionPowerReplayService:
         underlying_bar_index = 0
         last_processed_until = checkpoint.processed_until if checkpoint is not None else None
 
+        replay_started = perf_counter()
         for bucket_start, evaluation_time in evaluation_times:
             while tick_index < len(replay_ticks) and replay_ticks[tick_index].ts <= evaluation_time:
                 tick = replay_ticks[tick_index]
@@ -1115,6 +1229,7 @@ class OptionPowerReplayService:
             )
 
             snapshot_times.append(bucket_start.isoformat())
+            snapshot_started = perf_counter()
             snapshots.append(
                 aggregator.indicator_snapshot(
                     generated_at=evaluation_time,
@@ -1124,7 +1239,18 @@ class OptionPowerReplayService:
                     include_iv_surface=include_iv_surface,
                 )
             )
+            if profile is not None:
+                profile["indicator_snapshot_seconds"] = (
+                    float(profile.get("indicator_snapshot_seconds", 0.0) or 0.0)
+                    + (perf_counter() - snapshot_started)
+                )
             last_processed_until = evaluation_time
+        if profile is not None:
+            profile["replay_loop_seconds"] = (
+                float(profile.get("replay_loop_seconds", 0.0) or 0.0)
+                + (perf_counter() - replay_started)
+            )
+            profile["evaluation_points"] = int(profile.get("evaluation_points", 0) or 0) + len(evaluation_times)
 
         if last_processed_until is not None:
             self._chart_state_checkpoint_put(
@@ -1288,6 +1414,8 @@ class OptionPowerReplayService:
         start: datetime,
         end: datetime,
         cache_end: datetime,
+        include_underlying: bool = True,
+        profile: dict | None = None,
     ) -> list[CanonicalTick]:
         bounded_start = max(start, session.available_start)
         bounded_end = min(end, session.available_end)
@@ -1302,9 +1430,31 @@ class OptionPowerReplayService:
             end=bounded_end,
         )
         if cached is None:
-            replay_symbols = [session.underlying_symbol, *session.selected_option_roots]
+            replay_symbols = list(session.selected_option_roots)
+            if include_underlying:
+                replay_symbols = [session.underlying_symbol, *replay_symbols]
             fetch_end = max(bounded_end, bounded_cache_end)
-            cached = self.store.list_ticks_for_symbols(replay_symbols, bounded_start, fetch_end)
+            profiled = getattr(self.store, "list_ticks_for_symbols_replay_profiled", None)
+            if callable(profiled):
+                cached, fetch_profile = profiled(replay_symbols, bounded_start, fetch_end)
+            else:
+                fetch_started = perf_counter()
+                cached = self.store.list_ticks_for_symbols(replay_symbols, bounded_start, fetch_end)
+                fetch_profile = {
+                    "db_fetch_seconds": perf_counter() - fetch_started,
+                    "decode_seconds": None,
+                    "row_count": len(cached),
+                }
+            if profile is not None:
+                profile["tick_fetch_db_seconds"] = (
+                    float(profile.get("tick_fetch_db_seconds", 0.0) or 0.0)
+                    + float(fetch_profile.get("db_fetch_seconds") or 0.0)
+                )
+                profile["tick_fetch_decode_seconds"] = (
+                    float(profile.get("tick_fetch_decode_seconds", 0.0) or 0.0)
+                    + float(fetch_profile.get("decode_seconds") or 0.0)
+                )
+                profile["tick_rows_fetched"] = int(profile.get("tick_rows_fetched", 0) or 0) + int(fetch_profile.get("row_count") or 0)
             self._chart_input_cache_put(session, ("chart-ticks", bounded_start, fetch_end), cached)
         return _slice_ticks(cached, start=bounded_start, end=bounded_end)
 
@@ -1318,6 +1468,7 @@ class OptionPowerReplayService:
         start: datetime,
         end: datetime,
         cache_end: datetime,
+        profile: dict | None = None,
     ) -> list[Bar]:
         bounded_start = max(start, session.available_start)
         bounded_end = min(end, session.available_end)
@@ -1333,7 +1484,27 @@ class OptionPowerReplayService:
         )
         if cached is None:
             fetch_end = max(bounded_end, bounded_cache_end)
-            cached = self.store.list_bars("1m", symbol, bounded_start, fetch_end)
+            profiled = getattr(self.store, "list_bars_profiled", None)
+            if callable(profiled):
+                cached, fetch_profile = profiled("1m", symbol, bounded_start, fetch_end)
+            else:
+                fetch_started = perf_counter()
+                cached = self.store.list_bars("1m", symbol, bounded_start, fetch_end)
+                fetch_profile = {
+                    "db_fetch_seconds": perf_counter() - fetch_started,
+                    "decode_seconds": None,
+                    "row_count": len(cached),
+                }
+            if profile is not None:
+                profile["bar_fetch_db_seconds"] = (
+                    float(profile.get("bar_fetch_db_seconds", 0.0) or 0.0)
+                    + float(fetch_profile.get("db_fetch_seconds") or 0.0)
+                )
+                profile["bar_fetch_decode_seconds"] = (
+                    float(profile.get("bar_fetch_decode_seconds", 0.0) or 0.0)
+                    + float(fetch_profile.get("decode_seconds") or 0.0)
+                )
+                profile["bar_rows_fetched"] = int(profile.get("bar_rows_fetched", 0) or 0) + int(fetch_profile.get("row_count") or 0)
             self._chart_input_cache_put(session, ("chart-bars", symbol, bounded_start, fetch_end), cached)
         return _slice_bars_objects(cached, start=bounded_start, end=bounded_end)
 
@@ -1499,8 +1670,40 @@ def _contract_seeds(ticks: list[CanonicalTick]) -> list[CanonicalTick]:
     )
 
 
-def _indicator_series_names() -> list[str]:
-    return list(INDICATOR_SERIES_NAMES)
+def load_external_indicator_series(path: str | Path | None) -> dict[str, list[dict]]:
+    if path is None:
+        return {}
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if isinstance(payload, dict) and isinstance(payload.get("series"), dict):
+        return _normalize_external_indicator_series(payload["series"])
+    if isinstance(payload, dict):
+        return _normalize_external_indicator_series(payload)
+    raise ValueError("External indicator JSON must be an object or contain a 'series' object.")
+
+
+def _indicator_series_names(external_series: dict[str, list[dict]] | None = None) -> list[str]:
+    names = set(INDICATOR_SERIES_NAMES)
+    names.update((external_series or {}).keys())
+    return sorted(names)
+
+
+def _normalize_external_indicator_series(series: dict[str, list[dict]]) -> dict[str, list[dict]]:
+    normalized: dict[str, list[dict]] = {}
+    for name, points in series.items():
+        if not isinstance(name, str) or not isinstance(points, list):
+            continue
+        rows: list[dict] = []
+        for point in points:
+            if not isinstance(point, dict):
+                continue
+            raw_time = point.get("time")
+            if raw_time is None or point.get("value") is None:
+                continue
+            ts = raw_time if isinstance(raw_time, datetime) else datetime.fromisoformat(str(raw_time))
+            rows.append({"time": ts.isoformat(), "value": float(point["value"])})
+        rows.sort(key=lambda item: item["time"])
+        normalized[name] = rows
+    return normalized
 
 
 def _build_indicator_series(snapshot_times: list[str], snapshots: list[dict]) -> dict[str, list[dict]]:
