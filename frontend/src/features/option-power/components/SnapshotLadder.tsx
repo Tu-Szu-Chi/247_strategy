@@ -1,9 +1,9 @@
 import { buildStrikeRows, maxAbsPower, selectExpiry } from "../selectors";
-import type { OptionPowerSnapshot } from "../types";
+import type { MonitorSnapshot } from "../types";
 import styles from "./SnapshotLadder.module.css";
 
 type SnapshotLadderProps = {
-  snapshot: OptionPowerSnapshot | null;
+  snapshot: MonitorSnapshot | null;
   selectedExpiry: string;
   onExpiryChange: (value: string) => void;
 };

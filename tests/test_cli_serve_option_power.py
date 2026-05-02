@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from qt_platform.cli.main import _serve_option_power, _serve_option_power_replay
-from qt_platform.option_power.service import KronosLiveSettings
+from qt_platform.monitor.service import KronosLiveSettings
 
 
 class ServeOptionPowerTest(unittest.TestCase):
@@ -65,9 +65,9 @@ class ServeOptionPowerTest(unittest.TestCase):
         ) as build_store, patch(
             "qt_platform.cli.main.load_registry_stock_symbols", return_value=["2330"]
         ) as load_registry_stock_symbols, patch(
-            "qt_platform.cli.main.OptionPowerRuntimeService", return_value=runtime
+            "qt_platform.cli.main.RealtimeMonitorService", return_value=runtime
         ) as runtime_service_cls, patch(
-            "qt_platform.cli.main.OptionPowerReplayService"
+            "qt_platform.cli.main.MonitorReplayService"
         ) as replay_service, patch(
             "qt_platform.cli.main.build_option_power_app", return_value=object()
         ) as build_app, patch(
@@ -149,9 +149,9 @@ class ServeOptionPowerTest(unittest.TestCase):
         ), patch(
             "qt_platform.cli.main.load_registry_stock_symbols", return_value=[]
         ), patch(
-            "qt_platform.cli.main.OptionPowerRuntimeService", return_value=runtime
+            "qt_platform.cli.main.RealtimeMonitorService", return_value=runtime
         ), patch(
-            "qt_platform.cli.main.OptionPowerReplayService"
+            "qt_platform.cli.main.MonitorReplayService"
         ), patch(
             "qt_platform.cli.main.build_option_power_app", return_value=object()
         ), patch(
@@ -235,9 +235,9 @@ class ServeOptionPowerTest(unittest.TestCase):
         ), patch(
             "qt_platform.cli.main._build_kronos_path_predictor_with_prefix", return_value=predictor
         ), patch(
-            "qt_platform.cli.main.OptionPowerRuntimeService", return_value=runtime
+            "qt_platform.cli.main.RealtimeMonitorService", return_value=runtime
         ) as runtime_service_cls, patch(
-            "qt_platform.cli.main.OptionPowerReplayService"
+            "qt_platform.cli.main.MonitorReplayService"
         ), patch(
             "qt_platform.cli.main.build_option_power_app", return_value=object()
         ), patch(
@@ -324,9 +324,9 @@ class ServeOptionPowerTest(unittest.TestCase):
         ), patch(
             "qt_platform.cli.main._build_kronos_path_predictor_with_prefix", return_value=predictor
         ) as build_predictor, patch(
-            "qt_platform.cli.main.OptionPowerRuntimeService", return_value=runtime
+            "qt_platform.cli.main.RealtimeMonitorService", return_value=runtime
         ) as runtime_service_cls, patch(
-            "qt_platform.cli.main.OptionPowerReplayService"
+            "qt_platform.cli.main.MonitorReplayService"
         ), patch(
             "qt_platform.cli.main.build_option_power_app", return_value=object()
         ), patch(
@@ -377,7 +377,7 @@ class ServeOptionPowerTest(unittest.TestCase):
             "qt_platform.cli.main.load_external_indicator_series",
             return_value={"mtx_up_50_in_10m_probability": []},
         ) as load_external, patch(
-            "qt_platform.cli.main.OptionPowerReplayService",
+            "qt_platform.cli.main.MonitorReplayService",
             return_value=replay,
         ) as replay_service_cls, patch(
             "qt_platform.cli.main.build_option_power_app",

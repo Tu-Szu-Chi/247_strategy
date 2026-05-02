@@ -9,12 +9,12 @@ from typing import Any
 
 from qt_platform.domain import CanonicalTick
 from qt_platform.option_iv.surface import build_iv_surface
-from qt_platform.option_power.domain import (
-    OptionContractSnapshot,
-    OptionExpirySnapshot,
-    OptionPowerSnapshot,
+from qt_platform.monitor.domain import (
+    MonitorContractSnapshot,
+    MonitorExpirySnapshot,
+    MonitorSnapshot,
 )
-from qt_platform.option_power.indicator_backend import (
+from qt_platform.monitor.indicator_backend import (
     compute_pressure_metrics,
     directional_flow,
     normalized_pressure,
@@ -51,7 +51,7 @@ class _ContractState:
     events: deque[_VolumeEvent] = field(default_factory=deque)
 
 
-class OptionPowerAggregator:
+class MonitorAggregator:
     def __init__(
         self,
         option_root: str,
@@ -153,17 +153,17 @@ class OptionPowerAggregator:
         regime: RegimeFeatureSnapshot | None = None,
         stop_reason: str | None = None,
         warning: str | None = None,
-    ) -> OptionPowerSnapshot:
+    ) -> MonitorSnapshot:
         with self._lock:
             pressure_metrics = _compute_pressure_metrics(
                 states=list(self._states.values()),
                 underlying_reference_price=underlying_reference_price,
             )
-            expiries: dict[str, list[OptionContractSnapshot]] = {}
+            expiries: dict[str, list[MonitorContractSnapshot]] = {}
             contract_count = 0
             for state in self._states.values():
                 rolling_buy, rolling_sell = self._rolling_totals(state, generated_at)
-                contract = OptionContractSnapshot(
+                contract = MonitorContractSnapshot(
                     instrument_key=state.instrument_key,
                     symbol=state.symbol,
                     contract_month=state.contract_month,
@@ -183,7 +183,7 @@ class OptionPowerAggregator:
                 contract_count += 1
 
             expiry_snapshots = [
-                OptionExpirySnapshot(
+                MonitorExpirySnapshot(
                     contract_month=contract_month,
                     label=_format_expiry_label(contract_month),
                     contracts=sorted(
@@ -204,7 +204,7 @@ class OptionPowerAggregator:
                 expiries=expiry_snapshots,
             )
 
-            return OptionPowerSnapshot(
+            return MonitorSnapshot(
                 type="option_power_snapshot",
                 generated_at=generated_at.isoformat(),
                 run_id=run_id,
@@ -255,8 +255,8 @@ class OptionPowerAggregator:
                 payload["iv_surface"] = iv_surface.to_dict() if iv_surface is not None else None
             return payload
 
-    def clone(self) -> "OptionPowerAggregator":
-        cloned = OptionPowerAggregator(
+    def clone(self) -> "MonitorAggregator":
+        cloned = MonitorAggregator(
             option_root=self.option_root,
             rolling_window_seconds=max(1, int(self.rolling_window.total_seconds())),
         )

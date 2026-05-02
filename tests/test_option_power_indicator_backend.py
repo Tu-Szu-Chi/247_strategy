@@ -2,7 +2,7 @@ import unittest
 from datetime import datetime, timedelta
 from time import perf_counter
 
-from qt_platform.option_power.indicator_backend import (
+from qt_platform.monitor.indicator_backend import (
     build_indicator_series,
     compute_pressure_metrics,
 )

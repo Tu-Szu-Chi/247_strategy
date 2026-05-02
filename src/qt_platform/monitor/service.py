@@ -15,8 +15,8 @@ from qt_platform.features import compute_minute_force_feature_series
 from qt_platform.kronos import ProbabilityTarget, calculate_probability_metrics
 from qt_platform.live.recorder import aggregate_ticks_to_bars
 from qt_platform.live.shioaji_provider import ShioajiLiveProvider, _contract_month
-from qt_platform.option_power.aggregator import OptionPowerAggregator
-from qt_platform.option_power.replay import _build_indicator_series
+from qt_platform.monitor.aggregator import MonitorAggregator
+from qt_platform.monitor.replay import _build_indicator_series
 from qt_platform.regime import MtxRegimeAnalyzer, regime_schema_dicts
 from qt_platform.session import (
     classify_session,
@@ -72,7 +72,25 @@ class KronosLiveSettings:
     output_path: str | None = None
 
 
-class OptionPowerRuntimeService:
+from qt_platform.indicators import DataManager, IndicatorRunner
+from qt_platform.indicators.collection import (
+    PressureIndicator,
+    RegimeIndicator,
+    ForceScoreIndicator,
+    TrendQualityIndicator,
+    StructureStateIndicator,
+    ChopScoreIndicator,
+    TrendScoreIndicator,
+    AdxIndicator,
+    ChoppinessIndicator,
+    ExpansionScoreIndicator,
+    CompressionScoreIndicator,
+    ReversalRiskIndicator,
+    VwapDistanceIndicator,
+    SessionCvdIndicator,
+)
+
+class RealtimeMonitorService:
     def __init__(
         self,
         *,
@@ -121,8 +139,13 @@ class OptionPowerRuntimeService:
         self.warning: str | None = None
         self.error_message: str | None = None
 
-        self.aggregator = OptionPowerAggregator(option_root=option_root)
+        self.aggregator = MonitorAggregator(option_root=option_root)
         self.regime = MtxRegimeAnalyzer()
+        
+        # New Indicator Infrastructure
+        self.data_manager = DataManager(store=store)
+        self.runner = IndicatorRunner(self.data_manager)
+        
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
         self._stopped = threading.Event()
@@ -146,7 +169,7 @@ class OptionPowerRuntimeService:
 
     def start(self, run_id: str) -> None:
         if self._thread and self._thread.is_alive():
-            raise RuntimeError("OptionPowerRuntimeService is already running.")
+            raise RuntimeError("RealtimeMonitorService is already running.")
         self.run_id = run_id
         self._thread = threading.Thread(target=self._run, name="option-power-runtime", daemon=True)
         self._thread.start()
@@ -483,20 +506,48 @@ class OptionPowerRuntimeService:
                 }
             )
             self.status = "running"
+            
+            # Initialize Default Monitor Pipeline
+            option_keys = []
             for contract in contracts:
                 code = str(getattr(contract, "code", ""))
+                cp = _normalize_call_put(getattr(contract, "option_right", None))
+                month = _contract_month(contract)
                 self.aggregator.seed_contract(
                     instrument_key=code,
                     symbol=self.option_root,
-                    contract_month=_contract_month(contract),
+                    contract_month=month,
                     strike_price=float(getattr(contract, "strike_price", 0.0)),
-                    call_put=_normalize_call_put(getattr(contract, "option_right", None)),
+                    call_put=cp,
                     session=classify_session(datetime.now()),
                 )
+                option_keys.append(f"shioaji:ticks:{code}")
+            
+            underlying_key = f"shioaji:ticks:{underlying_code}"
+            self.runner.add_pipeline("default", [
+                {"indicator": PressureIndicator(), "mapping": {"options": option_keys, "underlying": underlying_key}},
+                {"indicator": RegimeIndicator(), "mapping": {"bar": underlying_key, "tick": underlying_key}},
+                {"indicator": TrendQualityIndicator(), "mapping": {}},
+                {"indicator": StructureStateIndicator(), "mapping": {}},
+                {"indicator": ChopScoreIndicator(), "mapping": {}},
+                {"indicator": TrendScoreIndicator(), "mapping": {}},
+                {"indicator": AdxIndicator(), "mapping": {}},
+                {"indicator": ChoppinessIndicator(), "mapping": {}},
+                {"indicator": SessionCvdIndicator(), "mapping": {}},
+                {"indicator": ExpansionScoreIndicator(), "mapping": {}},
+                {"indicator": CompressionScoreIndicator(), "mapping": {}},
+                {"indicator": ReversalRiskIndicator(), "mapping": {}},
+                {"indicator": VwapDistanceIndicator(), "mapping": {}},
+            ])
+
             if not self._ready.is_set():
                 self._ready.set()
             self._next_snapshot_at = datetime.now()
             for tick in self.provider.stream_ticks_from_contracts(contracts=all_contracts, max_events=None):
+                # Update New Data Manager
+                stream_key = f"shioaji:ticks:{tick.instrument_key or tick.symbol}"
+                self.data_manager.get_stream(stream_key).append(tick)
+                
                 if (tick.instrument_key or tick.symbol) in underlying_identifiers:
                     self._underlying_future_price = tick.price
                     self._underlying_future_tick_ts = tick.ts
@@ -638,6 +689,12 @@ class OptionPowerRuntimeService:
         while self._next_snapshot_at is not None and tick_ts >= self._next_snapshot_at:
             self._refresh_day_indicator_snapshot(self._next_snapshot_at)
             self._refresh_indicator_reference(self._next_snapshot_at)
+            
+            # Update New Indicator Infrastructure
+            self.runner.update_all(self._next_snapshot_at)
+            pipeline = self.runner.get_pipeline("default")
+            indicator_snapshot = pipeline.get_snapshot() if pipeline else {}
+
             snapshot = self.aggregator.snapshot(
                 generated_at=self._next_snapshot_at,
                 run_id=self.run_id,
@@ -648,6 +705,19 @@ class OptionPowerRuntimeService:
                 stop_reason=self.stop_reason,
                 warning=self.warning or self.error_message,
             ).to_dict()
+            
+            # Merge New Indicators
+            # Filter out base indicators like 'regime' that are already handled specially if needed
+            # but generally we want all of them available at the top level for the frontend.
+            for key, val in indicator_snapshot.items():
+                if key == "regime":
+                    snapshot["regime_v2"] = val
+                elif key == "option_pressure":
+                    if isinstance(val, dict):
+                        snapshot.update(val)
+                else:
+                    snapshot[key] = val
+
             snapshot["kronos"] = self._kronos_snapshot_payload()
             snapshot.update(self._kronos_latest_metrics)
             with self._history_lock:

@@ -28,7 +28,7 @@ class BacktestCliTest(unittest.TestCase):
         )
 
         with patch("qt_platform.cli.main.build_bar_repository", return_value=store), patch(
-            "qt_platform.cli.main.OptionPowerReplayService", return_value=replay
+            "qt_platform.cli.main.MonitorReplayService", return_value=replay
         ) as replay_service, patch("qt_platform.cli.main.run_backtest", return_value=result) as run, patch(
             "qt_platform.cli.main.write_backtest_report_bundle",
             return_value=("report.html", "report.json"),
@@ -62,7 +62,7 @@ class BacktestCliTest(unittest.TestCase):
         result = SimpleNamespace(ending_cash=1000.0)
 
         with patch("qt_platform.cli.main.build_bar_repository", return_value=store), patch(
-            "qt_platform.cli.main.OptionPowerReplayService"
+            "qt_platform.cli.main.MonitorReplayService"
         ) as replay_service, patch("qt_platform.cli.main.run_backtest", return_value=result) as run, patch(
             "qt_platform.cli.main.write_backtest_report_bundle",
             return_value=("report.html", "report.json"),

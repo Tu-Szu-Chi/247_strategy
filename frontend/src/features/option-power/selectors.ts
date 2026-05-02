@@ -1,7 +1,7 @@
-import type { OptionPowerExpiry, OptionPowerSnapshot, StrikeRow } from "./types";
+import type { OptionPowerExpiry, MonitorSnapshot, StrikeRow } from "./types";
 
 export function selectExpiry(
-  snapshot: OptionPowerSnapshot | null,
+  snapshot: MonitorSnapshot | null,
   selectedExpiry: string,
 ): OptionPowerExpiry | null {
   const expiries = snapshot?.expiries ?? [];

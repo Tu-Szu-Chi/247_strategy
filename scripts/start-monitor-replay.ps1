@@ -3,16 +3,15 @@ param(
     [string]$RegistryPath = "config/symbols.csv",
     [string]$UnderlyingFutureSymbol = "MXFR1",
     [string]$ReplayUnderlyingSymbol = "MTX",
-    [int]$ExpiryCount = 2,
-    [int]$AtmWindow = 20,
     [string]$CallPut = "both",
     [string]$SessionScope = "day_and_night",
     [string]$ListenHost = "127.0.0.1",
     [int]$Port = 8000,
     [double]$SnapshotIntervalSeconds = 10.0,
     [double]$ReadyTimeoutSeconds = 15.0,
-    [string]$LogFile = "logs/serve-option-power.log",
+    [string]$LogFile = "logs/serve-monitor-replay.log",
     [string]$DatabaseUrl = "",
+    [string]$KronosJson = "reports/mtx-probability-bounded-2026-04-30_2026-04-30_LB300.json",
     [switch]$Simulation
 )
 
@@ -41,19 +40,15 @@ if (-not (Test-Path $LogDir)) {
 
 $CliArgs = @(
     "-m", "qt_platform.cli.main",
-    "--config", $ConfigPath,
-    "serve-option-power",
-    "--registry", $RegistryPath,
-    "--expiry-count", $ExpiryCount,
-    "--atm-window", $AtmWindow,
-    "--underlying-future-symbol", $UnderlyingFutureSymbol,
-    "--replay-underlying-symbol", $ReplayUnderlyingSymbol,
-    "--call-put", $CallPut,
-    "--session-scope", $SessionScope,
+    "monitor",
+    "replay",
+    # "--config", $ConfigPath,
+    "--start", "2026-04-30T08:45:00",
+    "--end", "2026-05-01T00:30:00",
+    "--kronos-series-json", $KronosJson,
     "--host", $ListenHost,
     "--port", $Port,
     "--snapshot-interval-seconds", $SnapshotIntervalSeconds,
-    "--ready-timeout-seconds", $ReadyTimeoutSeconds,
     "--log-file", $LogFile
 )
 
@@ -61,38 +56,9 @@ if ($Simulation) {
     $CliArgs += "--simulation"
 }
 
-if ($DatabaseUrl) {
-    $CliArgs = @(
-        "-m", "qt_platform.cli.main",
-        "--config", $ConfigPath,
-        "serve-option-power",
-        "--database-url", $DatabaseUrl,
-        "--registry", $RegistryPath,
-        "--expiry-count", $ExpiryCount,
-        "--atm-window", $AtmWindow,
-        "--underlying-future-symbol", $UnderlyingFutureSymbol,
-        "--replay-underlying-symbol", $ReplayUnderlyingSymbol,
-        "--call-put", $CallPut,
-        "--session-scope", $SessionScope,
-        "--host", $ListenHost,
-        "--port", $Port,
-        "--snapshot-interval-seconds", $SnapshotIntervalSeconds,
-        "--ready-timeout-seconds", $ReadyTimeoutSeconds,
-        "--log-file", $LogFile
-    )
-    if ($Simulation) {
-        $CliArgs += "--simulation"
-    }
-}
-
-Write-Host "Starting option power web..." -ForegroundColor Cyan
+Write-Host "Starting replay web..." -ForegroundColor Cyan
 Write-Host "Repo root: $RepoRoot"
 Write-Host "Config: $ConfigFullPath"
-Write-Host "Registry: $(Join-Path $RepoRoot $RegistryPath)"
-Write-Host "Live underlying future symbol: $UnderlyingFutureSymbol"
-Write-Host "Replay underlying symbol: $ReplayUnderlyingSymbol"
-Write-Host "Option roots: AUTO nearest $ExpiryCount"
-Write-Host "ATM window: $AtmWindow"
 Write-Host "Host: $ListenHost"
 Write-Host "Port: $Port"
 Write-Host "Research Replay URL: http://$ListenHost`:$Port/research/replay"

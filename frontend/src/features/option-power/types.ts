@@ -115,7 +115,7 @@ export type OptionIvSurface = {
   warning?: string | null;
 };
 
-export type OptionPowerSnapshot = {
+export type MonitorSnapshot = {
   type: string;
   generated_at: string;
   run_id: string | null;
@@ -145,7 +145,7 @@ export type LiveContractTotals = {
   put: ContractSideTotals;
 };
 
-export type LiveSnapshotSummary = Omit<OptionPowerSnapshot, "expiries"> & {
+export type LiveSnapshotSummary = Omit<MonitorSnapshot, "expiries"> & {
   underlying_reference_source?: string | null;
 };
 
@@ -239,7 +239,7 @@ export type LiveMeta = {
 };
 
 export type LiveSnapshotLatestResponse = {
-  snapshot: OptionPowerSnapshot;
+  snapshot: MonitorSnapshot;
 };
 
 export type LiveSnapshotCompactResponse = {

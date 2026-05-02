@@ -3,7 +3,7 @@ from datetime import date, datetime, timedelta
 
 from qt_platform.domain import CanonicalTick
 from qt_platform.option_iv import black76_price
-from qt_platform.option_power import OptionPowerAggregator
+from qt_platform.monitor import MonitorAggregator
 
 
 def _tick(
@@ -34,9 +34,9 @@ def _tick(
     )
 
 
-class OptionPowerAggregatorTest(unittest.TestCase):
+class MonitorAggregatorTest(unittest.TestCase):
     def test_snapshot_tracks_cumulative_and_rolling_power(self) -> None:
-        aggregator = OptionPowerAggregator(option_root="TXO")
+        aggregator = MonitorAggregator(option_root="TXO")
         base_ts = datetime(2025, 4, 11, 9, 0, 0)
         aggregator.ingest_tick(_tick(ts=base_ts, session="day", direction="up", size=10))
         aggregator.ingest_tick(_tick(ts=base_ts + timedelta(seconds=10), session="day", direction="down", size=3))
@@ -67,7 +67,7 @@ class OptionPowerAggregatorTest(unittest.TestCase):
         self.assertEqual(snapshot.pressure_index_weighted, 47)
 
     def test_snapshot_evicts_old_rolling_events(self) -> None:
-        aggregator = OptionPowerAggregator(option_root="TXO")
+        aggregator = MonitorAggregator(option_root="TXO")
         base_ts = datetime(2025, 4, 11, 9, 0, 0)
         aggregator.ingest_tick(_tick(ts=base_ts, session="day", direction="up", size=10))
         aggregator.ingest_tick(_tick(ts=base_ts + timedelta(seconds=70), session="day", direction="down", size=4))
@@ -87,7 +87,7 @@ class OptionPowerAggregatorTest(unittest.TestCase):
         self.assertEqual(contract.power_1m_delta, -4)
 
     def test_session_change_resets_cumulative_state(self) -> None:
-        aggregator = OptionPowerAggregator(option_root="TXO")
+        aggregator = MonitorAggregator(option_root="TXO")
         base_ts = datetime(2025, 4, 11, 13, 44, 50)
         aggregator.ingest_tick(_tick(ts=base_ts, session="day", direction="up", size=10))
         aggregator.ingest_tick(_tick(ts=base_ts + timedelta(minutes=80), session="night", direction="down", size=4))
@@ -107,7 +107,7 @@ class OptionPowerAggregatorTest(unittest.TestCase):
         self.assertEqual(contract.cumulative_power, -4)
 
     def test_snapshot_formats_expiry_labels_for_weekly_and_monthly_contracts(self) -> None:
-        aggregator = OptionPowerAggregator(option_root="TXO")
+        aggregator = MonitorAggregator(option_root="TXO")
         base_ts = datetime(2025, 4, 11, 9, 0, 0)
         aggregator.ingest_tick(
             _tick(
@@ -142,7 +142,7 @@ class OptionPowerAggregatorTest(unittest.TestCase):
         self.assertEqual([expiry.label for expiry in snapshot.expiries], ["2025-04 W2", "2025-05"])
 
     def test_snapshot_formats_expiry_labels_for_exact_delivery_date(self) -> None:
-        aggregator = OptionPowerAggregator(option_root="TXY")
+        aggregator = MonitorAggregator(option_root="TXY")
         base_ts = datetime(2025, 4, 11, 9, 0, 0)
         aggregator.ingest_tick(
             _tick(
@@ -169,7 +169,7 @@ class OptionPowerAggregatorTest(unittest.TestCase):
         self.assertEqual(snapshot.expiries[0].label, "2026-04-24")
 
     def test_snapshot_uses_updated_option_roots_metadata(self) -> None:
-        aggregator = OptionPowerAggregator(option_root="AUTO")
+        aggregator = MonitorAggregator(option_root="AUTO")
         aggregator.set_option_root("TXX,TX4")
 
         snapshot = aggregator.snapshot(
@@ -183,7 +183,7 @@ class OptionPowerAggregatorTest(unittest.TestCase):
         self.assertEqual(snapshot.option_root, "TXX,TX4")
 
     def test_snapshot_computes_weighted_pressure_across_calls_and_puts(self) -> None:
-        aggregator = OptionPowerAggregator(option_root="TXO")
+        aggregator = MonitorAggregator(option_root="TXO")
         base_ts = datetime(2025, 4, 11, 9, 0, 0)
         aggregator.ingest_tick(
             _tick(
@@ -236,7 +236,7 @@ class OptionPowerAggregatorTest(unittest.TestCase):
         self.assertEqual(snapshot.pressure_index_weighted, 58)
 
     def test_snapshot_includes_iv_surface_for_fresh_otm_options(self) -> None:
-        aggregator = OptionPowerAggregator(option_root="TXO")
+        aggregator = MonitorAggregator(option_root="TXO")
         base_ts = datetime(2026, 4, 21, 13, 29, 30)
         time_to_expiry_years = 1 / 252
         aggregator.ingest_tick(

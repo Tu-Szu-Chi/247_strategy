@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { buildStrikeRows, maxAbsPower, selectExpiry } from "./selectors";
-import type { OptionPowerSnapshot } from "./types";
+import type { MonitorSnapshot } from "./types";
 
-const snapshot: OptionPowerSnapshot = {
+const snapshot: MonitorSnapshot = {
   type: "option_power_snapshot",
   generated_at: "2026-04-20T09:00:00",
   run_id: "run-1",

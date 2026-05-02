@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from qt_platform.domain import Bar, CanonicalTick
-from qt_platform.option_power.replay import OptionPowerReplayService, load_external_indicator_series
+from qt_platform.monitor.replay import MonitorReplayService, load_external_indicator_series
 
 
 class DummyStore:
@@ -118,7 +118,7 @@ class ExternalIndicatorReplayTest(unittest.TestCase):
         start = datetime(2026, 4, 14, 9, 0)
         end = start + timedelta(minutes=30)
         store = DummyStore(ticks=[], bars=[])
-        service = OptionPowerReplayService(
+        service = MonitorReplayService(
             store=store,
             option_root="AUTO",
             expiry_count=2,
@@ -179,7 +179,7 @@ def _tick(
     )
 
 
-class OptionPowerReplayServiceTest(unittest.TestCase):
+class MonitorReplayServiceTest(unittest.TestCase):
     def test_create_session_builds_replay_timeline(self) -> None:
         base_ts = datetime(2026, 4, 16, 9, 0, 0)
         store = DummyStore(
@@ -248,7 +248,7 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
                 )
             ],
         )
-        service = OptionPowerReplayService(
+        service = MonitorReplayService(
             store=store,
             option_root="AUTO",
             expiry_count=2,
@@ -403,7 +403,7 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
                 ),
             ],
         )
-        service = OptionPowerReplayService(
+        service = MonitorReplayService(
             store=store,
             option_root="AUTO",
             expiry_count=2,
@@ -454,7 +454,7 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
                 ),
             ],
         )
-        service = OptionPowerReplayService(
+        service = MonitorReplayService(
             store=store,
             option_root="AUTO",
             expiry_count=2,
@@ -511,7 +511,7 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
                 ),
             ],
         )
-        service = OptionPowerReplayService(
+        service = MonitorReplayService(
             store=store,
             option_root="AUTO",
             expiry_count=2,
@@ -589,7 +589,7 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
             for index in range(6)
         ]
         store = DummyStore(ticks, bars=bars)
-        service = OptionPowerReplayService(
+        service = MonitorReplayService(
             store=store,
             option_root="AUTO",
             expiry_count=2,
@@ -670,7 +670,7 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
             for index in range(4)
         ]
         store = DummyStore(ticks)
-        service = OptionPowerReplayService(
+        service = MonitorReplayService(
             store=store,
             option_root="AUTO",
             expiry_count=2,
@@ -684,8 +684,8 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
         )
         self.assertTrue(service.wait_until_ready(metadata["session_id"], timeout=2.0))
 
-        with patch("qt_platform.option_power.replay.build_indicator_series") as build:
-            from qt_platform.option_power.indicator_backend import build_indicator_series as real_build
+        with patch("qt_platform.monitor.replay.build_indicator_series") as build:
+            from qt_platform.monitor.indicator_backend import build_indicator_series as real_build
 
             build.side_effect = real_build
             first = service.get_series(
@@ -724,7 +724,7 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
             for index in range(4)
         ]
         store = DummyStore(ticks)
-        service = OptionPowerReplayService(
+        service = MonitorReplayService(
             store=store,
             option_root="AUTO",
             expiry_count=2,
@@ -732,7 +732,7 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
             snapshot_interval_seconds=5.0,
         )
 
-        with patch.object(OptionPowerReplayService, "_start_background_compute_locked", autospec=True):
+        with patch.object(MonitorReplayService, "_start_background_compute_locked", autospec=True):
             metadata = service.create_session(
                 start=base_ts,
                 end=base_ts + timedelta(minutes=3),
@@ -770,7 +770,7 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
             for index in range(6)
         ]
         store = DummyStore(ticks)
-        service = OptionPowerReplayService(
+        service = MonitorReplayService(
             store=store,
             option_root="AUTO",
             expiry_count=2,
@@ -778,7 +778,7 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
             snapshot_interval_seconds=5.0,
         )
 
-        with patch.object(OptionPowerReplayService, "_start_background_compute_locked", autospec=True):
+        with patch.object(MonitorReplayService, "_start_background_compute_locked", autospec=True):
             metadata = service.create_session(
                 start=base_ts,
                 end=base_ts + timedelta(minutes=5),
@@ -844,7 +844,7 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
             for index in range(4)
         ]
         store = DummyStore(ticks, bars=bars)
-        service = OptionPowerReplayService(
+        service = MonitorReplayService(
             store=store,
             option_root="AUTO",
             expiry_count=2,
@@ -852,7 +852,7 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
             snapshot_interval_seconds=5.0,
         )
 
-        with patch.object(OptionPowerReplayService, "_start_background_compute_locked", autospec=True):
+        with patch.object(MonitorReplayService, "_start_background_compute_locked", autospec=True):
             metadata = service.create_session(
                 start=base_ts,
                 end=base_ts + timedelta(minutes=3),
@@ -922,7 +922,7 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
             for index in range(4)
         ]
         store = DummyStore(ticks, bars=bars)
-        service = OptionPowerReplayService(
+        service = MonitorReplayService(
             store=store,
             option_root="AUTO",
             expiry_count=2,
@@ -930,7 +930,7 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
             snapshot_interval_seconds=5.0,
         )
 
-        with patch.object(OptionPowerReplayService, "_start_background_compute_locked", autospec=True):
+        with patch.object(MonitorReplayService, "_start_background_compute_locked", autospec=True):
             metadata = service.create_session(
                 start=base_ts,
                 end=base_ts + timedelta(minutes=3),
@@ -985,7 +985,7 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
             for index in range(10)
         ]
         store = DummyStore(ticks, bars=bars)
-        service = OptionPowerReplayService(
+        service = MonitorReplayService(
             store=store,
             option_root="AUTO",
             expiry_count=2,
@@ -1052,7 +1052,7 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
             for index in range(10)
         ]
         store = DummyStore(ticks, bars=bars)
-        service = OptionPowerReplayService(
+        service = MonitorReplayService(
             store=store,
             option_root="AUTO",
             expiry_count=2,
@@ -1121,7 +1121,7 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
             ],
         ]
         store = DummyStore([], bars=bars)
-        service = OptionPowerReplayService(
+        service = MonitorReplayService(
             store=store,
             option_root="AUTO",
             expiry_count=2,
@@ -1173,7 +1173,7 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
             for index in range(10)
         ]
         store = DummyStore([], bars=bars)
-        service = OptionPowerReplayService(
+        service = MonitorReplayService(
             store=store,
             option_root="AUTO",
             expiry_count=2,
@@ -1243,7 +1243,7 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
             ),
         ]
         store = DummyStore([], bars=bars)
-        service = OptionPowerReplayService(
+        service = MonitorReplayService(
             store=store,
             option_root="AUTO",
             expiry_count=2,
@@ -1306,7 +1306,7 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
             ),
         ]
         store = DummyStore([], bars=bars)
-        service = OptionPowerReplayService(
+        service = MonitorReplayService(
             store=store,
             option_root="AUTO",
             expiry_count=2,
@@ -1379,7 +1379,7 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
             for index in range(11)
         ]
         store = DummyStore(ticks, bars=bars)
-        service = OptionPowerReplayService(
+        service = MonitorReplayService(
             store=store,
             option_root="AUTO",
             expiry_count=2,

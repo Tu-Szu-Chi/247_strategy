@@ -7,7 +7,7 @@ from qt_platform.regime import RegimeFeatureSnapshot
 
 
 @dataclass(frozen=True)
-class OptionContractSnapshot:
+class MonitorContractSnapshot:
     instrument_key: str
     symbol: str
     contract_month: str
@@ -28,10 +28,10 @@ class OptionContractSnapshot:
 
 
 @dataclass(frozen=True)
-class OptionExpirySnapshot:
+class MonitorExpirySnapshot:
     contract_month: str
     label: str
-    contracts: list[OptionContractSnapshot]
+    contracts: list[MonitorContractSnapshot]
 
     def to_dict(self) -> dict:
         payload = asdict(self)
@@ -40,7 +40,7 @@ class OptionExpirySnapshot:
 
 
 @dataclass(frozen=True)
-class OptionPowerSnapshot:
+class MonitorSnapshot:
     type: str
     generated_at: str
     run_id: str | None
@@ -52,7 +52,7 @@ class OptionPowerSnapshot:
     pressure_index: int
     raw_pressure_weighted: int
     pressure_index_weighted: int
-    expiries: list[OptionExpirySnapshot]
+    expiries: list[MonitorExpirySnapshot]
     contract_count: int
     status: str
     regime: RegimeFeatureSnapshot | None = None

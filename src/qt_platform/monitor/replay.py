@@ -14,8 +14,8 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from qt_platform.domain import Bar, CanonicalTick
-from qt_platform.option_power.aggregator import OptionPowerAggregator
-from qt_platform.option_power.indicator_backend import (
+from qt_platform.monitor.aggregator import MonitorAggregator
+from qt_platform.monitor.indicator_backend import (
     INDICATOR_SERIES_NAMES,
     build_indicator_series,
     compression_expansion_state_value,
@@ -126,13 +126,13 @@ class ChartStateCheckpoint:
     interval: str
     include_regime: bool
     processed_until: datetime
-    aggregator: OptionPowerAggregator
+    aggregator: MonitorAggregator
     regime: MtxRegimeAnalyzer | None
     latest_future_reference_price: float | None
     latest_day_indicator_price: float | None
 
 
-class OptionPowerReplayService:
+class MonitorReplayService:
     def __init__(
         self,
         *,
@@ -823,7 +823,7 @@ class OptionPowerReplayService:
             key=lambda tick: (tick.ts, tick.instrument_key or "", tick.price, tick.size, tick.source),
         )
 
-        aggregator = OptionPowerAggregator(option_root=",".join(session.selected_option_roots) or session.option_root)
+        aggregator = MonitorAggregator(option_root=",".join(session.selected_option_roots) or session.option_root)
         replay_session = classify_session(start)
         for contract in _contract_seeds(option_ticks):
             aggregator.seed_contract(
@@ -1118,7 +1118,7 @@ class OptionPowerReplayService:
             else:
                 regime = MtxRegimeAnalyzer()
         else:
-            aggregator = OptionPowerAggregator(option_root=",".join(session.selected_option_roots) or session.option_root)
+            aggregator = MonitorAggregator(option_root=",".join(session.selected_option_roots) or session.option_root)
             replay_session = classify_session(warm_start)
             raw_ticks = self._session_replay_ticks(
                 session,

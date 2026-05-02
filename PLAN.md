@@ -241,7 +241,7 @@ Recommended direction:
 - keep option-power as the orchestrator, but let its runtime service own one combined subscription universe
 
 Reason:
-- current `runtime` and `OptionPowerRuntimeService` already duplicate pieces of:
+- current `runtime` and `RealtimeMonitorService` already duplicate pieces of:
   - `provider.connect()`
   - contract resolution
   - tick persistence
@@ -270,7 +270,7 @@ Reason:
 - for this slice, only `stock` entries need to become live subscriptions
 
 3. Option-power runtime subscription model
-- extend `OptionPowerRuntimeService` constructor with registry inputs, for example:
+- extend `RealtimeMonitorService` constructor with registry inputs, for example:
   - `registry_path: str | None`
   - or already-parsed `registry_stock_symbols: list[str]`
 - inside `_run_cycle()`:
@@ -339,7 +339,7 @@ Suggested sequence:
 - add `--registry`
 - wire it into `_serve_option_power(...)`
 
-3. Extend `OptionPowerRuntimeService`
+3. Extend `RealtimeMonitorService`
 - accept `registry_stock_symbols`
 - resolve and append stock contracts inside `_run_cycle()`
 - include them in metadata and subscription log payloads
@@ -399,7 +399,7 @@ Operational verification:
 
 Recommended implementation:
 - make `serve-option-power` the single canonical live process
-- add registry-stock subscription directly into `OptionPowerRuntimeService`
+- add registry-stock subscription directly into `RealtimeMonitorService`
 - reuse the existing registry parsing logic via a shared helper
 - fail fast when the configured registry file is missing or invalid
 

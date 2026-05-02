@@ -19,7 +19,7 @@ Move decision-grade option-power and MTX regime indicator calculations out of fr
 
 Backend indicators before this phase:
 
-- Option pressure from `OptionPowerAggregator`: `pressure_index`, `raw_pressure`, `pressure_index_weighted`, `raw_pressure_weighted`.
+- Option pressure from `MonitorAggregator`: `pressure_index`, `raw_pressure`, `pressure_index_weighted`, `raw_pressure_weighted`.
 - Replay series mapping in `src/qt_platform/option_power/replay.py`: pressure fields, `regime_state`, `structure_state`, regime numeric fields, string-state encodings, and `iv_skew`.
 - MTX regime fields from `src/qt_platform/regime.py`: `trend_score`, `chop_score`, `reversal_risk`, `adx_14`, `di_bias_14`, CVD fields, compression/expansion fields, and related context.
 
@@ -36,7 +36,7 @@ Frontend-derived indicators in `frontend/src/pages/OptionPowerResearchWorkspace.
 ## Target Architecture
 
 - Build a backend in-memory indicator frame keyed by `time`.
-- Keep pressure math in a backend helper shared by batch and `OptionPowerAggregator`.
+- Keep pressure math in a backend helper shared by batch and `MonitorAggregator`.
 - Use Polars as the batch frame engine when installed.
 - Keep pure Python formula helpers for parity, unit testing, and compatibility while environments finish installing the new dependency.
 - Expose canonical indicator series names from one backend module so replay metadata, API responses, and frontend requests stay aligned.
@@ -64,7 +64,7 @@ Frontend-derived indicators in `frontend/src/pages/OptionPowerResearchWorkspace.
 - [x] Add docs plan/work-log file.
 - [x] Add Polars dependency and backend batch module scaffold.
 - [x] Port frontend-derived formulas to backend as pure Python/Polars-compatible functions.
-- [x] Add Polars pressure batch computation matching `OptionPowerAggregator`.
+- [x] Add Polars pressure batch computation matching `MonitorAggregator`.
 - [x] Add canonical backend series names for derived indicators.
 - [x] Wire replay series output to consume backend-computed series/extras.
 - [x] Remove frontend decision-grade derived calculations from the rendering path, leaving direct backend series consumption and resampling.
@@ -91,7 +91,7 @@ Completed change:
 
 - Added `src/qt_platform/option_power/indicator_backend.py`.
 - Added `polars>=1.0,<2.0` to `pyproject.toml`.
-- Moved pressure metric math into a backend helper and made `OptionPowerAggregator` delegate to it.
+- Moved pressure metric math into a backend helper and made `MonitorAggregator` delegate to it.
 - Added backend canonical series names, including `trend_quality_score`, `trend_bias_state`, `flow_impulse_score`, `flow_state`, `range_state`, `bias_signal`, and `signal_state`.
 - Made replay `_build_indicator_series` delegate to backend batch series construction.
 - Updated `OptionPowerResearchWorkspace.tsx` to request and render backend-derived series directly.
@@ -134,7 +134,7 @@ Important findings:
 - The slow path is not the Polars formula stage.
 - The expensive part is replay-time materialization:
   - fetch raw ticks
-  - advance Python `OptionPowerAggregator`
+  - advance Python `MonitorAggregator`
   - advance Python `MtxRegimeAnalyzer`
   - build repeated snapshot payloads
 - The current replay implementation also uses a full-resolution snapshot-frame path for chart requests, which is much heavier than a chart viewport actually needs.
@@ -189,7 +189,7 @@ Current implementation decision:
 - Add a separate chart-only indicator path for interval requests (`1m` / `5m` / `15m` / `30m`).
 - The chart path will:
   - replay only from the necessary session boundary
-  - emit minimal indicator snapshots instead of full `OptionPowerSnapshot`
+  - emit minimal indicator snapshots instead of full `MonitorSnapshot`
   - cache per-session chart interval rows separately from full frame cache
 
 Reasoning:
@@ -201,7 +201,7 @@ Reasoning:
 Immediate implementation plan for this milestone:
 
 - Add chart-specific interval caches onto `ReplaySession`.
-- Add a lightweight replay materializer in `OptionPowerReplayService` that samples minute-boundary indicator rows and uses `OptionPowerAggregator.indicator_snapshot(...)`.
+- Add a lightweight replay materializer in `MonitorReplayService` that samples minute-boundary indicator rows and uses `MonitorAggregator.indicator_snapshot(...)`.
 - Route `get_series_payload()` interval requests through the chart cache/materializer path.
 - Add focused replay tests that prove interval series requests can populate from the lightweight cache without depending on full `frame_cache`.
 
@@ -211,11 +211,11 @@ Status:
 
 Completed change:
 
-- Added a dedicated interval-series path in `OptionPowerReplayService.get_series_payload()`.
+- Added a dedicated interval-series path in `MonitorReplayService.get_series_payload()`.
 - Interval requests now bypass `_ensure_frames_for_window()` and the full `frame_cache` / full snapshot path.
 - Added a chart-only materializer that:
   - replays from the relevant session boundary
-  - emits interval bucket values using `OptionPowerAggregator.indicator_snapshot(...)`
+  - emits interval bucket values using `MonitorAggregator.indicator_snapshot(...)`
   - skips `MtxRegimeAnalyzer` completely for pressure-only requests
   - skips IV surface work unless `iv_skew` is requested
 - Added a dedicated per-session `chart_series_cache` for chart interval payload reuse.
@@ -262,7 +262,7 @@ Next concrete step:
 Completed change:
 
 - Added clone support for replay-time stateful engines:
-  - `OptionPowerAggregator.clone()`
+  - `MonitorAggregator.clone()`
   - `MtxRegimeAnalyzer.clone()`
 - Added `ChartStateCheckpoint` plus a per-session `chart_state_cache`.
 - Updated the lightweight chart materializer so it can:
@@ -405,7 +405,7 @@ Next concrete step:
 
 Completed change:
 
-- Added `OptionPowerReplayService.build_backtest_indicator_series()` as the storage-backed helper for producing canonical indicator series for backtests.
+- Added `MonitorReplayService.build_backtest_indicator_series()` as the storage-backed helper for producing canonical indicator series for backtests.
 - Added opt-in CLI backtest flags:
   - `--with-option-power-indicators`
   - `--option-root`

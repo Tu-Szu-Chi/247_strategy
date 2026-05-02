@@ -7,10 +7,10 @@ from unittest.mock import patch
 
 from qt_platform.domain import Bar, CanonicalTick
 from qt_platform.kronos.probability import ProbabilityTarget
-from qt_platform.option_power.service import (
+from qt_platform.monitor.service import (
     OPTION_ROOT_RETRY_SECONDS,
     KronosLiveSettings,
-    OptionPowerRuntimeService,
+    RealtimeMonitorService,
 )
 
 
@@ -104,11 +104,11 @@ class StreamingProvider(DummyProvider):
         return "completed"
 
 
-class OptionPowerRuntimeServiceTest(unittest.TestCase):
+class RealtimeMonitorServiceTest(unittest.TestCase):
     def test_run_cycle_waits_for_option_roots_instead_of_crashing(self) -> None:
         logs = []
         provider = DummyProvider()
-        service = OptionPowerRuntimeService(
+        service = RealtimeMonitorService(
             provider=provider,
             store=DummyStore(),
             option_root="AUTO",
@@ -123,7 +123,7 @@ class OptionPowerRuntimeServiceTest(unittest.TestCase):
         )
         service.run_id = "test-run"
 
-        with patch("qt_platform.option_power.service.time.sleep") as sleep_mock:
+        with patch("qt_platform.monitor.service.time.sleep") as sleep_mock:
             service._run_cycle()
 
         self.assertEqual(service.status, "waiting_for_option_roots")
@@ -170,7 +170,7 @@ class OptionPowerRuntimeServiceTest(unittest.TestCase):
                 source="shioaji_live",
             )
         ]
-        service = OptionPowerRuntimeService(
+        service = RealtimeMonitorService(
             provider=StreamingProvider(ticks, [option_contract], underlying_contract),
             store=DummyStore(),
             option_root="AUTO",
@@ -235,7 +235,7 @@ class OptionPowerRuntimeServiceTest(unittest.TestCase):
                 source="shioaji_live",
             )
         ]
-        service = OptionPowerRuntimeService(
+        service = RealtimeMonitorService(
             provider=StreamingProvider(ticks, [option_contract], underlying_contract, indicator_contract, indicator_price=19555.0),
             store=DummyStore(),
             option_root="AUTO",
@@ -294,7 +294,7 @@ class OptionPowerRuntimeServiceTest(unittest.TestCase):
                 source="shioaji_live",
             )
         ]
-        service = OptionPowerRuntimeService(
+        service = RealtimeMonitorService(
             provider=StreamingProvider(ticks, [option_contract], underlying_contract, indicator_price=19555.0),
             store=DummyStore(),
             option_root="AUTO",
@@ -337,7 +337,7 @@ class OptionPowerRuntimeServiceTest(unittest.TestCase):
         )()
         store = DummyStore()
         provider = StreamingProvider([], [option_contract], underlying_contract, indicator_price=19555.0)
-        service = OptionPowerRuntimeService(
+        service = RealtimeMonitorService(
             provider=provider,
             store=store,
             option_root="AUTO",
@@ -361,7 +361,7 @@ class OptionPowerRuntimeServiceTest(unittest.TestCase):
         self.assertEqual(twii_bars[-1].build_source, "live_snapshot_agg")
 
     def test_live_series_exposes_base_and_weighted_series(self) -> None:
-        service = OptionPowerRuntimeService(
+        service = RealtimeMonitorService(
             provider=DummyProvider(),
             store=DummyStore(),
             option_root="AUTO",
@@ -538,7 +538,7 @@ class OptionPowerRuntimeServiceTest(unittest.TestCase):
         ]
         store = DummyStore()
         logs = []
-        service = OptionPowerRuntimeService(
+        service = RealtimeMonitorService(
             provider=StreamingProvider(
                 ticks,
                 [option_contract],
@@ -571,7 +571,7 @@ class OptionPowerRuntimeServiceTest(unittest.TestCase):
         self.assertEqual(subscribed["registry_stock_symbols"], ["2330"])
 
     def test_live_series_merges_kronos_series_and_metadata(self) -> None:
-        service = OptionPowerRuntimeService(
+        service = RealtimeMonitorService(
             provider=DummyProvider(),
             store=DummyStore(),
             option_root="AUTO",
@@ -624,7 +624,7 @@ class OptionPowerRuntimeServiceTest(unittest.TestCase):
                     [[100, 120, 49, 90, 1, 90] for _ in range(10)],
                 ]
 
-        service = OptionPowerRuntimeService(
+        service = RealtimeMonitorService(
             provider=DummyProvider(),
             store=DummyStore(),
             option_root="AUTO",
@@ -696,7 +696,7 @@ class OptionPowerRuntimeServiceTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "kronos-live.json"
-            service = OptionPowerRuntimeService(
+            service = RealtimeMonitorService(
                 provider=DummyProvider(),
                 store=DummyStore(),
                 option_root="AUTO",
@@ -778,7 +778,7 @@ class OptionPowerRuntimeServiceTest(unittest.TestCase):
             )
 
     def test_kronos_live_starts_every_closed_minute(self) -> None:
-        service = OptionPowerRuntimeService(
+        service = RealtimeMonitorService(
             provider=DummyProvider(),
             store=DummyStore(),
             option_root="AUTO",
@@ -818,17 +818,17 @@ class OptionPowerRuntimeServiceTest(unittest.TestCase):
             ]
         )
 
-        with patch("qt_platform.option_power.service.threading.Thread") as thread_cls:
+        with patch("qt_platform.monitor.service.threading.Thread") as thread_cls:
             service._maybe_start_kronos_inference(datetime(2026, 4, 20, 8, 45))
             self.assertTrue(thread_cls.called)
 
         service._kronos_thread = None
-        with patch("qt_platform.option_power.service.threading.Thread") as thread_cls:
+        with patch("qt_platform.monitor.service.threading.Thread") as thread_cls:
             service._maybe_start_kronos_inference(datetime(2026, 4, 20, 8, 46))
             self.assertTrue(thread_cls.called)
 
     def test_kronos_live_also_starts_during_night_session(self) -> None:
-        service = OptionPowerRuntimeService(
+        service = RealtimeMonitorService(
             provider=DummyProvider(),
             store=DummyStore(),
             option_root="AUTO",
@@ -868,7 +868,7 @@ class OptionPowerRuntimeServiceTest(unittest.TestCase):
             ]
         )
 
-        with patch("qt_platform.option_power.service.threading.Thread") as thread_cls:
+        with patch("qt_platform.monitor.service.threading.Thread") as thread_cls:
             service._maybe_start_kronos_inference(datetime(2026, 4, 20, 21, 0))
             self.assertTrue(thread_cls.called)
 

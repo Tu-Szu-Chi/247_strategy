@@ -2,7 +2,7 @@ import unittest
 from datetime import datetime
 
 from qt_platform.option_iv import black76_price, build_iv_surface, implied_volatility
-from qt_platform.option_power.domain import OptionContractSnapshot, OptionExpirySnapshot
+from qt_platform.monitor.domain import MonitorContractSnapshot, MonitorExpirySnapshot
 
 
 class OptionIvTest(unittest.TestCase):
@@ -50,7 +50,7 @@ class OptionIvTest(unittest.TestCase):
             volatility=0.30,
             call_put="call",
         )
-        expiry = OptionExpirySnapshot(
+        expiry = MonitorExpirySnapshot(
             contract_month="20260422",
             label="2026-04-22",
             contracts=[
@@ -84,8 +84,8 @@ def _contract(
     call_put: str,
     last_price: float,
     last_tick_ts: str = "2026-04-21T13:29:30",
-) -> OptionContractSnapshot:
-    return OptionContractSnapshot(
+) -> MonitorContractSnapshot:
+    return MonitorContractSnapshot(
         instrument_key=instrument_key,
         symbol="TXO",
         contract_month="20260422",
