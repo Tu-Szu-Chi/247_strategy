@@ -1,5 +1,7 @@
 # MTX Kronos Probability Strategy Spec
 
+> Historical note: 這份文件偏研究設計稿，不保證每個 CLI 例子與 code path 仍然存在。實際入口請以 `kronos probability` CLI、`src/qt_platform/kronos/*` 與 `docs/OPERATIONS.md` 為準。
+
 ## 1. Goal
 
 Build a new MTX intraday strategy family that treats Kronos as a probabilistic indicator source, not as a direct price forecast.
@@ -142,18 +144,13 @@ Recommended first implementation is offline/backtest-only:
 Implemented CLI surface:
 
 ```text
-qt-platform build-mtx-probability-series \
+qt-platform kronos probability \
   --symbol MTX \
   --start 2026-04-13T00:00:00 \
   --end 2026-04-16T13:45:00 \
-  --history-start 2026-04-01T00:00:00 \
   --lookback 256 \
-  --stride 1 \
-  --max-decisions 100 \
   --target 10m:50 \
   --sample-count 64 \
-  --model NeoQuasar/Kronos-mini \
-  --tokenizer NeoQuasar/Kronos-Tokenizer-2k \
   --output reports/mtx-probability-series.json
 ```
 
@@ -308,7 +305,7 @@ Replay UI integration:
 ```text
 PYTHONPATH=src .venv/bin/python -m qt_platform.cli.main \
   --config config/config.yaml \
-  serve-option-power-replay \
+  monitor replay \
   --start 2026-04-14T08:45:00 \
   --end 2026-04-14T09:30:00 \
   --kronos-series-json reports/mtx-probability-smoke-10m50.json
@@ -415,11 +412,10 @@ Acceptance gate for live use:
 ```text
 PYTHONPATH=src .venv/bin/python -m qt_platform.cli.main \
   --config config/config.yaml \
-  build-mtx-probability-series \
+  kronos probability \
   --symbol MTX \
   --start 2026-04-14T08:45:00 \
   --end 2026-04-14T09:30:00 \
-  --history-start 2026-04-14T08:00:00 \
   --lookback 32 \
   --target 10m:50 \
   --sample-count 4 \

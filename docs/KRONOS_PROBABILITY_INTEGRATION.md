@@ -1,5 +1,7 @@
 # Kronos 整合機率指標方案 (Kronos Probability Integration Strategy)
 
+> Historical note: 這份文件保留研究設計脈絡，部分 CLI 與 code path 可能已過時。實際行為請以 `src/qt_platform/kronos/*`、`src/qt_platform/cli/kronos.py` 與 `docs/OPERATIONS.md` 為準。
+
 ## 1. 核心設計理念 (Core Concept)
 針對台指期 (MTX) 當沖交易，核心需求是計算「統計機率」而非單純預測點位。
 *   **目標指標範例**：`mtx_up_50_in_10_mins_probability` (10 分鐘內上漲 50 點的機率)。

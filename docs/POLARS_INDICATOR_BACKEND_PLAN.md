@@ -1,5 +1,7 @@
 # Polars Indicator Backend Plan
 
+> Historical note: 這份文件主要是重構過程紀錄，內含大量已搬移或已刪除的 code path、測試命令與中間狀態，不應直接當成目前 codebase 的事實來源。請優先看 `docs/ARCHITECTURE.md`、`docs/OPERATIONS.md`、`docs/SCHEMA.md` 與 `src/qt_platform/*`。
+
 Note:
 
 - `bias_signal`, `signal_state`, and the old `option-power-signal` strategy were removed from the active codebase on 2026-05-01.

@@ -1,267 +1,124 @@
 # Schema Notes
 
-這份文件固定平台內部「canonical data model」的語意。  
-原則是：上游 data source 可以換，但下游 storage / backtest / strategy 不應該跟著換欄位語意。
-
-## Design Principles
-
-- `historical` 與 `live` 是兩條不同資料路徑
-- `source payload` 不直接進策略層
-- 平台內部只吃 canonical model
-- `bars_1m` 是 derived data，不是 vendor-native raw data
-- `source` 可替換，但 canonical schema 盡量不變
+這份文件固定目前平台內部 canonical model 與主要 storage table 的語意。
 
 ## Core Domain
 
 ### `Bar`
-- 定義位置: `src/qt_platform/domain.py`
-- 用途: 平台內部統一的 bar 格式
-- 關鍵欄位:
-  - `ts`
-  - `trading_day`
-  - `symbol`
-  - `contract_month`
-  - `session`
-  - `open`
-  - `high`
-  - `low`
-  - `close`
-  - `volume`
-  - `open_interest`
-  - `source`
 
-### 未來要補的 canonical event
+定義位置：
 
-這兩個還沒正式落地，但 schema 與 pipeline 已先定義：
+- `src/qt_platform/domain.py`
 
-#### `CanonicalTick`
-- 用途: 平台內部統一的 raw trade event
-- 建議欄位:
-  - `ts`
-  - `instrument_key`
-  - `symbol`
-  - `contract_month`
-  - `strike_price`
-  - `call_put`
-  - `price`
-  - `size`
-  - `tick_type`
-  - `total_volume`
-  - `source`
-  - `payload_json`
+主要欄位：
 
-#### `QuoteState1m`
-- 用途: 盤中策略使用的 minute-level market state
-- 建議欄位:
-  - `ts`
-  - `instrument_key`
-  - `symbol`
-  - `contract_month`
-  - `strike_price`
-  - `call_put`
-  - `last_price`
-  - `last_size`
-  - `tick_count`
-  - `buy_tick_volume`
-  - `sell_tick_volume`
-  - `bid_side_total_vol`
-  - `ask_side_total_vol`
-  - `source`
-
-## Storage
-
-### `instrument_registry`
-- 目前實體形式: `config/symbols.csv`
-- 未來可升級成 DB table
-- 用途:
-  - 定義要同步哪些 instrument
-  - 隔離 strategy universe 與 vendor symbol
-- 建議欄位:
-  - `instrument_key`
-  - `market`
-  - `instrument_type`
-  - `symbol`
-  - `root_symbol`
-  - `enabled`
-  - `metadata_json`
-
-目前 `config/symbols.csv` 已實際支援：
+- `ts`
+- `trading_day`
 - `symbol`
-- `market`
-- `instrument_type`
-- `enabled`
+- `instrument_key`
+- `contract_month`
+- `session`
+- `open`
+- `high`
+- `low`
+- `close`
+- `volume`
+- `open_interest`
+- `source`
+- `build_source`
+- `strike_price`
+- `call_put`
+
+### `CanonicalTick`
+
+定義位置：
+
+- `src/qt_platform/domain.py`
+
+主要欄位：
+
+- `ts`
+- `trading_day`
+- `symbol`
+- `instrument_key`
+- `contract_month`
+- `strike_price`
+- `call_put`
+- `session`
+- `price`
+- `size`
+- `tick_direction`
+- `total_volume`
+- `bid_side_total_vol`
+- `ask_side_total_vol`
+- `source`
+- `payload_json`
+
+## Storage Tables
 
 ### `bars_1m`
-- 用途: 回測主資料
-- 來源:
-  - 現在: FinMind `tick -> 1m aggregation`
-  - 現在也可: broker-exported `1m CSV -> direct import`
-  - 未來: broker live ticks `-> 1m aggregation`
-  - 規劃中: `FinMind TaiwanOptionTick -> TXO 1m historical aggregation`
-- 原則:
-  - 只存 1 分 K 結果，不存 raw tick
-  - `1m` 與 `1d` 分表
-  - 需保留 `source`
-  - 目前已落地 `instrument_key`
-  - 目前已落地 `strike_price`
-  - 目前已落地 `call_put`
-  - 目前已落地 `build_source`
-    - 例如 `finmind_tick_agg`
-    - `csv_1m_import`
-    - `shioaji_tick_agg`
-    - `kgi_tick_agg`
-  - 目前已落地 `up_ticks / down_ticks`
-    - 主要來自 broker-exported `1m CSV`
-    - 可作為未來力道 proxy 的基礎欄位
-  - 對 index-like series，`instrument_key` 應保有實際標的身份
-    - 例如 `TWOTC -> index:TWOTC`
-    - 不應只寫成通用值 `index`
 
-### `TXO 1m historical` 規劃邊界
-- 尚未實作
-- 已固定採用 Version A universe
-  - `option_root = TXO`
-  - 最近 `2` 個到期日
-  - 每個到期日取 `ATM ±20`
-  - `call + put`
-- 這條規則的目的不是覆蓋整條 option chain，而是：
-  - 控制 request 成本
-  - 與 live resolver universe 保持一致
-  - 讓 historical option minute data 與 live-recorded option minute data 更容易對齊
-- `contract_date` 仍需原樣保留，不能簡化成只有 `YYYYMM`
-- full-chain historical option minute backfill 明確延後
+用途：
+
+- 回測主資料
+- historical query
+- replay chart bars
+
+來源：
+
+- FinMind tick aggregation
+- broker-exported 1m CSV import
+- live canonical tick aggregation
 
 ### `bars_1d`
-- 用途: 日資料研究與 bootstrap
-- 原則:
-  - 與 `bars_1m` 分開
-  - 不允許日資料寫進 `bars_1m`
-  - `source` / `build_source` 語意與 `bars_1m` 相同
-  - 目前也保留 `instrument_key / strike_price / call_put`
-  - 唯一鍵必須以 `instrument_key` 為主，不可只用 `symbol`
-    - `stock/future`: `instrument_key` 可等於 root symbol
-    - `option`: `instrument_key` 需包含 `symbol + contract_date + strike_price + call_put`
-  - 否則同一天整條 option chain 會互相覆蓋
+
+用途：
+
+- 日資料研究
+- bootstrap / higher timeframe reference
 
 ### `raw_ticks`
-- 用途:
-  - 接 broker live tick feed
-  - 建立自有歷史 tick 庫
-  - 作為 `bars_1m` 與 `quote_state_1m` 的上游
-- 原則:
-  - append-only
-  - 保留 vendor payload 方便追查
-  - 目前已落地最小欄位:
-    - `ts`
-    - `trading_day`
-    - `symbol`
-    - `instrument_key`
-    - `contract_month`
-    - `strike_price`
-    - `call_put`
-    - `session`
-    - `price`
-    - `size`
-    - `tick_direction`
-    - `total_volume`
-    - `bid_side_total_vol`
-    - `ask_side_total_vol`
-    - `source`
-    - `payload_json`
-  - v1 先保證能錄進來，不先追求完整 broker feature surface
 
-### `quote_state_1m`
-- 目前尚未落地
-- 用途:
-  - 盤中決策
-  - 不進 backtest 主 bar store
-- 原則:
-  - 與 `bars_1m` 分開
-  - 語意是 market state，不是 OHLCV
-  - 不應被誤用成歷史回測 bar
+用途：
+
+- live tick archive
+- replay / monitor rebuild source
+- `bars_1m` aggregation upstream
+
+原則：
+
+- append-only
+- 保留 canonical 欄位
+- 可保留 vendor payload 方便追查
 
 ### `sync_state`
-- 用途: 記錄同步游標
-- 主鍵:
-  - `source`
-  - `symbol`
-  - `timeframe`
-  - `session_scope`
 
-## Provider Abstraction
+用途：
 
-## 現在的 provider
-
-### `BaseProvider.fetch_history(...)`
-- 輸入:
-  - `symbol`
-  - `start_date`
-  - `end_date`
-  - `timeframe`
-  - `session_scope`
-- 輸出:
-  - `list[Bar]`
-
-### `FinMindAdapter`
-- `timeframe=1d`: `TaiwanFuturesDaily`
-- `timeframe=1m`: `TaiwanFuturesTick` 聚合成 1 分 K
-- `1d` 一律寫入 `bars_1d`
-- `1m` 一律寫入 `bars_1m`
-
-## 接下來的 provider 方向
-
-平台應拆成至少兩種 provider interface：
-
-### `HistoricalBarProvider`
-- 直接產出 canonical `Bar`
-- 例如:
-  - FinMind futures daily
-  - FinMind futures tick aggregated to 1m
-
-### `LiveTickProvider`
-- 產出 canonical `CanonicalTick`
-- 例如:
-  - Shioaji futures/options tick callback
-  - KGI SUPER PY tick subscription
-
-重點不是「策略直接換 provider」，而是：
-- vendor SDK -> provider adapter -> normalizer -> canonical model
-
-這樣替換 source 時，理論上只需要新增：
-- provider adapter
-- payload normalizer
-
-下游 storage / aggregation / strategy 不必跟著改 vendor-specific 欄位。
+- historical sync cursor / progress state
 
 ## Session Rules
 
-### Session 分類
-- `day`: 08:45 - 13:45
-- `night`: 15:00 - 次日 05:00
+共用交易時段規則在：
 
-### `trading_day`
-- 日盤 bar: `trading_day = ts.date()`
-- 夜盤 15:00-23:59: `trading_day = ts.date()`
-- 夜盤 00:00-05:00: `trading_day = 前一個日曆日`
+- `src/qt_platform/trading_calendar.py`
 
-### 為什麼重要
-- 夜盤跨自然日，所以不能只靠 calendar date 思考資料與回測
-- `scan-gaps` 只會把 session 內應該存在的 bar 視為缺口
+目前 session 分類：
 
-## MTX Contract Rule
+- `day`: `08:45 - 13:45`
+- `night`: `15:00 - 次日 05:00`
 
-- v1 先實作 `MTX` 月契約規則，不處理週契約 `MX1/MX2/MX4/MX5`
-- 月契約最後交易日以該月份 `第 3 個星期三` 判定
-- 若 `trading_day` 已超過當月最後交易日，主月切到次月
+`trading_day` 規則：
 
-### `MTX_MAIN`
-- 不是上游 provider symbol
-- 讀取時會先查 `MTX`
-- 再依每根 bar 的 `trading_day` 選出對應主月 `contract_month`
+- 日盤：`trading_day = ts.date()`
+- 夜盤 `15:00-23:59`：`trading_day = ts.date()`
+- 夜盤 `00:00-05:00`：`trading_day = 前一個日曆日`
 
-## Current Scope
+## MTX / Market-State
 
-- 先把 `history data + backtest` 做穩
-- `live` 先只規劃 schema，不急著接 broker socket
-- `raw_bidask` 先不做
-- 未來 live 路徑以 `raw_ticks -> bars_1m / quote_state_1m` 為主
+MTX market-state adapter 在：
+
+- `src/qt_platform/market_state/mtx.py`
+
+這是 research / monitor / replay 使用的 market-state layer。  
+對外 snapshot 仍保留 `regime` 欄位相容，但內部不應再新增新的 root-level `regime.py` 類型邊界。

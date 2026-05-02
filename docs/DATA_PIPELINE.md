@@ -1,129 +1,100 @@
 # Data Pipeline
 
-這份文件描述資料從 vendor source 進到平台內部 storage 的路徑，目標是保持 source 可替換。
+這份文件描述目前 codebase 內已落地的資料路徑，只寫現在真的存在的邊界。
 
-## Pipeline Goals
+## Goals
 
 - provider 可替換
 - canonical model 穩定
 - historical 與 live 分流
-- derived table 不直接承載 vendor payload
+- downstream 不直接依賴 vendor payload
 
-## Historical Pipeline
+## Historical
 
-### Current v1
+目前 historical pipeline 是：
 
 `FinMind -> provider adapter -> canonical Bar -> repository -> bars_1d / bars_1m`
 
 說明：
+
 - `1d`
-  - 來源是 `TaiwanFuturesDaily`
-  - 直接正規化成 `Bar`
+  - 來源是 FinMind daily futures data
+  - 正規化成 canonical `Bar`
 - `1m`
-  - 來源是 `TaiwanFuturesTick`
-  - 先在 provider 內聚成 1 分 K
+  - 來源是 FinMind futures tick data
+  - 先聚合成 `Bar`
   - 再寫入 `bars_1m`
 
-### Future direction
+目前對外 CLI 是：
 
-應該支援多個 historical source：
-- FinMind
-- broker historical API
-- local archive files
+- `data sync`
+- `data gaps`
+- `data import`
+- `data doctor`
 
-它們都應該實作 `HistoricalBarProvider`，輸出 canonical `Bar`。
+## Live
 
-## Live Pipeline
+目前 live pipeline 是：
 
-### Planned v1.1 direction
+`Broker socket -> live provider adapter -> CanonicalTick -> raw_ticks -> 1m aggregation -> bars_1m`
 
-`Broker socket -> live provider adapter -> canonical Tick -> raw_ticks`
+另外 monitor/live 會並行維護研究用 state：
 
-然後再分兩條：
+- option pressure state
+- MTX market-state snapshot
+- replay/live indicator series
+- optional Kronos probability metrics
 
-1. `raw_ticks -> minute bar aggregator -> bars_1m`
-2. `raw_ticks -> state aggregator -> quote_state_1m`
+重要原則：
 
-### Why no direct snapshot -> bars_1m
+- snapshot 不直接等於 minute OHLCV
+- `bars_1m` 來自 canonical ticks 的聚合
+- monitor snapshot 是 research / UI state，不是歷史主儲存格式
 
-即時 snapshot 通常只能代表：
-- 某個時點的 market state
-- 或每個合約最近一筆狀態
-
-它不等於：
-- 這一分鐘內所有成交序列
-- 可完整重建 minute OHLCV 的 tick stream
-
-所以 snapshot 不應直接產生 `bars_1m`。
-
-## Canonical Model Layers
+## Canonical Layers
 
 ### Vendor payload
-- vendor-specific
-- 例如 FinMind JSON / Shioaji callback object / KGI callback payload
+
+- vendor-specific callback / JSON
 
 ### Provider adapter
-- 封裝 vendor SDK 或 HTTP API
-- 不讓 vendor 細節外溢
 
-### Normalizer
-- 把 vendor payload 映射成 canonical model
+- 封裝 vendor SDK / HTTP API
+- 把 vendor 細節隔離在 provider 內
 
 ### Canonical model
+
 - `Bar`
-- `CanonicalTick` (planned)
-- `QuoteState1m` (planned)
+- `CanonicalTick`
 
 ### Repository / Aggregator
-- 只處理 canonical model
 
-## Source Replacement Rule
+- repository 處理 storage
+- aggregator 處理 replay/live snapshot materialization
 
-替換資料源時，理想上只需要新增：
+## Replacement Rule
+
+替換資料源時，理想上只需要改：
+
 - provider adapter
-- normalizer
+- payload normalizer
 
-不應影響：
+不應大改：
+
+- storage schema
 - strategy
 - backtest
 - reporting
-- sync planning
+- replay/live API contract
 
-如果替換 source 時需要大改下游，表示 canonical boundary 設計失敗。
+## Session / Trading-Day Boundary
 
-## Registry-Driven Sync
+共用交易時段邏輯現在在：
 
-### Input
-- `config/symbols.csv`
-- `start_date`
-- `end_date`
-- `timeframes`
+- `src/qt_platform/trading_calendar.py`
 
-### Planner
-- `plan-sync`
-- 估算：
-  - symbol 數
-  - 日期數
-  - request 數
-  - runtime
-  - bootstrap / catch_up / repair 模式
+MTX market-state adapter 現在在：
 
-### Executor
-- `sync-registry` (in progress)
-- 初期先支援：
-  - historical bootstrap
-  - catch-up
-- minute-level repair 之後再補
+- `src/qt_platform/market_state/mtx.py`
 
-## Current Recommendation
-
-- historical:
-  - FinMind
-- first live source:
-  - Shioaji preferred
-- second live source:
-  - KGI SUPER PY
-
-原因：
-- Shioaji 的 Python 文件、streaming 類型與 callback/binding 說明較成熟
-- KGI 保留為第二 provider，不與 schema 綁死
+這兩個都是基礎邊界，不應再把相同規則散落到 provider、storage、monitor 各處。
