@@ -57,7 +57,7 @@ class BacktestEngineTest(unittest.TestCase):
                         side=Side.BUY,
                         size=1,
                         reason="entry",
-                        metadata={"signal_state": 1, "pressure_index": 62.5},
+                        metadata={"flow_state": 1, "pressure_index": 62.5},
                     )
                 ]
 
@@ -69,7 +69,7 @@ class BacktestEngineTest(unittest.TestCase):
 
         result = run_backtest(bars=bars, strategy=MetadataStrategy(), config=BacktestConfig(starting_cash=1000))
 
-        self.assertEqual(result.fills[0].metadata, {"signal_state": 1, "pressure_index": 62.5})
+        self.assertEqual(result.fills[0].metadata, {"flow_state": 1, "pressure_index": 62.5})
 
     def test_strategy_definition_runs_indicator_signal_and_execution_layers(self) -> None:
         class ThresholdIndicator(BaseIndicator):
@@ -218,9 +218,9 @@ class BacktestEngineTest(unittest.TestCase):
         self.assertEqual(result.fills[1].metadata, {})
 
     def test_indicator_series_are_available_as_strategy_context_extras(self) -> None:
-        class SignalStateStrategy(BaseStrategy):
+        class FlowStateStrategy(BaseStrategy):
             def on_bar(self, context: StrategyContext):
-                if context.extras.get("signal_state") != 1:
+                if context.extras.get("flow_state") != 1:
                     return []
                 return [Signal(ts=context.bar.ts, side=Side.BUY, size=1, reason="backend_signal")]
 
@@ -231,11 +231,10 @@ class BacktestEngineTest(unittest.TestCase):
         ]
         result = run_backtest(
             bars=bars,
-            strategy=SignalStateStrategy(),
+            strategy=FlowStateStrategy(),
             config=BacktestConfig(starting_cash=1000),
             indicator_series={
-                "signal_state": [{"time": start.isoformat(), "value": 1}],
-                "bias_signal": [{"time": start.isoformat(), "value": 1}],
+                "flow_state": [{"time": start.isoformat(), "value": 1}],
             },
         )
 
@@ -247,17 +246,17 @@ class BacktestEngineTest(unittest.TestCase):
         start = datetime(2024, 1, 1, 8, 45)
 
         extras = indicator_series_to_context_extras(
-            {"signal_state": [{"time": start.isoformat(), "value": 1}]}
+            {"flow_state": [{"time": start.isoformat(), "value": 1}]}
         )
 
-        self.assertEqual(extras, {start: {"signal_state": 1}})
+        self.assertEqual(extras, {start: {"flow_state": 1}})
 
         class CaptureStrategy(BaseStrategy):
             def __init__(self) -> None:
                 self.values = []
 
             def on_bar(self, context: StrategyContext):
-                self.values.append(context.extras.get("signal_state"))
+                self.values.append(context.extras.get("flow_state"))
                 return []
 
         strategy = CaptureStrategy()
@@ -265,8 +264,8 @@ class BacktestEngineTest(unittest.TestCase):
             bars=[Bar(start, start.date(), "MTX", "202401", "day", 100, 101, 99, 100, 10, None, "test")],
             strategy=strategy,
             config=BacktestConfig(starting_cash=1000),
-            context_extras_by_ts={start: {"signal_state": -1}},
-            indicator_series={"signal_state": [{"time": start.isoformat(), "value": 1}]},
+            context_extras_by_ts={start: {"flow_state": -1}},
+            indicator_series={"flow_state": [{"time": start.isoformat(), "value": 1}]},
         )
 
         self.assertEqual(strategy.values, [-1])

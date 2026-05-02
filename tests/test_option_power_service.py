@@ -1,9 +1,17 @@
+import json
+import tempfile
 import unittest
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from pathlib import Path
 from unittest.mock import patch
 
-from qt_platform.domain import CanonicalTick
-from qt_platform.option_power.service import OPTION_ROOT_RETRY_SECONDS, OptionPowerRuntimeService
+from qt_platform.domain import Bar, CanonicalTick
+from qt_platform.kronos.probability import ProbabilityTarget
+from qt_platform.option_power.service import (
+    OPTION_ROOT_RETRY_SECONDS,
+    KronosLiveSettings,
+    OptionPowerRuntimeService,
+)
 
 
 class DummyProvider:
@@ -561,6 +569,308 @@ class OptionPowerRuntimeServiceTest(unittest.TestCase):
         self.assertEqual(subscribed["registry_path"], "config/symbols.csv")
         self.assertEqual(subscribed["registry_stock_count"], 1)
         self.assertEqual(subscribed["registry_stock_symbols"], ["2330"])
+
+    def test_live_series_merges_kronos_series_and_metadata(self) -> None:
+        service = OptionPowerRuntimeService(
+            provider=DummyProvider(),
+            store=DummyStore(),
+            option_root="AUTO",
+            expiry_count=2,
+            atm_window=20,
+            underlying_future_symbol="MXFR1",
+            call_put="both",
+            session_scope="day_and_night",
+            batch_size=500,
+            snapshot_interval_seconds=5.0,
+            log_callback=lambda payload: None,
+        )
+        service._snapshot_history.append(
+            {
+                "session_id": "test-run",
+                "index": 0,
+                "simulated_at": "2026-04-20T09:00:00",
+                "snapshot": {"pressure_index": 5, "raw_pressure": 12, "regime": {}},
+            }
+        )
+        service._kronos_series_history = {
+            "mtx_up_50_in_10m_probability": [{"time": "2026-04-20T09:04:00", "value": 0.75}],
+            "mtx_down_50_in_10m_probability": [{"time": "2026-04-20T09:04:00", "value": 0.25}],
+            "mtx_expected_close_delta_10m": [{"time": "2026-04-20T09:04:00", "value": 18.0}],
+        }
+        service._kronos_status = "ready"
+
+        series = service.live_series(
+            [
+                "pressure_index",
+                "mtx_up_50_in_10m_probability",
+                "mtx_down_50_in_10m_probability",
+                "mtx_expected_close_delta_10m",
+            ]
+        )
+
+        self.assertEqual(series["mtx_up_50_in_10m_probability"][0]["value"], 0.75)
+        self.assertEqual(series["mtx_down_50_in_10m_probability"][0]["value"], 0.25)
+        self.assertEqual(series["mtx_expected_close_delta_10m"][0]["value"], 18.0)
+
+        metadata = service.live_metadata()
+        self.assertIn("mtx_up_50_in_10m_probability", metadata["available_series"])
+        self.assertEqual(metadata["kronos"]["status"], "ready")
+
+    def test_kronos_live_inference_emits_only_core_series(self) -> None:
+        class FakePredictor:
+            def predict_paths(self, bars, **kwargs):
+                return [
+                    [[100, 151, 100, 118, 1, 118] for _ in range(10)],
+                    [[100, 120, 49, 90, 1, 90] for _ in range(10)],
+                ]
+
+        service = OptionPowerRuntimeService(
+            provider=DummyProvider(),
+            store=DummyStore(),
+            option_root="AUTO",
+            expiry_count=2,
+            atm_window=20,
+            underlying_future_symbol="MXFR1",
+            call_put="both",
+            session_scope="day_and_night",
+            batch_size=500,
+            snapshot_interval_seconds=5.0,
+            log_callback=lambda payload: None,
+            kronos_live_settings=KronosLiveSettings(
+                predictor=FakePredictor(),
+                lookback=2,
+                targets=(ProbabilityTarget(minutes=10, points=50),),
+                sample_count=2,
+            ),
+        )
+
+        decision_time = datetime(2026, 4, 20, 9, 4)
+        service._run_kronos_inference(
+            decision_time,
+            [
+                Bar(
+                    ts=datetime(2026, 4, 20, 9, 3),
+                    trading_day=date(2026, 4, 20),
+                    symbol="MTX",
+                    contract_month="202604",
+                    session="day",
+                    open=20000.0,
+                    high=20005.0,
+                    low=19995.0,
+                    close=20000.0,
+                    volume=10.0,
+                    open_interest=None,
+                    source="test",
+                ),
+                Bar(
+                    ts=decision_time,
+                    trading_day=date(2026, 4, 20),
+                    symbol="MTX",
+                    contract_month="202604",
+                    session="day",
+                    open=20000.0,
+                    high=20005.0,
+                    low=19995.0,
+                    close=20000.0,
+                    volume=10.0,
+                    open_interest=None,
+                    source="test",
+                ),
+            ],
+        )
+
+        self.assertEqual(service._kronos_status, "ready")
+        self.assertIn("mtx_up_50_in_10m_probability", service._kronos_latest_metrics)
+        self.assertIn("mtx_down_50_in_10m_probability", service._kronos_latest_metrics)
+        self.assertIn("mtx_expected_close_delta_10m", service._kronos_latest_metrics)
+        self.assertNotIn("mtx_probability_ready", service._kronos_latest_metrics)
+        self.assertNotIn("mtx_path_close_delta_p50_10m", service._kronos_latest_metrics)
+
+    def test_kronos_live_inference_persists_json_and_updates_latest_snapshot(self) -> None:
+        class FakePredictor:
+            def predict_paths(self, bars, **kwargs):
+                return [
+                    [[100, 151, 100, 118, 1, 118] for _ in range(10)],
+                    [[100, 120, 49, 90, 1, 90] for _ in range(10)],
+                ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "kronos-live.json"
+            service = OptionPowerRuntimeService(
+                provider=DummyProvider(),
+                store=DummyStore(),
+                option_root="AUTO",
+                expiry_count=2,
+                atm_window=20,
+                underlying_future_symbol="MXFR1",
+                call_put="both",
+                session_scope="day_and_night",
+                batch_size=500,
+                snapshot_interval_seconds=5.0,
+                log_callback=lambda payload: None,
+                kronos_live_settings=KronosLiveSettings(
+                    predictor=FakePredictor(),
+                    lookback=2,
+                    targets=(ProbabilityTarget(minutes=10, points=50),),
+                    sample_count=2,
+                    output_path=str(output_path),
+                ),
+            )
+            service.run_id = "live-test"
+            service._snapshot_history.append(
+                {
+                    "session_id": "live-test",
+                    "index": 0,
+                    "simulated_at": "2026-04-20T09:00:00",
+                    "snapshot": {
+                        "generated_at": "2026-04-20T09:00:00",
+                        "pressure_index": 5,
+                        "raw_pressure": 12,
+                        "regime": {},
+                    },
+                }
+            )
+
+            decision_time = datetime(2026, 4, 20, 9, 4)
+            service._run_kronos_inference(
+                decision_time,
+                [
+                    Bar(
+                        ts=datetime(2026, 4, 20, 9, 3),
+                        trading_day=date(2026, 4, 20),
+                        symbol="MTX",
+                        contract_month="202604",
+                        session="day",
+                        open=20000.0,
+                        high=20005.0,
+                        low=19995.0,
+                        close=20000.0,
+                        volume=10.0,
+                        open_interest=None,
+                        source="test",
+                    ),
+                    Bar(
+                        ts=decision_time,
+                        trading_day=date(2026, 4, 20),
+                        symbol="MTX",
+                        contract_month="202604",
+                        session="day",
+                        open=20000.0,
+                        high=20005.0,
+                        low=19995.0,
+                        close=20000.0,
+                        volume=10.0,
+                        open_interest=None,
+                        source="test",
+                    ),
+                ],
+            )
+
+            dated_output_path = Path(tmpdir) / "kronos-live-2026-04-20.json"
+            self.assertTrue(dated_output_path.exists())
+            payload = json.loads(dated_output_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["metadata"]["mode"], "live")
+            self.assertEqual(payload["metadata"]["run_id"], "live-test")
+            self.assertIn("mtx_up_50_in_10m_probability", payload["series"])
+            self.assertEqual(
+                service._snapshot_history[-1]["snapshot"]["mtx_up_50_in_10m_probability"],
+                service._kronos_latest_metrics["mtx_up_50_in_10m_probability"],
+            )
+
+    def test_kronos_live_starts_every_closed_minute(self) -> None:
+        service = OptionPowerRuntimeService(
+            provider=DummyProvider(),
+            store=DummyStore(),
+            option_root="AUTO",
+            expiry_count=2,
+            atm_window=20,
+            underlying_future_symbol="MXFR1",
+            call_put="both",
+            session_scope="day_and_night",
+            batch_size=500,
+            snapshot_interval_seconds=5.0,
+            log_callback=lambda payload: None,
+            kronos_live_settings=KronosLiveSettings(
+                predictor=object(),
+                lookback=2,
+                targets=(ProbabilityTarget(minutes=10, points=50),),
+                sample_count=2,
+                interval_minutes=1,
+            ),
+        )
+        service._underlying_domain_bars.extend(
+            [
+                Bar(
+                    ts=datetime(2026, 4, 20, 8, 44) + timedelta(minutes=index),
+                    trading_day=date(2026, 4, 20),
+                    symbol="MTX",
+                    contract_month="202604",
+                    session="day",
+                    open=20000.0,
+                    high=20005.0,
+                    low=19995.0,
+                    close=20000.0,
+                    volume=10.0,
+                    open_interest=None,
+                    source="test",
+                )
+                for index in range(2)
+            ]
+        )
+
+        with patch("qt_platform.option_power.service.threading.Thread") as thread_cls:
+            service._maybe_start_kronos_inference(datetime(2026, 4, 20, 8, 45))
+            self.assertTrue(thread_cls.called)
+
+        service._kronos_thread = None
+        with patch("qt_platform.option_power.service.threading.Thread") as thread_cls:
+            service._maybe_start_kronos_inference(datetime(2026, 4, 20, 8, 46))
+            self.assertTrue(thread_cls.called)
+
+    def test_kronos_live_also_starts_during_night_session(self) -> None:
+        service = OptionPowerRuntimeService(
+            provider=DummyProvider(),
+            store=DummyStore(),
+            option_root="AUTO",
+            expiry_count=2,
+            atm_window=20,
+            underlying_future_symbol="MXFR1",
+            call_put="both",
+            session_scope="day_and_night",
+            batch_size=500,
+            snapshot_interval_seconds=5.0,
+            log_callback=lambda payload: None,
+            kronos_live_settings=KronosLiveSettings(
+                predictor=object(),
+                lookback=2,
+                targets=(ProbabilityTarget(minutes=10, points=50),),
+                sample_count=2,
+                interval_minutes=1,
+            ),
+        )
+        service._underlying_domain_bars.extend(
+            [
+                Bar(
+                    ts=datetime(2026, 4, 20, 21, 0) + timedelta(minutes=index),
+                    trading_day=date(2026, 4, 20),
+                    symbol="MTX",
+                    contract_month="202604",
+                    session="night",
+                    open=20000.0,
+                    high=20005.0,
+                    low=19995.0,
+                    close=20000.0,
+                    volume=10.0,
+                    open_interest=None,
+                    source="test",
+                )
+                for index in range(2)
+            ]
+        )
+
+        with patch("qt_platform.option_power.service.threading.Thread") as thread_cls:
+            service._maybe_start_kronos_inference(datetime(2026, 4, 20, 21, 0))
+            self.assertTrue(thread_cls.called)
 
 
 if __name__ == "__main__":

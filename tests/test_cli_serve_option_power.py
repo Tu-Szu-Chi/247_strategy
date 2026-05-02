@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from qt_platform.cli.main import _serve_option_power, _serve_option_power_replay
+from qt_platform.option_power.service import KronosLiveSettings
 
 
 class ServeOptionPowerTest(unittest.TestCase):
@@ -28,11 +29,30 @@ class ServeOptionPowerTest(unittest.TestCase):
             ready_timeout_seconds=15.0,
             host="127.0.0.1",
             port=8000,
+            kronos_live=False,
+            kronos_output=None,
         )
         settings = SimpleNamespace(
             shioaji=SimpleNamespace(),
             database=SimpleNamespace(url="sqlite:///tmp/test.db"),
             sync=SimpleNamespace(registry_path="config/symbols.csv"),
+            kronos=SimpleNamespace(
+                enabled=False,
+                target=["10m:50"],
+                lookback=32,
+                sample_count=4,
+                interval_minutes=5,
+                temperature=1.0,
+                top_k=0,
+                top_p=0.9,
+                model="NeoQuasar/Kronos-mini",
+                tokenizer="NeoQuasar/Kronos-Tokenizer-2k",
+                model_revision=None,
+                tokenizer_revision=None,
+                device=None,
+                max_context=512,
+                output_path=None,
+            ),
         )
 
         runtime = MagicMock()
@@ -93,11 +113,30 @@ class ServeOptionPowerTest(unittest.TestCase):
             ready_timeout_seconds=15.0,
             host="127.0.0.1",
             port=8000,
+            kronos_live=False,
+            kronos_output=None,
         )
         settings = SimpleNamespace(
             shioaji=SimpleNamespace(),
             database=SimpleNamespace(url="sqlite:///tmp/test.db"),
             sync=SimpleNamespace(registry_path="config/symbols.csv"),
+            kronos=SimpleNamespace(
+                enabled=False,
+                target=["10m:50"],
+                lookback=32,
+                sample_count=4,
+                interval_minutes=5,
+                temperature=1.0,
+                top_k=0,
+                top_p=0.9,
+                model="NeoQuasar/Kronos-mini",
+                tokenizer="NeoQuasar/Kronos-Tokenizer-2k",
+                model_revision=None,
+                tokenizer_revision=None,
+                device=None,
+                max_context=512,
+                output_path=None,
+            ),
         )
 
         runtime = MagicMock()
@@ -123,6 +162,188 @@ class ServeOptionPowerTest(unittest.TestCase):
             _serve_option_power(args, settings)
 
         self.assertTrue(uvicorn_run.called)
+
+    def test_serve_option_power_can_enable_kronos_live(self) -> None:
+        args = SimpleNamespace(
+            provider="shioaji",
+            idle_timeout_seconds=30.0,
+            simulation=True,
+            database_url="sqlite:///tmp/test.db",
+            option_root="AUTO",
+            expiry_count=2,
+            atm_window=20,
+            underlying_future_symbol="MXFR1",
+            registry=None,
+            call_put="both",
+            session_scope="day_and_night",
+            batch_size=500,
+            snapshot_interval_seconds=5.0,
+            replay_underlying_symbol="MTX",
+            log_file=None,
+            ready_timeout_seconds=15.0,
+            host="127.0.0.1",
+            port=8000,
+            kronos_live=True,
+            kronos_target=None,
+            kronos_lookback=32,
+            kronos_sample_count=4,
+            kronos_interval_minutes=5,
+            kronos_temperature=1.0,
+            kronos_top_k=0,
+            kronos_top_p=0.9,
+            kronos_model="NeoQuasar/Kronos-mini",
+            kronos_tokenizer="NeoQuasar/Kronos-Tokenizer-2k",
+            kronos_model_revision=None,
+            kronos_tokenizer_revision=None,
+            kronos_device=None,
+            kronos_max_context=512,
+            kronos_output=None,
+        )
+        settings = SimpleNamespace(
+            shioaji=SimpleNamespace(),
+            database=SimpleNamespace(url="sqlite:///tmp/test.db"),
+            sync=SimpleNamespace(registry_path="config/symbols.csv"),
+            kronos=SimpleNamespace(
+                enabled=False,
+                target=["10m:50"],
+                lookback=16,
+                sample_count=2,
+                interval_minutes=15,
+                temperature=0.7,
+                top_k=5,
+                top_p=0.8,
+                model="config-model",
+                tokenizer="config-tokenizer",
+                model_revision="rev-a",
+                tokenizer_revision="rev-b",
+                device="cuda:0",
+                max_context=1024,
+                output_path="reports/kronos-live-latest.json",
+            ),
+        )
+
+        runtime = MagicMock()
+        runtime.wait_until_ready.return_value = True
+        runtime.status = "running"
+        uvicorn_run = MagicMock()
+        predictor = object()
+
+        with patch("qt_platform.cli.main.ShioajiLiveProvider"), patch(
+            "qt_platform.cli.main.build_bar_repository"
+        ), patch(
+            "qt_platform.cli.main.load_registry_stock_symbols", return_value=[]
+        ), patch(
+            "qt_platform.cli.main._build_kronos_path_predictor_with_prefix", return_value=predictor
+        ), patch(
+            "qt_platform.cli.main.OptionPowerRuntimeService", return_value=runtime
+        ) as runtime_service_cls, patch(
+            "qt_platform.cli.main.OptionPowerReplayService"
+        ), patch(
+            "qt_platform.cli.main.build_option_power_app", return_value=object()
+        ), patch(
+            "qt_platform.cli.main._emit_runtime_status"
+        ), patch.dict(
+            sys.modules, {"uvicorn": types.SimpleNamespace(run=uvicorn_run)}
+        ):
+            _serve_option_power(args, settings)
+
+        self.assertIsInstance(
+            runtime_service_cls.call_args.kwargs["kronos_live_settings"],
+            KronosLiveSettings,
+        )
+
+    def test_serve_option_power_can_enable_kronos_live_from_config(self) -> None:
+        args = SimpleNamespace(
+            provider="shioaji",
+            idle_timeout_seconds=30.0,
+            simulation=True,
+            database_url="sqlite:///tmp/test.db",
+            option_root="AUTO",
+            expiry_count=2,
+            atm_window=20,
+            underlying_future_symbol="MXFR1",
+            registry=None,
+            call_put="both",
+            session_scope="day_and_night",
+            batch_size=500,
+            snapshot_interval_seconds=5.0,
+            replay_underlying_symbol="MTX",
+            log_file=None,
+            ready_timeout_seconds=15.0,
+            host="127.0.0.1",
+            port=8000,
+            kronos_live=False,
+            kronos_target=None,
+            kronos_lookback=None,
+            kronos_sample_count=None,
+            kronos_interval_minutes=None,
+            kronos_temperature=None,
+            kronos_top_k=None,
+            kronos_top_p=None,
+            kronos_model=None,
+            kronos_tokenizer=None,
+            kronos_model_revision=None,
+            kronos_tokenizer_revision=None,
+            kronos_device=None,
+            kronos_max_context=None,
+            kronos_output=None,
+        )
+        settings = SimpleNamespace(
+            shioaji=SimpleNamespace(),
+            database=SimpleNamespace(url="sqlite:///tmp/test.db"),
+            sync=SimpleNamespace(registry_path="config/symbols.csv"),
+            kronos=SimpleNamespace(
+                enabled=True,
+                target=["10m:50", "20m:100"],
+                lookback=300,
+                sample_count=128,
+                interval_minutes=5,
+                temperature=1.0,
+                top_k=0,
+                top_p=0.9,
+                model="config-model",
+                tokenizer="config-tokenizer",
+                model_revision="rev-a",
+                tokenizer_revision="rev-b",
+                device="cuda:0",
+                max_context=1024,
+                output_path="reports/kronos-live-latest.json",
+            ),
+        )
+
+        runtime = MagicMock()
+        runtime.wait_until_ready.return_value = True
+        runtime.status = "running"
+        uvicorn_run = MagicMock()
+        predictor = object()
+
+        with patch("qt_platform.cli.main.ShioajiLiveProvider"), patch(
+            "qt_platform.cli.main.build_bar_repository"
+        ), patch(
+            "qt_platform.cli.main.load_registry_stock_symbols", return_value=[]
+        ), patch(
+            "qt_platform.cli.main._build_kronos_path_predictor_with_prefix", return_value=predictor
+        ) as build_predictor, patch(
+            "qt_platform.cli.main.OptionPowerRuntimeService", return_value=runtime
+        ) as runtime_service_cls, patch(
+            "qt_platform.cli.main.OptionPowerReplayService"
+        ), patch(
+            "qt_platform.cli.main.build_option_power_app", return_value=object()
+        ), patch(
+            "qt_platform.cli.main._emit_runtime_status"
+        ), patch.dict(
+            sys.modules, {"uvicorn": types.SimpleNamespace(run=uvicorn_run)}
+        ):
+            _serve_option_power(args, settings)
+
+        build_predictor.assert_called_once()
+        kronos_live_settings = runtime_service_cls.call_args.kwargs["kronos_live_settings"]
+        self.assertIsInstance(kronos_live_settings, KronosLiveSettings)
+        self.assertEqual(kronos_live_settings.lookback, 300)
+        self.assertEqual(kronos_live_settings.sample_count, 128)
+        self.assertEqual(kronos_live_settings.interval_minutes, 5)
+        self.assertEqual(kronos_live_settings.top_p, 0.9)
+        self.assertEqual(kronos_live_settings.output_path, "reports/kronos-live-latest.json")
 
     def test_serve_option_power_replay_loads_kronos_series_json(self) -> None:
         args = SimpleNamespace(

@@ -111,6 +111,51 @@ class KronosProbabilityTest(unittest.TestCase):
             ],
         )
 
+    def test_series_builder_can_skip_diagnostic_series(self) -> None:
+        start = datetime(2026, 4, 16, 8, 45)
+        bars = _bars(start, 4)
+        predictor = FakePredictor()
+
+        series = build_probability_indicator_series(
+            bars,
+            predictor=predictor,
+            lookback=2,
+            targets=[ProbabilityTarget(minutes=1, points=1)],
+            sample_count=2,
+            include_status_metrics=False,
+            include_sample_count=False,
+            include_path_delta_percentiles=False,
+        )
+
+        self.assertIn("mtx_up_1_in_1m_probability", series)
+        self.assertIn("mtx_down_1_in_1m_probability", series)
+        self.assertIn("mtx_expected_close_delta_1m", series)
+        self.assertNotIn("mtx_probability_ready", series)
+        self.assertNotIn("mtx_probability_sample_count", series)
+        self.assertNotIn("mtx_path_close_delta_p50_1m", series)
+
+    def test_calculate_probability_metrics_can_skip_diagnostic_outputs(self) -> None:
+        paths = [
+            _path(high=106, low=99, close=101),
+            _path(high=104, low=94, close=98),
+        ]
+
+        metrics = calculate_probability_metrics(
+            paths,
+            current_close=100,
+            targets=[ProbabilityTarget(minutes=10, points=5)],
+            include_status_metrics=False,
+            include_sample_count=False,
+            include_path_delta_percentiles=False,
+        )
+
+        self.assertNotIn("mtx_probability_ready", metrics)
+        self.assertNotIn("mtx_probability_sample_count", metrics)
+        self.assertNotIn("mtx_path_close_delta_p50_10m", metrics)
+        self.assertIn("mtx_up_5_in_10m_probability", metrics)
+        self.assertIn("mtx_down_5_in_10m_probability", metrics)
+        self.assertIn("mtx_expected_close_delta_10m", metrics)
+
 
 class FakePredictor:
     def __init__(self) -> None:

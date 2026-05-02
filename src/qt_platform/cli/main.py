@@ -24,6 +24,7 @@ from qt_platform.domain import LiveRunMetadata
 from qt_platform.features import compute_minute_force_feature_series
 from qt_platform.history_sync import build_history_entries, sync_history_days
 from qt_platform.kronos import (
+    ProbabilityTarget,
     build_probability_indicator_series,
     parse_probability_target,
 )
@@ -34,7 +35,7 @@ from qt_platform.live.universe import (
     live_symbol_for_registry_future,
     load_registry_stock_symbols,
 )
-from qt_platform.option_power import OptionPowerReplayService, OptionPowerRuntimeService
+from qt_platform.option_power import KronosLiveSettings, OptionPowerReplayService, OptionPowerRuntimeService
 from qt_platform.option_power.replay import load_external_indicator_series
 from qt_platform.contracts import (
     is_continuous_symbol,
@@ -56,7 +57,6 @@ from qt_platform.session import (
 )
 from qt_platform.settings import Settings, load_settings
 from qt_platform.storage.factory import build_bar_repository
-from qt_platform.strategies.option_power_signal import OptionPowerSignalStrategy
 from qt_platform.strategies.sma_cross import SmaCrossStrategy
 from qt_platform.symbol_registry import load_symbol_registry
 from qt_platform.web import build_option_power_app
@@ -95,8 +95,6 @@ def main() -> None:
     backtest.add_argument("--long-only", action="store_true")
     backtest.add_argument("--reference-symbol", default="2330")
     backtest.add_argument("--with-option-power-indicators", action="store_true")
-    backtest.add_argument("--no-bias-alignment", action="store_true")
-    backtest.add_argument("--hold-through-neutral", action="store_true")
     backtest.add_argument("--option-root", default="AUTO")
     backtest.add_argument("--expiry-count", type=int, default=2)
     backtest.add_argument("--indicator-snapshot-interval-seconds", type=float, default=60.0)
@@ -179,6 +177,21 @@ def main() -> None:
     serve_option_power.add_argument("--snapshot-interval-seconds", type=float, default=10.0)
     serve_option_power.add_argument("--ready-timeout-seconds", type=float, default=15.0)
     serve_option_power.add_argument("--replay-underlying-symbol", default="MTX")
+    serve_option_power.add_argument("--kronos-live", action="store_true")
+    serve_option_power.add_argument("--kronos-target", action="append")
+    serve_option_power.add_argument("--kronos-lookback", type=int)
+    serve_option_power.add_argument("--kronos-sample-count", type=int)
+    serve_option_power.add_argument("--kronos-interval-minutes", type=int)
+    serve_option_power.add_argument("--kronos-temperature", type=float)
+    serve_option_power.add_argument("--kronos-top-k", type=int)
+    serve_option_power.add_argument("--kronos-top-p", type=float)
+    serve_option_power.add_argument("--kronos-model")
+    serve_option_power.add_argument("--kronos-tokenizer")
+    serve_option_power.add_argument("--kronos-model-revision")
+    serve_option_power.add_argument("--kronos-tokenizer-revision")
+    serve_option_power.add_argument("--kronos-device")
+    serve_option_power.add_argument("--kronos-max-context", type=int)
+    serve_option_power.add_argument("--kronos-output")
     serve_option_power.add_argument("--log-file", default="logs/serve-option-power.log")
 
     serve_option_power_replay = subparsers.add_parser("serve-option-power-replay")
@@ -214,21 +227,22 @@ def main() -> None:
     mtx_probability.add_argument("--history-start")
     mtx_probability.add_argument("--timeframe", default="1m")
     mtx_probability.add_argument("--report-dir")
-    mtx_probability.add_argument("--lookback", type=int, default=256)
+    mtx_probability.add_argument("--lookback", type=int)
     mtx_probability.add_argument("--stride", type=int, default=1)
     mtx_probability.add_argument("--max-decisions", type=int)
     mtx_probability.add_argument("--target", action="append")
-    mtx_probability.add_argument("--sample-count", type=int, default=64)
-    mtx_probability.add_argument("--temperature", type=float, default=1.0)
-    mtx_probability.add_argument("--top-k", type=int, default=0)
-    mtx_probability.add_argument("--top-p", type=float, default=0.9)
-    mtx_probability.add_argument("--model", default="NeoQuasar/Kronos-mini")
-    mtx_probability.add_argument("--tokenizer", default="NeoQuasar/Kronos-Tokenizer-2k")
+    mtx_probability.add_argument("--sample-count", type=int)
+    mtx_probability.add_argument("--temperature", type=float)
+    mtx_probability.add_argument("--top-k", type=int)
+    mtx_probability.add_argument("--top-p", type=float)
+    mtx_probability.add_argument("--model")
+    mtx_probability.add_argument("--tokenizer")
     mtx_probability.add_argument("--model-revision")
     mtx_probability.add_argument("--tokenizer-revision")
     mtx_probability.add_argument("--device")
-    mtx_probability.add_argument("--max-context", type=int, default=512)
+    mtx_probability.add_argument("--max-context", type=int)
     mtx_probability.add_argument("--output")
+    mtx_probability.add_argument("--include-diagnostics", action="store_true")
     mtx_probability.add_argument("--verbose", action="store_true")
 
     resolve_contract = subparsers.add_parser("resolve-contract")
@@ -306,7 +320,7 @@ def _backtest(args: argparse.Namespace, settings: Settings) -> None:
         report_name,
     )
     fill_summary = None
-    if getattr(args, "fill_summary_csv", False) or args.strategy == "option-power-signal":
+    if getattr(args, "fill_summary_csv", False):
         fill_summary = write_annotated_fill_summary_csv(result, report_dir, report_name)
     print(f"ending_cash={result.ending_cash:.2f}")
     print(f"report={report}")
@@ -318,13 +332,6 @@ def _backtest(args: argparse.Namespace, settings: Settings) -> None:
 def _build_strategy(args: argparse.Namespace):
     if args.strategy == "sma-cross":
         return SmaCrossStrategy(fast_window=args.fast_window, slow_window=args.slow_window)
-    if args.strategy == "option-power-signal":
-        return OptionPowerSignalStrategy(
-            trade_size=args.trade_size,
-            max_position=args.max_position,
-            require_bias_alignment=not args.no_bias_alignment,
-            exit_on_neutral=not args.hold_through_neutral,
-        )
     raise ValueError(f"Unsupported strategy: {args.strategy}")
 
 
@@ -359,7 +366,7 @@ def _build_backtest_indicator_series(
 
 
 def _requires_backtest_indicator_series(args: argparse.Namespace) -> bool:
-    return bool(getattr(args, "with_option_power_indicators", False)) or args.strategy == "option-power-signal"
+    return bool(getattr(args, "with_option_power_indicators", False))
 
 
 def _build_mtx_probability_series(args: argparse.Namespace, settings: Settings) -> None:
@@ -376,22 +383,39 @@ def _build_mtx_probability_series(args: argparse.Namespace, settings: Settings) 
         end=end,
     )
     bars = select_symbol_view(args.symbol, bars)
-    targets = _parse_probability_targets(args.target)
-    predictor = _build_kronos_path_predictor(args)
+    resolved_args = argparse.Namespace(
+        lookback=_resolve_kronos_probability_arg(args, settings, "lookback"),
+        target=_resolve_kronos_probability_arg(args, settings, "target"),
+        sample_count=_resolve_kronos_probability_arg(args, settings, "sample_count"),
+        temperature=_resolve_kronos_probability_arg(args, settings, "temperature"),
+        top_k=_resolve_kronos_probability_arg(args, settings, "top_k"),
+        top_p=_resolve_kronos_probability_arg(args, settings, "top_p"),
+        model=_resolve_kronos_probability_arg(args, settings, "model"),
+        tokenizer=_resolve_kronos_probability_arg(args, settings, "tokenizer"),
+        model_revision=_resolve_kronos_probability_arg(args, settings, "model_revision"),
+        tokenizer_revision=_resolve_kronos_probability_arg(args, settings, "tokenizer_revision"),
+        device=_resolve_kronos_probability_arg(args, settings, "device"),
+        max_context=_resolve_kronos_probability_arg(args, settings, "max_context"),
+    )
+    targets = _parse_probability_targets(resolved_args.target)
+    predictor = _build_kronos_path_predictor(resolved_args)
     series = build_probability_indicator_series(
         bars,
         predictor=predictor,
-        lookback=args.lookback,
+        lookback=resolved_args.lookback,
         targets=targets,
-        sample_count=args.sample_count,
-        temperature=args.temperature,
-        top_k=args.top_k,
-        top_p=args.top_p,
+        sample_count=resolved_args.sample_count,
+        temperature=resolved_args.temperature,
+        top_k=resolved_args.top_k,
+        top_p=resolved_args.top_p,
         verbose=args.verbose,
         stride=args.stride,
         max_decisions=args.max_decisions,
         decision_start=start,
         decision_end=end,
+        include_status_metrics=args.include_diagnostics,
+        include_sample_count=args.include_diagnostics,
+        include_path_delta_percentiles=args.include_diagnostics,
     )
     output_path = _mtx_probability_output_path(args, settings)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -436,16 +460,45 @@ def _parse_probability_targets(raw_targets: list[str] | None) -> list:
 
 
 def _build_kronos_path_predictor(args: argparse.Namespace) -> KronosPathPredictor:
+    return _build_kronos_path_predictor_with_prefix(args)
+
+
+def _build_kronos_path_predictor_with_prefix(
+    args: argparse.Namespace,
+    prefix: str = "",
+    ) -> KronosPathPredictor:
+    def attr(name: str):
+        return getattr(args, f"{prefix}{name}")
+
     return KronosPathPredictor(
         KronosModelConfig(
-            model_id=args.model,
-            tokenizer_id=args.tokenizer,
-            model_revision=args.model_revision,
-            tokenizer_revision=args.tokenizer_revision,
-            device=args.device,
-            max_context=args.max_context,
+            model_id=attr("model"),
+            tokenizer_id=attr("tokenizer"),
+            model_revision=attr("model_revision"),
+            tokenizer_revision=attr("tokenizer_revision"),
+            device=attr("device"),
+            max_context=attr("max_context"),
         )
     )
+
+
+def _resolve_kronos_live_enabled(args: argparse.Namespace, settings: Settings) -> bool:
+    return bool(getattr(args, "kronos_live", False) or settings.kronos.enabled)
+
+
+def _resolve_kronos_live_arg(args: argparse.Namespace, settings: Settings, name: str):
+    cli_value = getattr(args, f"kronos_{name}")
+    if cli_value is not None:
+        return cli_value
+    settings_name = "output_path" if name == "output" else name
+    return getattr(settings.kronos, settings_name)
+
+
+def _resolve_kronos_probability_arg(args: argparse.Namespace, settings: Settings, name: str):
+    cli_value = getattr(args, name)
+    if cli_value is not None:
+        return cli_value
+    return getattr(settings.kronos, name)
 
 
 def _mtx_probability_output_path(args: argparse.Namespace, settings: Settings) -> Path:
@@ -1010,6 +1063,28 @@ def _serve_option_power(args: argparse.Namespace, settings: Settings) -> None:
         simulation=args.simulation,
     )
     store = build_bar_repository(_database_url(args, settings))
+    kronos_live_settings = None
+    if _resolve_kronos_live_enabled(args, settings):
+        kronos_args = argparse.Namespace(
+            kronos_model=_resolve_kronos_live_arg(args, settings, "model"),
+            kronos_tokenizer=_resolve_kronos_live_arg(args, settings, "tokenizer"),
+            kronos_model_revision=_resolve_kronos_live_arg(args, settings, "model_revision"),
+            kronos_tokenizer_revision=_resolve_kronos_live_arg(args, settings, "tokenizer_revision"),
+            kronos_device=_resolve_kronos_live_arg(args, settings, "device"),
+            kronos_max_context=_resolve_kronos_live_arg(args, settings, "max_context"),
+        )
+        predictor = _build_kronos_path_predictor_with_prefix(kronos_args, "kronos_")
+        kronos_live_settings = KronosLiveSettings(
+            predictor=predictor,
+            lookback=_resolve_kronos_live_arg(args, settings, "lookback"),
+            targets=tuple(_parse_probability_targets(_resolve_kronos_live_arg(args, settings, "target"))),
+            sample_count=_resolve_kronos_live_arg(args, settings, "sample_count"),
+            interval_minutes=_resolve_kronos_live_arg(args, settings, "interval_minutes"),
+            temperature=_resolve_kronos_live_arg(args, settings, "temperature"),
+            top_k=_resolve_kronos_live_arg(args, settings, "top_k"),
+            top_p=_resolve_kronos_live_arg(args, settings, "top_p"),
+            output_path=_resolve_kronos_live_arg(args, settings, "output"),
+        )
     runtime = OptionPowerRuntimeService(
         provider=provider,
         store=store,
@@ -1024,6 +1099,7 @@ def _serve_option_power(args: argparse.Namespace, settings: Settings) -> None:
         batch_size=args.batch_size,
         snapshot_interval_seconds=args.snapshot_interval_seconds,
         log_callback=lambda payload: _emit_runtime_status(payload, args.log_file),
+        kronos_live_settings=kronos_live_settings,
     )
     replay = OptionPowerReplayService(
         store=store,

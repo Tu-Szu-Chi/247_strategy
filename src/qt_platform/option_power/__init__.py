@@ -5,12 +5,13 @@ from qt_platform.option_power.domain import (
     OptionPowerSnapshot,
 )
 from qt_platform.option_power.replay import OptionPowerReplayService
-from qt_platform.option_power.service import OptionPowerRuntimeService
+from qt_platform.option_power.service import KronosLiveSettings, OptionPowerRuntimeService
 
 __all__ = [
     "OptionContractSnapshot",
     "OptionExpirySnapshot",
     "OptionPowerAggregator",
+    "KronosLiveSettings",
     "OptionPowerReplayService",
     "OptionPowerRuntimeService",
     "OptionPowerSnapshot",

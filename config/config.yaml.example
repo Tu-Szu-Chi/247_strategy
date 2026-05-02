@@ -30,3 +30,21 @@ sync:
   registry_path: "config/symbols.csv"
   requests_per_hour: 6000
   target_utilization: 0.8
+
+kronos:
+  enabled: false
+  target:
+    - "10m:50"
+  lookback: 300
+  sample_count: 128
+  interval_minutes: 1
+  temperature: 1.0
+  top_k: 0
+  top_p: 0.9
+  model: "NeoQuasar/Kronos-mini"
+  tokenizer: "NeoQuasar/Kronos-Tokenizer-2k"
+  model_revision:
+  tokenizer_revision:
+  device:
+  max_context: 512
+  output_path: "reports/kronos-live.json"

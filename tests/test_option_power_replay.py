@@ -414,15 +414,15 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
         series = service.build_backtest_indicator_series(
             start=base_ts,
             end=base_ts + timedelta(minutes=1),
-            names=["raw_pressure", "signal_state"],
+            names=["raw_pressure", "flow_state"],
             interval="1m",
             wait_timeout=2.0,
         )
 
-        self.assertEqual(sorted(series.keys()), ["raw_pressure", "signal_state"])
+        self.assertEqual(sorted(series.keys()), ["flow_state", "raw_pressure"])
         self.assertEqual(len(series["raw_pressure"]), 2)
         self.assertEqual(series["raw_pressure"][1]["value"], 10)
-        self.assertEqual(len(series["signal_state"]), 2)
+        self.assertEqual(len(series["flow_state"]), 2)
 
     def test_create_session_normalizes_aware_inputs_to_local_domain_time(self) -> None:
         local_start = datetime(2026, 4, 16, 9, 0, 0)
@@ -1001,7 +1001,7 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
 
         payload = service.get_bundle(
             metadata["session_id"],
-            ["raw_pressure", "signal_state"],
+            ["raw_pressure", "flow_state"],
             start=base_ts,
             end=base_ts + timedelta(minutes=9),
             interval="1m",
@@ -1012,7 +1012,7 @@ class OptionPowerReplayServiceTest(unittest.TestCase):
         self.assertIsNotNone(payload)
         self.assertLessEqual(len(payload["bars"]), 3)
         self.assertEqual(len(payload["series"]["raw_pressure"]), 10)
-        self.assertEqual(len(payload["series"]["signal_state"]), 10)
+        self.assertEqual(len(payload["series"]["flow_state"]), 10)
         self.assertIsNone(payload["coverage"]["max_points"])
         self.assertEqual(payload["coverage"]["request_id"], "viewport-1")
         self.assertTrue(payload["coverage"]["complete"])

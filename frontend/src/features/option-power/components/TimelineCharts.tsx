@@ -53,22 +53,20 @@ type TimelineChartsProps = {
   rawPressureSeries: IndicatorPanelSeries[];
   chopSeries: IndicatorPanelSeries[];
   structureSeries: IndicatorPanelSeries[];
-  biasSeries: IndicatorPanelSeries[];
-  signalSeries: IndicatorPanelSeries[];
   contextSeries: IndicatorPanelSeries[];
   trendQualitySeries: IndicatorPanelSeries[];
   cvdSeries: IndicatorPanelSeries[];
   rangeStateSeries: IndicatorPanelSeries[];
   ivSkewSeries: IndicatorPanelSeries[];
-  kronosSeries: IndicatorPanelSeries[];
+  kronosProbabilitySeries: IndicatorPanelSeries[];
+  kronosDeltaSeries: IndicatorPanelSeries[];
   visiblePanelIds?: PanelId[];
   mode: "live" | "replay";
   onCursorTimeChange: (ts: string | null) => void;
-  onVisibleRangeChange?: (range: { start: string; end: string; hasLeftWhitespace?: boolean; hasRightWhitespace?: boolean }) => void;
   viewKey?: string;
 };
 
-type PanelId = "price" | "pressure" | "regime" | "bias" | "signal" | "chop" | "structure" | "context" | "trendQuality" | "cvd" | "rangeState" | "ivSkew" | "kronos";
+type PanelId = "price" | "kronosProbability" | "kronosDelta" | "pressure" | "regime" | "chop" | "structure" | "context" | "trendQuality" | "cvd" | "rangeState" | "ivSkew";
 
 const PANEL_SPECS: Array<{
   id: PanelId;
@@ -87,6 +85,22 @@ const PANEL_SPECS: Array<{
     height: 360,
   },
   {
+    id: "kronosProbability",
+    slot: "indicator",
+    label: "Kronos",
+    title: "Kronos Probability",
+    legend: "up/down hit probability",
+    height: 150,
+  },
+  {
+    id: "kronosDelta",
+    slot: "indicator",
+    label: "Kronos",
+    title: "Kronos Delta",
+    legend: "expected close delta / 10m",
+    height: 132,
+  },
+  {
     id: "pressure",
     slot: "indicator",
     label: "Pressure",
@@ -100,22 +114,6 @@ const PANEL_SPECS: Array<{
     label: "Pressure Raw",
     title: "Raw Pressure",
     legend: "raw + weighted",
-    height: 120,
-  },
-  {
-    id: "bias",
-    slot: "indicator",
-    label: "Bias",
-    title: "Bias Signal",
-    legend: "long / neutral / short",
-    height: 120,
-  },
-  {
-    id: "signal",
-    slot: "indicator",
-    label: "Signal",
-    title: "Signal State",
-    legend: "long / neutral / short",
     height: 120,
   },
   {
@@ -174,14 +172,6 @@ const PANEL_SPECS: Array<{
     legend: "call wing - put wing",
     height: 132,
   },
-  {
-    id: "kronos",
-    slot: "indicator",
-    label: "Kronos",
-    title: "Kronos Probability",
-    legend: "up/down hit probability + expected delta",
-    height: 150,
-  },
 ];
 
 export function TimelineCharts({
@@ -190,26 +180,22 @@ export function TimelineCharts({
   rawPressureSeries,
   chopSeries,
   structureSeries,
-  biasSeries,
-  signalSeries,
   contextSeries,
   trendQualitySeries,
   cvdSeries,
   rangeStateSeries,
   ivSkewSeries,
-  kronosSeries,
+  kronosProbabilitySeries,
+  kronosDeltaSeries,
   visiblePanelIds,
   mode,
   onCursorTimeChange,
-  onVisibleRangeChange,
   viewKey,
 }: TimelineChartsProps) {
   const panelData = useMemo<Record<Exclude<PanelId, "price">, IndicatorPanelSeries[]>>(
     () => ({
       pressure: pressureSeries,
       regime: rawPressureSeries,
-      bias: biasSeries,
-      signal: signalSeries,
       chop: chopSeries,
       structure: structureSeries,
       context: contextSeries,
@@ -217,9 +203,10 @@ export function TimelineCharts({
       cvd: cvdSeries,
       rangeState: rangeStateSeries,
       ivSkew: ivSkewSeries,
-      kronos: kronosSeries,
+      kronosProbability: kronosProbabilitySeries,
+      kronosDelta: kronosDeltaSeries,
     }),
-    [biasSeries, chopSeries, contextSeries, cvdSeries, ivSkewSeries, kronosSeries, pressureSeries, rangeStateSeries, rawPressureSeries, signalSeries, structureSeries, trendQualitySeries],
+    [chopSeries, contextSeries, cvdSeries, ivSkewSeries, kronosDeltaSeries, kronosProbabilitySeries, pressureSeries, rangeStateSeries, rawPressureSeries, structureSeries, trendQualitySeries],
   );
   const visiblePanelKey = visiblePanelIds?.join(",") ?? "";
   const visiblePanels = useMemo(() => {
@@ -249,33 +236,31 @@ export function TimelineCharts({
 
   const containerRefs = useRef<Record<PanelId, HTMLDivElement | null>>({
     price: null,
+    kronosProbability: null,
+    kronosDelta: null,
     pressure: null,
     regime: null,
     chop: null,
     structure: null,
-    bias: null,
-    signal: null,
     context: null,
     trendQuality: null,
     cvd: null,
     rangeState: null,
     ivSkew: null,
-    kronos: null,
   });
   const chartsRef = useRef<Record<PanelId, IChartApi | null>>({
     price: null,
+    kronosProbability: null,
+    kronosDelta: null,
     pressure: null,
     regime: null,
     chop: null,
     structure: null,
-    bias: null,
-    signal: null,
     context: null,
     trendQuality: null,
     cvd: null,
     rangeState: null,
     ivSkew: null,
-    kronos: null,
   });
   const indicatorSeriesRef = useRef<Record<string, ISeriesApi<"Line">>>({});
   const indicatorHistogramRef = useRef<Record<string, ISeriesApi<"Histogram">>>({});
@@ -294,18 +279,17 @@ export function TimelineCharts({
   });
   const representativeSeriesRef = useRef<Record<PanelId, ISeriesApi<"Line"> | ISeriesApi<"Histogram"> | ISeriesApi<"Candlestick"> | null>>({
     price: null,
+    kronosProbability: null,
+    kronosDelta: null,
     pressure: null,
     regime: null,
     chop: null,
     structure: null,
-    bias: null,
-    signal: null,
     context: null,
     trendQuality: null,
     cvd: null,
     rangeState: null,
     ivSkew: null,
-    kronos: null,
   });
   const fittedRef = useRef(false);
   const liveAutoFollowRef = useRef(true);
@@ -313,10 +297,8 @@ export function TimelineCharts({
   const syncingCrosshairRef = useRef(false);
   const suppressVisibleRangeChangeRef = useRef(false);
   const suppressVisibleRangeTimerRef = useRef<number | null>(null);
-  const visibleRangeTimeoutRef = useRef<number | null>(null);
   const workerRef = useRef<Worker | null>(null);
   const workerRequestIdRef = useRef(0);
-  const onVisibleRangeChangeRef = useRef(onVisibleRangeChange);
   const normalizedDataRef = useRef<NormalizedChartData>(normalizeChartData({
     bars: [],
     panelData: {},
@@ -327,23 +309,19 @@ export function TimelineCharts({
   }));
   const dataRef = useRef<Record<string, Map<number, LineData | CandlestickData>>>({
     price: new Map(),
+    kronosProbability: new Map(),
+    kronosDelta: new Map(),
     pressure: new Map(),
     regime: new Map(),
     chop: new Map(),
     structure: new Map(),
-    bias: new Map(),
-    signal: new Map(),
     context: new Map(),
     trendQuality: new Map(),
     cvd: new Map(),
     rangeState: new Map(),
     ivSkew: new Map(),
-    kronos: new Map(),
   });
-
-  useEffect(() => {
-    onVisibleRangeChangeRef.current = onVisibleRangeChange;
-  }, [onVisibleRangeChange]);
+  const indicatorSeriesDataRef = useRef<Record<string, Map<number, LineData | HistogramData>>>({});
 
   useEffect(() => {
     normalizedDataRef.current = normalizedData;
@@ -358,10 +336,6 @@ export function TimelineCharts({
       suppressVisibleRangeChangeRef.current = false;
       suppressVisibleRangeTimerRef.current = null;
     }, 80);
-    if (visibleRangeTimeoutRef.current !== null) {
-      window.clearTimeout(visibleRangeTimeoutRef.current);
-      visibleRangeTimeoutRef.current = null;
-    }
   };
 
   useEffect(() => {
@@ -504,27 +478,6 @@ export function TimelineCharts({
           }
           liveAutoFollowRef.current = sourceChart.timeScale().scrollPosition() <= 0.5;
         }
-        if (mode === "replay" && onVisibleRangeChangeRef.current) {
-          if (suppressVisibleRangeChangeRef.current) {
-            return;
-          }
-          if (!fittedRef.current) {
-            return;
-          }
-          if (visibleRangeTimeoutRef.current !== null) {
-            window.clearTimeout(visibleRangeTimeoutRef.current);
-          }
-          const visibleRange = sourceChart.timeScale().getVisibleRange();
-          const requestedRange = resolveRequestedVisibleRange(
-            normalizedDataRef.current.bars,
-            logicalRange,
-            visibleRange?.from as Time | undefined,
-            visibleRange?.to as Time | undefined,
-          );
-          visibleRangeTimeoutRef.current = window.setTimeout(() => {
-            onVisibleRangeChangeRef.current?.(requestedRange);
-          }, 180);
-        }
       });
     }
 
@@ -564,28 +517,23 @@ export function TimelineCharts({
 
     chartsRef.current = {
       price: charts.price ?? null,
+      kronosProbability: charts.kronosProbability ?? null,
+      kronosDelta: charts.kronosDelta ?? null,
       pressure: charts.pressure ?? null,
       regime: charts.regime ?? null,
       chop: charts.chop ?? null,
       structure: charts.structure ?? null,
-      bias: charts.bias ?? null,
-      signal: charts.signal ?? null,
       context: charts.context ?? null,
       trendQuality: charts.trendQuality ?? null,
       cvd: charts.cvd ?? null,
       rangeState: charts.rangeState ?? null,
       ivSkew: charts.ivSkew ?? null,
-      kronos: charts.kronos ?? null,
     };
     priceSeriesRef.current = { candle, volume, ma10, ma30, ma60 };
     indicatorSeriesRef.current = indicatorSeries;
     indicatorHistogramRef.current = indicatorHistograms;
 
     return () => {
-      if (visibleRangeTimeoutRef.current !== null) {
-        window.clearTimeout(visibleRangeTimeoutRef.current);
-        visibleRangeTimeoutRef.current = null;
-      }
       if (suppressVisibleRangeTimerRef.current !== null) {
         window.clearTimeout(suppressVisibleRangeTimerRef.current);
         suppressVisibleRangeTimerRef.current = null;
@@ -597,21 +545,21 @@ export function TimelineCharts({
       }
       chartsRef.current = {
         price: null,
+        kronosProbability: null,
+        kronosDelta: null,
         pressure: null,
         regime: null,
         chop: null,
         structure: null,
-        bias: null,
-        signal: null,
         context: null,
         trendQuality: null,
         cvd: null,
         rangeState: null,
         ivSkew: null,
-        kronos: null,
       };
       indicatorSeriesRef.current = {};
       indicatorHistogramRef.current = {};
+      indicatorSeriesDataRef.current = {};
       priceSeriesRef.current = {
         candle: null,
         volume: null,
@@ -621,18 +569,17 @@ export function TimelineCharts({
       };
       representativeSeriesRef.current = {
         price: null,
+        kronosProbability: null,
+        kronosDelta: null,
         pressure: null,
         regime: null,
         chop: null,
         structure: null,
-        bias: null,
-        signal: null,
         context: null,
         trendQuality: null,
         cvd: null,
         rangeState: null,
         ivSkew: null,
-        kronos: null,
       };
       fittedRef.current = false;
     };
@@ -641,6 +588,12 @@ export function TimelineCharts({
   useEffect(() => {
     fittedRef.current = false;
     liveAutoFollowRef.current = true;
+    for (const key of Object.keys(dataRef.current)) {
+      dataRef.current[key]?.clear();
+    }
+    for (const key of Object.keys(indicatorSeriesDataRef.current)) {
+      indicatorSeriesDataRef.current[key]?.clear();
+    }
   }, [viewKey]);
 
   useEffect(() => {
@@ -751,7 +704,7 @@ export function TimelineCharts({
         continue;
       }
       let representativeSet = false;
-      const existingPanelMap = dataRef.current[panel.id] || new Map<number, any>();
+      let representativeMap = new Map<number, LineData | HistogramData>();
       
       for (const series of panelData[panel.id]) {
         if (series.kind === "histogram") {
@@ -759,10 +712,16 @@ export function TimelineCharts({
           if (!target) continue;
           
           const normalized = (normalizedData.panels[panel.id]?.[series.id] ?? []) as HistogramData[];
-          syncSeriesData(target, normalized, existingPanelMap, existingPanelMap);
+          const existingSeriesMap = indicatorSeriesDataRef.current[series.id] ?? new Map<number, HistogramData>();
+          indicatorSeriesDataRef.current[series.id] = existingSeriesMap as Map<number, LineData | HistogramData>;
+          syncSeriesData(target, normalized, existingSeriesMap, existingSeriesMap);
           
           if (!representativeSet && normalized.length > 0) {
             representativeSeriesRef.current[panel.id] = target;
+            representativeMap = new Map<number, HistogramData>();
+            for (const item of normalized) {
+              representativeMap.set(Number(item.time), item);
+            }
             representativeSet = true;
           }
           continue;
@@ -772,16 +731,25 @@ export function TimelineCharts({
         if (!target) continue;
         
         const normalized = (normalizedData.panels[panel.id]?.[series.id] ?? []) as LineData[];
-        syncSeriesData(target, normalized, existingPanelMap, existingPanelMap);
+        const existingSeriesMap = indicatorSeriesDataRef.current[series.id] ?? new Map<number, LineData>();
+        indicatorSeriesDataRef.current[series.id] = existingSeriesMap as Map<number, LineData | HistogramData>;
+        syncSeriesData(target, normalized, existingSeriesMap, existingSeriesMap);
         
         if (!representativeSet && normalized.length > 0) {
           representativeSeriesRef.current[panel.id] = target;
+          representativeMap = new Map<number, LineData>();
+          for (const item of normalized) {
+            representativeMap.set(Number(item.time), item);
+          }
           representativeSet = true;
         }
       }
       
       if (!representativeSet) {
         representativeSeriesRef.current[panel.id] = null;
+        dataRef.current[panel.id] = new Map<number, LineData | HistogramData>();
+      } else {
+        dataRef.current[panel.id] = representativeMap;
       }
     }
 
@@ -971,69 +939,6 @@ function initialReplayVisibleRange(data: NormalizedChartData): Range<Time> | nul
     from: data.bars[0].time,
     to: data.bars[data.bars.length - 1].time,
   };
-}
-
-export function resolveRequestedVisibleRange(
-  bars: CandlestickData[],
-  logicalRange: LogicalRange,
-  visibleFrom?: Time,
-  visibleTo?: Time,
-) {
-  const leftWhitespaceBars = Math.max(0, Math.ceil(0 - logicalRange.from));
-  const rightWhitespaceBars = Math.max(0, Math.ceil(logicalRange.to - (bars.length - 1)));
-  const fallbackRange = {
-    start: visibleFrom !== undefined ? toIsoTime(visibleFrom) : "",
-    end: visibleTo !== undefined ? toIsoTime(visibleTo) : "",
-    hasLeftWhitespace: leftWhitespaceBars > 0,
-    hasRightWhitespace: rightWhitespaceBars > 0,
-  };
-  if (bars.length === 0) {
-    return fallbackRange;
-  }
-
-  const firstBarTime = Number(bars[0].time);
-  const lastBarTime = Number(bars[bars.length - 1].time);
-  if (Number.isNaN(firstBarTime) || Number.isNaN(lastBarTime)) {
-    return fallbackRange;
-  }
-
-  const intervalSeconds = inferBarIntervalSeconds(bars);
-  const logicalStart = localIsoString(new Date((firstBarTime + Math.floor(logicalRange.from) * intervalSeconds) * 1000));
-  const logicalEnd = localIsoString(new Date((firstBarTime + Math.ceil(logicalRange.to) * intervalSeconds) * 1000));
-
-  const requestedStart = leftWhitespaceBars > 0
-    ? localIsoString(new Date((firstBarTime - leftWhitespaceBars * intervalSeconds) * 1000))
-    : fallbackRange.start || logicalStart;
-  const requestedEnd = rightWhitespaceBars > 0
-    ? localIsoString(new Date((lastBarTime + rightWhitespaceBars * intervalSeconds) * 1000))
-    : fallbackRange.end || logicalEnd;
-
-  return {
-    start: requestedStart,
-    end: requestedEnd,
-    hasLeftWhitespace: leftWhitespaceBars > 0,
-    hasRightWhitespace: rightWhitespaceBars > 0,
-  };
-}
-
-function inferBarIntervalSeconds(bars: CandlestickData[]) {
-  if (bars.length < 2) {
-    return 60;
-  }
-  const deltas: number[] = [];
-  for (let index = 1; index < bars.length; index += 1) {
-    const previous = Number(bars[index - 1].time);
-    const current = Number(bars[index].time);
-    const delta = current - previous;
-    if (delta > 0 && Number.isFinite(delta)) {
-      deltas.push(delta);
-    }
-  }
-  if (deltas.length === 0) {
-    return 60;
-  }
-  deltas.sort((left, right) => left - right);
-  return deltas[Math.floor(deltas.length / 2)];
 }
 
 function toIsoTime(time: Time) {

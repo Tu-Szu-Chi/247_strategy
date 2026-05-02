@@ -42,6 +42,9 @@ def build_probability_indicator_series(
     max_decisions: int | None = None,
     decision_start: Any | None = None,
     decision_end: Any | None = None,
+    include_status_metrics: bool = True,
+    include_sample_count: bool = True,
+    include_path_delta_percentiles: bool = True,
 ) -> dict[str, list[dict[str, Any]]]:
     if lookback <= 0:
         raise ValueError("lookback must be positive")
@@ -91,6 +94,9 @@ def build_probability_indicator_series(
             current_close=decision_bar.close,
             targets=targets,
             bar_minutes=resolved_bar_minutes,
+            include_status_metrics=include_status_metrics,
+            include_sample_count=include_sample_count,
+            include_path_delta_percentiles=include_path_delta_percentiles,
         )
         append_metrics_point(series, time=decision_bar.ts, metrics=metrics)
         emitted_decisions += 1

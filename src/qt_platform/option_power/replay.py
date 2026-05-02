@@ -45,8 +45,6 @@ STATE_SERIES_NAMES = {
     "trend_bias_state",
     "flow_state",
     "range_state",
-    "bias_signal",
-    "signal_state",
 }
 PRESSURE_SERIES_NAMES = {
     "pressure_index",

@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   createReplaySession,
   getReplayBundle,
-  getReplayBundleByBars,
   getReplayDefault,
   getReplayProgress,
 } from "./api";
@@ -15,10 +14,6 @@ import type {
 } from "./types";
 
 const INITIAL_REPLAY_WINDOW_HOURS = 3;
-const REPLAY_WINDOW_PADDING_MINUTES = 30;
-const VISIBLE_RANGE_BUFFER_RATIO = 0.2;
-const PREFETCH_EDGE_THRESHOLD_MINUTES = 30;
-const CURSOR_PREFETCH_BAR_COUNT = 50;
 const MIN_REPLAY_POINTS = 600;
 const MAX_REPLAY_POINTS = 2400;
 const REPLAY_POINTS_PER_PIXEL = 2;
@@ -84,8 +79,6 @@ export function useOptionPowerReplay(
   const readyReloadKeyRef = useRef("");
   const replayRequestSequenceRef = useRef(0);
   const bundleInFlightRef = useRef<Set<string>>(new Set());
-  const prefetchInFlightRef = useRef<Set<string>>(new Set());
-  const cursorInFlightRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     stateRef.current = state;
@@ -102,30 +95,33 @@ export function useOptionPowerReplay(
       const showLoading = options.showLoading ?? true;
       const window = requestedWindow ?? initialReplayWindow(session);
       const bundleKey = `${seriesKey}:${session.session_id}:${interval}:${window.start}:${window.end}`;
+      const isSameSession = stateRef.current.session?.session_id === session.session_id;
+      const isSameInterval = stateRef.current.loadedInterval === interval;
+      const canReuseLoadedData = isSameSession && isSameInterval;
       if (bundleInFlightRef.current.has(bundleKey)) {
         return session;
       }
       bundleInFlightRef.current.add(bundleKey);
       setState((current) => ({
         ...current,
-        bars: current.session?.session_id === session.session_id ? current.bars : [],
+        bars: canReuseLoadedData ? current.bars : [],
         session,
         windowStart: updateWindow ? window.start : current.windowStart,
         windowEnd: updateWindow ? window.end : current.windowEnd,
-        loadedStart: current.session?.session_id === session.session_id ? current.loadedStart : null,
-        loadedEnd: current.session?.session_id === session.session_id ? current.loadedEnd : null,
-        loadedRanges: current.session?.session_id === session.session_id ? current.loadedRanges : [],
-        seriesLoadedRanges: current.session?.session_id === session.session_id ? current.seriesLoadedRanges : [],
-        seriesPendingRanges: current.session?.session_id === session.session_id ? current.seriesPendingRanges : [],
-        loadedInterval: current.session?.session_id === session.session_id ? current.loadedInterval : null,
+        loadedStart: canReuseLoadedData ? current.loadedStart : null,
+        loadedEnd: canReuseLoadedData ? current.loadedEnd : null,
+        loadedRanges: canReuseLoadedData ? current.loadedRanges : [],
+        seriesLoadedRanges: canReuseLoadedData ? current.seriesLoadedRanges : [],
+        seriesPendingRanges: canReuseLoadedData ? current.seriesPendingRanges : [],
+        loadedInterval: canReuseLoadedData ? current.loadedInterval : null,
         computeStatus: session.compute_status ?? current.computeStatus,
         computedUntil: session.computed_until ?? current.computedUntil,
         progressRatio: session.progress_ratio ?? current.progressRatio,
-        partial: current.session?.session_id === session.session_id ? current.partial : false,
+        partial: canReuseLoadedData ? current.partial : false,
         loading: showLoading ? true : current.loading,
         error: null,
       }));
-      if (stateRef.current.session?.session_id !== session.session_id) {
+      if (!canReuseLoadedData) {
         setSeries({});
       }
       const controller = showLoading ? new AbortController() : null;
@@ -219,97 +215,6 @@ export function useOptionPowerReplay(
     const session = await getReplayDefault();
     return loadSession(session, interval);
   }, [loadSession]);
-
-  const loadSessionByBars = useCallback(
-    async (
-      session: ReplaySession,
-      direction: "prev" | "next",
-      anchor: string,
-    ) => {
-      const cursorKey = `${seriesKey}:${session.session_id}:${interval}:${direction}:${anchor}:${CURSOR_PREFETCH_BAR_COUNT}`;
-      if (cursorInFlightRef.current.has(cursorKey)) {
-        return session;
-      }
-      cursorInFlightRef.current.add(cursorKey);
-      setState((current) => ({
-        ...current,
-        session,
-        bars: current.loadedInterval === interval ? current.bars : [],
-        loadedStart: current.loadedInterval === interval ? current.loadedStart : null,
-        loadedEnd: current.loadedInterval === interval ? current.loadedEnd : null,
-        loadedRanges: current.loadedInterval === interval ? current.loadedRanges : [],
-        seriesLoadedRanges: current.loadedInterval === interval ? current.seriesLoadedRanges : [],
-        seriesPendingRanges: current.loadedInterval === interval ? current.seriesPendingRanges : [],
-        loadedInterval: current.loadedInterval === interval ? current.loadedInterval : null,
-        computeStatus: session.compute_status ?? current.computeStatus,
-        computedUntil: session.computed_until ?? current.computedUntil,
-        progressRatio: session.progress_ratio ?? current.progressRatio,
-        error: null,
-      }));
-      try {
-        const replayRequestId = nextReplayRequestId(replayRequestSequenceRef, "cursor");
-        const bundle = await getReplayBundleByBars(
-          session.session_id,
-          anchor,
-          direction,
-          CURSOR_PREFETCH_BAR_COUNT,
-          interval,
-          seriesNames,
-          undefined,
-          replayTargetMaxPoints(),
-          replayRequestId,
-        );
-        setState((current) => {
-          const responseSession = bundle.session ?? session;
-          if (current.session?.session_id !== session.session_id && current.session?.session_id !== responseSession.session_id) {
-            return current;
-          }
-          const hasCoverage = bundle.coverage.first_bar_time && bundle.coverage.last_bar_time;
-          const incomingWindow = hasCoverage
-            ? {
-                start: bundle.coverage.first_bar_time ?? anchor,
-                end: bundle.coverage.last_bar_time ?? anchor,
-              }
-            : null;
-          const loadedRanges = incomingWindow
-            ? mergeLoadedRanges(current.loadedRanges, incomingWindow)
-            : current.loadedRanges;
-          const seriesLoadedRanges = incomingWindow && !bundle.seriesStatus.partial
-            ? mergeLoadedRanges(current.seriesLoadedRanges, incomingWindow)
-            : current.seriesLoadedRanges;
-          const seriesPendingRanges = incomingWindow
-            ? (
-                bundle.seriesStatus.partial
-                  ? mergeLoadedRanges(current.seriesPendingRanges, incomingWindow)
-                  : removeCoveredRanges(current.seriesPendingRanges, incomingWindow)
-              )
-            : current.seriesPendingRanges;
-          const loadedBounds = loadedRangeBounds(loadedRanges);
-          return {
-            ...current,
-            session: responseSession,
-            bars: mergeBars(current.bars, bundle.bars),
-            loadedStart: loadedBounds.start,
-            loadedEnd: loadedBounds.end,
-            loadedRanges,
-            seriesLoadedRanges,
-            seriesPendingRanges,
-            loadedInterval: interval,
-            computeStatus: bundle.seriesStatus.compute_status,
-            computedUntil: bundle.seriesStatus.computed_until,
-            progressRatio: bundle.seriesStatus.progress_ratio,
-            partial: bundle.seriesStatus.partial,
-            error: null,
-          };
-        });
-        setSeries((current) => mergeSeriesMaps(current, bundle.series));
-        return session;
-      } finally {
-        cursorInFlightRef.current.delete(cursorKey);
-      }
-    },
-    [interval, seriesKey],
-  );
 
   const createSession = useCallback(
     async (start: string, end: string) => {
@@ -525,87 +430,6 @@ export function useOptionPowerReplay(
     return loadSession(state.session, interval, initialReplayWindow(state.session));
   }, [interval, loadSession, state.session]);
 
-  const ensureWindowForVisibleRange = useCallback(
-    async (
-      start: string,
-      end: string,
-      options: { hasLeftWhitespace?: boolean; hasRightWhitespace?: boolean } = {},
-    ) => {
-      if (!state.session) {
-        return null;
-      }
-      const visibleStart = new Date(start).getTime();
-      const visibleEnd = new Date(end).getTime();
-      const sessionBounds = replaySessionBounds(state.session);
-      const sessionStart = new Date(sessionBounds.start).getTime();
-      const sessionEnd = new Date(sessionBounds.end).getTime();
-      const bufferedRange = replayBufferedRangeForVisibleRange(state.session, start, end);
-      const requestStart = new Date(bufferedRange.start).getTime();
-      const requestEnd = new Date(bufferedRange.end).getTime();
-      const thresholdMs = PREFETCH_EDGE_THRESHOLD_MINUTES * 60 * 1000;
-      const loadedBounds = loadedRangeBounds(state.loadedRanges);
-      const loadedStartMs = loadedBounds.start ? new Date(loadedBounds.start).getTime() : null;
-      const loadedEndMs = loadedBounds.end ? new Date(loadedBounds.end).getTime() : null;
-      const prevAnchor = state.loadedRanges.length > 0
-        ? nearestLoadedRangeStart(state.loadedRanges, bufferedRange.start)
-        : null;
-      const nextAnchor = state.loadedRanges.length > 0
-        ? nearestLoadedRangeEnd(state.loadedRanges, bufferedRange.end)
-        : null;
-      const prevAnchorMs = prevAnchor ? new Date(prevAnchor).getTime() : null;
-      const nextAnchorMs = nextAnchor ? new Date(nextAnchor).getTime() : null;
-      const knownSeriesRanges = mergeLoadedRangeList([
-        ...state.seriesLoadedRanges,
-        ...state.seriesPendingRanges,
-      ]);
-      const wantsPrev = (
-        (loadedStartMs !== null && requestStart < loadedStartMs && loadedStartMs > sessionStart)
-        || (options.hasLeftWhitespace === true && prevAnchorMs !== null && prevAnchorMs > sessionStart)
-      );
-      const wantsNext = (
-        (loadedEndMs !== null && requestEnd > loadedEndMs && loadedEndMs < sessionEnd)
-        || (options.hasRightWhitespace === true && nextAnchorMs !== null && nextAnchorMs < sessionEnd)
-      );
-      if (state.loadedRanges.length > 0) {
-        const loadedStart = Math.min(...state.loadedRanges.map((range) => new Date(range.start).getTime()));
-        const loadedEnd = Math.max(...state.loadedRanges.map((range) => new Date(range.end).getTime()));
-        const nearLoadedStart = requestStart - loadedStart <= thresholdMs && loadedStart > sessionStart;
-        const nearLoadedEnd = loadedEnd - requestEnd <= thresholdMs && loadedEnd < sessionEnd;
-        if (
-          loadedRangesCover(state.loadedRanges, bufferedRange)
-          && loadedRangesCover(knownSeriesRanges, bufferedRange)
-          && !nearLoadedStart
-          && !nearLoadedEnd
-        ) {
-          return state.session;
-        }
-      }
-      if (wantsPrev && state.loadedRanges.length > 0) {
-        return loadSessionByBars(state.session, "prev", prevAnchor ?? nearestLoadedRangeStart(state.loadedRanges, bufferedRange.start));
-      }
-      if (wantsNext && state.loadedRanges.length > 0) {
-        return loadSessionByBars(state.session, "next", nextAnchor ?? nearestLoadedRangeEnd(state.loadedRanges, bufferedRange.end));
-      }
-      const nextWindow = replayWindowForVisibleRange(state.session, bufferedRange.start, bufferedRange.end);
-      const prefetchKey = `${state.session.session_id}:${interval}:${nextWindow.start}:${nextWindow.end}`;
-      if (prefetchInFlightRef.current.has(prefetchKey)) {
-        return state.session;
-      }
-      prefetchInFlightRef.current.add(prefetchKey);
-      try {
-        return await loadSession(
-          state.session,
-          interval,
-          nextWindow,
-          { updateWindow: false, showLoading: false },
-        );
-      } finally {
-        prefetchInFlightRef.current.delete(prefetchKey);
-      }
-    },
-    [interval, loadSession, loadSessionByBars, state.loadedRanges, state.seriesLoadedRanges, state.seriesPendingRanges, state.session],
-  );
-
   return {
     ...state,
     series,
@@ -613,7 +437,6 @@ export function useOptionPowerReplay(
     loadSession,
     shiftWindow,
     resetWindow,
-    ensureWindowForVisibleRange,
     canShiftPrev: canShiftReplayWindow(state.session, state.windowStart, -1),
     canShiftNext: canShiftReplayWindow(state.session, state.windowEnd, 1),
   };
@@ -727,34 +550,6 @@ function loadedRangeBounds(ranges: ReplayLoadedRange[]) {
   };
 }
 
-function loadedRangesCover(
-  ranges: ReplayLoadedRange[],
-  target: ReplayLoadedRange,
-) {
-  const targetStart = new Date(target.start).getTime();
-  const targetEnd = new Date(target.end).getTime();
-  return ranges.some((range) => (
-    new Date(range.start).getTime() <= targetStart
-    && new Date(range.end).getTime() >= targetEnd
-  ));
-}
-
-function nearestLoadedRangeStart(ranges: ReplayLoadedRange[], targetStart: string) {
-  const target = new Date(targetStart).getTime();
-  const previous = ranges
-    .filter((range) => new Date(range.start).getTime() >= target || new Date(range.end).getTime() >= target)
-    .sort((left, right) => new Date(left.start).getTime() - new Date(right.start).getTime())[0];
-  return previous?.start ?? ranges[0]?.start ?? targetStart;
-}
-
-function nearestLoadedRangeEnd(ranges: ReplayLoadedRange[], targetEnd: string) {
-  const target = new Date(targetEnd).getTime();
-  const next = ranges
-    .filter((range) => new Date(range.end).getTime() <= target || new Date(range.start).getTime() <= target)
-    .sort((left, right) => new Date(right.end).getTime() - new Date(left.end).getTime())[0];
-  return next?.end ?? ranges[ranges.length - 1]?.end ?? targetEnd;
-}
-
 function initialReplayWindow(session: ReplaySession) {
   return {
     start: session.start,
@@ -789,60 +584,6 @@ function shiftedReplayWindow(
   return {
     start: toLocalIsoString(nextStart),
     end: toLocalIsoString(nextEnd),
-  };
-}
-
-function replayWindowForVisibleRange(
-  session: ReplaySession,
-  visibleStart: string,
-  visibleEnd: string,
-) {
-  const { start: sessionStartValue, end: sessionEndValue } = replaySessionBounds(session);
-  const sessionStart = new Date(sessionStartValue);
-  const sessionEnd = new Date(sessionEndValue);
-  const visibleStartDate = new Date(visibleStart);
-  const visibleEndDate = new Date(visibleEnd);
-  const paddingMs = REPLAY_WINDOW_PADDING_MINUTES * 60 * 1000;
-  const windowMs = INITIAL_REPLAY_WINDOW_HOURS * 60 * 60 * 1000;
-  let start = new Date(visibleStartDate.getTime() - paddingMs);
-  let end = new Date(start.getTime() + windowMs);
-
-  if (end < visibleEndDate) {
-    end = new Date(visibleEndDate.getTime() + paddingMs);
-    start = new Date(end.getTime() - windowMs);
-  }
-  if (start < sessionStart) {
-    start = sessionStart;
-    end = new Date(Math.min(sessionStart.getTime() + windowMs, sessionEnd.getTime()));
-  }
-  if (end > sessionEnd) {
-    end = sessionEnd;
-    start = new Date(Math.max(sessionStart.getTime(), sessionEnd.getTime() - windowMs));
-  }
-
-  return {
-    start: toLocalIsoString(start),
-    end: toLocalIsoString(end),
-  };
-}
-
-function replayBufferedRangeForVisibleRange(
-  session: ReplaySession,
-  visibleStart: string,
-  visibleEnd: string,
-) {
-  const { start: sessionStartValue, end: sessionEndValue } = replaySessionBounds(session);
-  const sessionStart = new Date(sessionStartValue);
-  const sessionEnd = new Date(sessionEndValue);
-  const start = new Date(visibleStart);
-  const end = new Date(visibleEnd);
-  const visibleMs = Math.max(0, end.getTime() - start.getTime());
-  const bufferMs = Math.max(60 * 1000, visibleMs * VISIBLE_RANGE_BUFFER_RATIO);
-  const bufferedStart = new Date(Math.max(sessionStart.getTime(), start.getTime() - bufferMs));
-  const bufferedEnd = new Date(Math.min(sessionEnd.getTime(), end.getTime() + bufferMs));
-  return {
-    start: toLocalIsoString(bufferedStart),
-    end: toLocalIsoString(bufferedEnd),
   };
 }
 

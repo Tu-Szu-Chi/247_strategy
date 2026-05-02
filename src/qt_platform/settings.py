@@ -72,6 +72,25 @@ class SyncSettings:
 
 
 @dataclass(frozen=True)
+class KronosSettings:
+    enabled: bool = False
+    target: list[str] | None = None
+    lookback: int = 32
+    sample_count: int = 4
+    interval_minutes: int = 1
+    temperature: float = 1.0
+    top_k: int = 0
+    top_p: float = 0.9
+    model: str = "NeoQuasar/Kronos-mini"
+    tokenizer: str = "NeoQuasar/Kronos-Tokenizer-2k"
+    model_revision: str | None = None
+    tokenizer_revision: str | None = None
+    device: str | None = None
+    max_context: int = 512
+    output_path: str | None = None
+
+
+@dataclass(frozen=True)
 class Settings:
     app: AppSettings
     database: DatabaseSettings
@@ -79,6 +98,7 @@ class Settings:
     reporting: ReportingSettings
     shioaji: ShioajiSettings
     sync: SyncSettings
+    kronos: KronosSettings
 
 
 def load_settings(path: str | Path) -> Settings:
@@ -95,6 +115,7 @@ def load_settings(path: str | Path) -> Settings:
         reporting=ReportingSettings(**_section(raw, "reporting")),
         shioaji=ShioajiSettings(**_section(raw, "shioaji")),
         sync=SyncSettings(**_section(raw, "sync")),
+        kronos=KronosSettings(**_section(raw, "kronos")),
     )
 
 

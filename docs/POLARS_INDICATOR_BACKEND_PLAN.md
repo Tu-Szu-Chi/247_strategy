@@ -1,5 +1,10 @@
 # Polars Indicator Backend Plan
 
+Note:
+
+- `bias_signal`, `signal_state`, and the old `option-power-signal` strategy were removed from the active codebase on 2026-05-01.
+- Historical notes below may still mention them as implementation history; they are no longer current behavior.
+
 ## Goal
 
 Move decision-grade option-power and MTX regime indicator calculations out of frontend/replay Python loops and into backend batch computation. The target is a canonical backend indicator frame keyed by `time`, with frontend code responsible for rendering, selection, and resampling only.

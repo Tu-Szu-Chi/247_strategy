@@ -118,7 +118,7 @@ function replaySession() {
     underlying_symbol: "MTX",
     selected_option_roots: ["TXO"],
     snapshot_count: 301,
-    available_series: ["pressure_index", "raw_pressure", "bias_signal", "signal_state"],
+    available_series: ["pressure_index", "raw_pressure", "flow_state", "range_state"],
     bar_count: 301,
     cache_mode: "memory",
     loaded_window_count: 1,
@@ -186,8 +186,6 @@ function replayBundle(start: string, end: string, maxPoints: number, requestId: 
       flow_impulse_score: points,
       flow_state: statePoints,
       range_state: statePoints,
-      bias_signal: statePoints,
-      signal_state: statePoints,
     },
     coverage: {
       requested_start: start,

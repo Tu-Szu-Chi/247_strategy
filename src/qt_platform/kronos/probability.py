@@ -60,6 +60,9 @@ def calculate_probability_metrics(
     targets: Sequence[ProbabilityTarget],
     bar_minutes: float = 1.0,
     feature_names: Sequence[str] = KRONOS_FEATURE_NAMES,
+    include_status_metrics: bool = True,
+    include_sample_count: bool = True,
+    include_path_delta_percentiles: bool = False,
 ) -> dict[str, float | int]:
     if not targets:
         raise ValueError("at least one probability target is required")
@@ -69,6 +72,9 @@ def calculate_probability_metrics(
         targets=targets,
         bar_minutes=bar_minutes,
         feature_names=feature_names,
+        include_status_metrics=include_status_metrics,
+        include_sample_count=include_sample_count,
+        include_path_delta_percentiles=include_path_delta_percentiles,
     )
     if numpy_metrics is not None:
         return numpy_metrics
@@ -85,10 +91,11 @@ def calculate_probability_metrics(
     close_idx = _feature_index(feature_names, "close")
     _validate_paths(path_rows, feature_count=max(high_idx, low_idx, close_idx) + 1)
 
-    metrics: dict[str, float | int] = {
-        "mtx_probability_ready": 1,
-        "mtx_probability_sample_count": len(path_rows),
-    }
+    metrics: dict[str, float | int] = {}
+    if include_status_metrics:
+        metrics["mtx_probability_ready"] = 1
+    if include_sample_count:
+        metrics["mtx_probability_sample_count"] = len(path_rows)
     close_delta_horizons: set[int] = set()
 
     for target in targets:
@@ -115,9 +122,10 @@ def calculate_probability_metrics(
         close_delta = [sample[horizon_steps - 1][close_idx] - current_close for sample in path_rows]
         minutes = _horizon_minutes_label(horizon_steps, bar_minutes)
         metrics[f"mtx_expected_close_delta_{minutes}m"] = sum(close_delta) / len(close_delta)
-        metrics[f"mtx_path_close_delta_p10_{minutes}m"] = _percentile(close_delta, 10)
-        metrics[f"mtx_path_close_delta_p50_{minutes}m"] = _percentile(close_delta, 50)
-        metrics[f"mtx_path_close_delta_p90_{minutes}m"] = _percentile(close_delta, 90)
+        if include_path_delta_percentiles:
+            metrics[f"mtx_path_close_delta_p10_{minutes}m"] = _percentile(close_delta, 10)
+            metrics[f"mtx_path_close_delta_p50_{minutes}m"] = _percentile(close_delta, 50)
+            metrics[f"mtx_path_close_delta_p90_{minutes}m"] = _percentile(close_delta, 90)
 
     return metrics
 
@@ -129,6 +137,9 @@ def _calculate_probability_metrics_numpy(
     targets: Sequence[ProbabilityTarget],
     bar_minutes: float,
     feature_names: Sequence[str],
+    include_status_metrics: bool,
+    include_sample_count: bool,
+    include_path_delta_percentiles: bool,
 ) -> dict[str, float | int] | None:
     np = _optional_numpy()
     if np is None:
@@ -151,10 +162,11 @@ def _calculate_probability_metrics_numpy(
     if path_array.shape[2] < feature_count:
         raise ValueError("path rows do not include all required features")
 
-    metrics: dict[str, float | int] = {
-        "mtx_probability_ready": 1,
-        "mtx_probability_sample_count": int(path_array.shape[0]),
-    }
+    metrics: dict[str, float | int] = {}
+    if include_status_metrics:
+        metrics["mtx_probability_ready"] = 1
+    if include_sample_count:
+        metrics["mtx_probability_sample_count"] = int(path_array.shape[0])
     close_delta_horizons: set[int] = set()
 
     for target in targets:
@@ -176,9 +188,10 @@ def _calculate_probability_metrics_numpy(
         close_delta = path_array[:, horizon_steps - 1, close_idx] - current_close
         minutes = _horizon_minutes_label(horizon_steps, bar_minutes)
         metrics[f"mtx_expected_close_delta_{minutes}m"] = float(close_delta.mean())
-        metrics[f"mtx_path_close_delta_p10_{minutes}m"] = float(np.percentile(close_delta, 10))
-        metrics[f"mtx_path_close_delta_p50_{minutes}m"] = float(np.percentile(close_delta, 50))
-        metrics[f"mtx_path_close_delta_p90_{minutes}m"] = float(np.percentile(close_delta, 90))
+        if include_path_delta_percentiles:
+            metrics[f"mtx_path_close_delta_p10_{minutes}m"] = float(np.percentile(close_delta, 10))
+            metrics[f"mtx_path_close_delta_p50_{minutes}m"] = float(np.percentile(close_delta, 50))
+            metrics[f"mtx_path_close_delta_p90_{minutes}m"] = float(np.percentile(close_delta, 90))
 
     return metrics
 

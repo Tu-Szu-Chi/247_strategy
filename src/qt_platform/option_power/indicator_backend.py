@@ -57,8 +57,6 @@ DERIVED_INDICATOR_SERIES_NAMES = [
     "flow_impulse_score",
     "flow_state",
     "range_state",
-    "bias_signal",
-    "signal_state",
 ]
 
 INDICATOR_SERIES_NAMES = [
@@ -355,115 +353,12 @@ def range_state(value: int) -> int:
     return 0
 
 
-def derive_signal_state_value(
-    *,
-    bias_value: int,
-    regime_state: int,
-    structure_state: int,
-    intensity_ratio: float,
-    chop_score: float,
-    pressure_index: float,
-    previous_pressure_index: float | None,
-    raw_pressure: float,
-    adx_value: float,
-    choppiness_value: float,
-    di_bias_value: float,
-    cvd_slope_value: float,
-    cvd_alignment_value: int,
-    cvd_divergence_value: int,
-    range_state_value: int,
-    strong_pressure_threshold: float,
-    raw_pressure_threshold: float,
-    flow_threshold: float,
-) -> int:
-    pressure_side = resolve_pressure_side(pressure_index)
-    pressure_slope = resolve_pressure_slope(pressure_index, previous_pressure_index)
-    active = intensity_ratio >= 0.95
-    strong_pressure = abs(pressure_index) >= strong_pressure_threshold
-    supported_raw_pressure = abs(raw_pressure) >= raw_pressure_threshold
-    trend_direction = 1 if di_bias_value > 8 else -1 if di_bias_value < -8 else 0
-    flow_direction = 1 if cvd_slope_value > flow_threshold else -1 if cvd_slope_value < -flow_threshold else 0
-    trend_ready = adx_value >= 18 and choppiness_value <= 62
-    if not active or bias_value == 0 or range_state_value < 0 or chop_score > 30:
-        return 0
-    if cvd_divergence_value == -bias_value:
-        return 0
-
-    support_score = 0
-    if structure_state == bias_value:
-        support_score += 2
-    if regime_state == bias_value:
-        support_score += 1
-    if trend_direction == bias_value:
-        support_score += 1
-    if flow_direction == bias_value:
-        support_score += 1
-    if cvd_alignment_value == bias_value:
-        support_score += 1
-    if pressure_supports_bias(pressure_side, pressure_slope, bias_value):
-        support_score += 1
-    if trend_ready:
-        support_score += 1
-    if strong_pressure:
-        support_score += 1
-    if supported_raw_pressure:
-        support_score += 1
-    if range_state_value > 0:
-        support_score += 1
-    if support_score >= 6:
-        return bias_value
-    return 0
-
-
-def derive_bias_value(
-    *,
-    pressure_index: float,
-    previous_pressure_index: float | None,
-    regime_state: int,
-    structure_state: int,
-    intensity_ratio: float,
-) -> int:
-    pressure_side = resolve_pressure_side(pressure_index)
-    pressure_slope = resolve_pressure_slope(pressure_index, previous_pressure_index)
-    active = intensity_ratio >= 0.95
-    if not active:
-        return 0
-    if structure_state > 0 and pressure_supports_bias(pressure_side, pressure_slope, 1) and regime_state >= 0:
-        return 1
-    if structure_state < 0 and pressure_supports_bias(pressure_side, pressure_slope, -1) and regime_state <= 0:
-        return -1
-    if structure_state > 0 and regime_state > 0:
-        return 1
-    if structure_state < 0 and regime_state < 0:
-        return -1
-    return 0
-
-
 def resolve_pressure_side(value: float) -> int:
     if value >= 2:
         return 1
     if value <= -2:
         return -1
     return 0
-
-
-def resolve_pressure_slope(value: float, previous_value: float | None) -> int:
-    if previous_value is None:
-        return 0
-    delta = value - previous_value
-    if delta >= 2:
-        return 1
-    if delta <= -2:
-        return -1
-    return 0
-
-
-def pressure_supports_bias(side: int, slope: int, bias: int) -> bool:
-    if side != bias:
-        return False
-    if bias > 0:
-        return slope >= 0
-    return slope <= 0
 
 
 def rolling_quantile(values: Sequence[float], quantile: float) -> float:
@@ -519,7 +414,6 @@ def _populate_python_windowed_indicators(rows: list[dict[str, Any]]) -> None:
             row["structure_state"] = sticky_structure_state
 
     for index, row in enumerate(rows):
-        previous_pressure = rows[index - 1]["pressure_index"] if index > 0 else None
         slope_history = _rolling_window_values(
             rows=rows,
             parsed_times=parsed_times,
@@ -544,33 +438,6 @@ def _populate_python_windowed_indicators(rows: list[dict[str, Any]]) -> None:
         slope_threshold = max(rolling_quantile([abs(value) for value in slope_history], 0.8), 1)
         current_slope = float(row.get("cvd_5b_slope", 0) or 0)
         row["flow_impulse_score"] = clamp_number((current_slope / slope_threshold) * 100, -100, 100)
-        row["bias_signal"] = derive_bias_value(
-            pressure_index=float(row.get("pressure_index", 0) or 0),
-            previous_pressure_index=float(previous_pressure) if previous_pressure is not None else None,
-            regime_state=int(row.get("regime_state", 0) or 0),
-            structure_state=int(row.get("structure_state", 0) or 0),
-            intensity_ratio=float(row.get("trade_intensity_ratio_30b", 0) or 0),
-        )
-        row["signal_state"] = derive_signal_state_value(
-            bias_value=int(row["bias_signal"]),
-            regime_state=int(row.get("regime_state", 0) or 0),
-            structure_state=int(row.get("structure_state", 0) or 0),
-            intensity_ratio=float(row.get("trade_intensity_ratio_30b", 0) or 0),
-            chop_score=float(row.get("chop_score", 0) or 0),
-            pressure_index=float(row.get("pressure_index", 0) or 0),
-            previous_pressure_index=float(previous_pressure) if previous_pressure is not None else None,
-            raw_pressure=float(row.get("raw_pressure", 0) or 0),
-            adx_value=float(row.get("adx_14", 0) or 0),
-            choppiness_value=float(row.get("choppiness_14", 0) or 0),
-            di_bias_value=float(row.get("di_bias_14", 0) or 0),
-            cvd_slope_value=float(row.get("cvd_5b_slope", 0) or 0),
-            cvd_alignment_value=int(row.get("cvd_price_alignment", 0) or 0),
-            cvd_divergence_value=int(row.get("price_cvd_divergence_15b", 0) or 0),
-            range_state_value=int(row.get("range_state", 0) or 0),
-            strong_pressure_threshold=max(rolling_quantile([abs(value) for value in pressure_history], 0.60), 3),
-            raw_pressure_threshold=max(rolling_quantile([abs(value) for value in raw_history], 0.55), 3),
-            flow_threshold=max(rolling_quantile([abs(value) for value in slope_history], 0.65), 1),
-        )
 
 
 def _rolling_window_values(

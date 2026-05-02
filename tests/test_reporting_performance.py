@@ -27,8 +27,8 @@ class ReportingPerformanceTest(unittest.TestCase):
                     size=1,
                     reason="entry",
                     metadata={
-                        "signal_state": 1,
-                        "indicator_values": {"signal_state": 1, "pressure_index": 63.0},
+                        "flow_state": 1,
+                        "indicator_values": {"flow_state": 1, "pressure_index": 63.0},
                     },
                 )
             ],
@@ -66,8 +66,6 @@ class ReportingPerformanceTest(unittest.TestCase):
                     size=1,
                     reason="option_power_signal_short",
                     metadata={
-                        "signal_state": -1,
-                        "bias_signal": -1,
                         "target_direction": -1,
                         "bias_direction": -1,
                         "indicator_values": {
@@ -87,7 +85,7 @@ class ReportingPerformanceTest(unittest.TestCase):
 
         self.assertEqual(rows[0]["ts"], "2026-04-20T09:01:00")
         self.assertEqual(rows[0]["side"], "sell")
-        self.assertEqual(rows[0]["signal_state"], -1)
+        self.assertEqual(rows[0]["target_direction"], -1)
         self.assertEqual(rows[0]["pressure_index"], 0.0)
         self.assertEqual(rows[0]["raw_pressure"], 7.0)
 
@@ -103,7 +101,7 @@ class ReportingPerformanceTest(unittest.TestCase):
                     price=100.0,
                     size=1,
                     reason="entry",
-                    metadata={"signal_state": 1, "indicator_values": {"pressure_index": 63.0}},
+                    metadata={"flow_state": 1, "indicator_values": {"pressure_index": 63.0}},
                 )
             ],
             trades=[],
@@ -113,8 +111,8 @@ class ReportingPerformanceTest(unittest.TestCase):
             target = write_annotated_fill_summary_csv(result, tmp_dir, "sample")
 
             text = Path(target).read_text(encoding="utf-8")
-            self.assertIn("ts,side,price,size,reason,signal_state", text)
-            self.assertIn("2026-04-20T09:01:00,buy,100.0,1,entry,1", text)
+            self.assertIn("ts,side,price,size,reason,target_direction", text)
+            self.assertIn("2026-04-20T09:01:00,buy,100.0,1,entry", text)
 
     def test_write_backtest_report_bundle_writes_html_and_json(self) -> None:
         result = BacktestResult(

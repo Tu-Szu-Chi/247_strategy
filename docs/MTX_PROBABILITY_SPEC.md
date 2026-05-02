@@ -25,14 +25,14 @@ The current backtest path already has the right extension seam:
 
 1. `src/qt_platform/backtest/engine.py` accepts `indicator_series`.
 2. `indicator_series_to_context_extras()` maps `{name: [{time, value}]}` into `BarCloseEvent.extras`.
-3. `OptionPowerSignalStrategy` already proves a strategy can read canonical indicator values from `context.event.extras`.
+3. The backtest engine already supports indicator values flowing through `context.event.extras`.
 
 Recommended integration pattern:
 
 - Add a Kronos probability indicator builder that emits the same `indicator_series` shape as option-power replay.
 - Add a separate MTX probability strategy that reads probability fields from extras.
 - Do not make the core strategy call Kronos directly in the first implementation. Model inference should be outside the strategy decision logic so backtest, replay, caching, and live operation can share the same contract.
-- Do not depend on existing `bias_signal` or `signal_state` in the first strategy. Those fields are explicitly excluded from the initial decision rule.
+- Do not depend on legacy bias/signal fields. Those series were removed from the codebase and are not part of the Kronos strategy contract.
 
 ## 3. Kronos Constraint
 

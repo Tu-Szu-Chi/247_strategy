@@ -49,8 +49,6 @@ export const OPTION_POWER_RESEARCH_SERIES = [
   "flow_impulse_score",
   "flow_state",
   "range_state",
-  "bias_signal",
-  "signal_state",
   "mtx_up_50_in_10m_probability",
   "mtx_down_50_in_10m_probability",
   "mtx_expected_close_delta_10m",
@@ -122,23 +120,6 @@ export function OptionPowerResearchWorkspace({
     setCursorIsoTime(ts);
     setCursorTime(formatDateTime(ts));
   }, []);
-
-  const handleVisibleRangeChange = useCallback((range: {
-    start: string;
-    end: string;
-    hasLeftWhitespace?: boolean;
-    hasRightWhitespace?: boolean;
-  }) => {
-    if (mode !== "replay") {
-      return;
-    }
-    void replay.ensureWindowForVisibleRange(range.start, range.end, {
-      hasLeftWhitespace: range.hasLeftWhitespace,
-      hasRightWhitespace: range.hasRightWhitespace,
-    }).catch(() => {
-      return;
-    });
-  }, [mode, replay]);
 
   const activeBars = mode === "live" ? live.bars : replay.bars;
   const activeSeries = mode === "live" ? live.series : replay.series;
@@ -282,31 +263,7 @@ export function OptionPowerResearchWorkspace({
     ],
     [activeSeries, indicatorInterval],
   );
-  const signalPanelSeries = useMemo<IndicatorPanelSeries[]>(
-    () => [
-      {
-        id: "signal_state",
-        label: "Signal State",
-        points: resampleSeries(activeSeries.signal_state ?? [], indicatorInterval),
-        color: "#f97316",
-        kind: "histogram",
-      },
-    ],
-    [activeSeries, indicatorInterval],
-  );
-  const biasPanelSeries = useMemo<IndicatorPanelSeries[]>(
-    () => [
-      {
-        id: "bias_signal",
-        label: "Bias Signal",
-        points: resampleSeries(activeSeries.bias_signal ?? [], indicatorInterval),
-        color: "#10b981",
-        kind: "histogram",
-      },
-    ],
-    [activeSeries, indicatorInterval],
-  );
-  const kronosPanelSeries = useMemo<IndicatorPanelSeries[]>(
+  const kronosProbabilityPanelSeries = useMemo<IndicatorPanelSeries[]>(
     () => [
       {
         id: "mtx_up_50_in_10m_probability",
@@ -320,6 +277,11 @@ export function OptionPowerResearchWorkspace({
         points: resampleSeries(activeSeries.mtx_down_50_in_10m_probability ?? [], indicatorInterval),
         color: "#ef4444",
       },
+    ],
+    [activeSeries, indicatorInterval],
+  );
+  const kronosDeltaPanelSeries = useMemo<IndicatorPanelSeries[]>(
+    () => [
       {
         id: "mtx_expected_close_delta_10m",
         label: "Expected Delta",
@@ -391,11 +353,6 @@ export function OptionPowerResearchWorkspace({
   const vwapDistanceValue = mode === "live"
     ? regime?.vwap_distance_bps ?? 0
     : seriesValueAt(activeSeries.vwap_distance_bps ?? [], metricTime);
-  const signalState = useMemo(
-    () => signalStateMeta(seriesValueAt(signalPanelSeries[0]?.points ?? [], metricTime)),
-    [signalPanelSeries, metricTime],
-  );
-
   async function handleReplayLoad() {
     try {
       setPageError(null);
@@ -523,29 +480,26 @@ export function OptionPowerResearchWorkspace({
           rawPressureSeries={rawPressurePanelSeries}
           chopSeries={chopPanelSeries}
           structureSeries={structurePanelSeries}
-          biasSeries={biasPanelSeries}
-          signalSeries={signalPanelSeries}
           contextSeries={contextPanelSeries}
           trendQualitySeries={trendQualityPanelSeries}
           cvdSeries={cvdPanelSeries}
           rangeStateSeries={rangeStatePanelSeries}
           ivSkewSeries={ivSkewPanelSeries}
-          kronosSeries={kronosPanelSeries}
+          kronosProbabilitySeries={kronosProbabilityPanelSeries}
+          kronosDeltaSeries={kronosDeltaPanelSeries}
           visiblePanelIds={
             mode === "live"
-              ? ["pressure", "regime", "bias", "signal", "chop", "structure", "cvd", "rangeState", "ivSkew"]
+              ? ["kronosProbability", "kronosDelta", "pressure", "regime", "chop", "structure", "cvd", "rangeState", "ivSkew"]
               : undefined
           }
           mode={mode}
           onCursorTimeChange={handleCursorTime}
-          onVisibleRangeChange={handleVisibleRangeChange}
           viewKey={mode === "replay" ? `${mode}:${replay.session?.session_id ?? ""}:${indicatorInterval}` : mode}
         />
       </section>
 
       <section className={styles.insights}>
         <section className={styles.metricGrid}>
-          <MetricCard label="Signal State" value={signalState.label} tone={signalState.tone} />
           <MetricCard label="Intensity 30b" value={formatIntensity(intensityValue)} tone={intensityTone(intensityValue)} />
           <MetricCard label="Regime" value={formatRegimeLabel(regimeLabel)} tone={regimeTone(regimeLabel)} />
           <MetricCard label="Trend Score" value={formatSigned(trendScoreValue)} tone={toneOf(trendScoreValue)} />
@@ -741,16 +695,6 @@ function seriesValueAt(
     return Number(points[0]?.value ?? 0);
   }
   return Number(selected.value ?? 0);
-}
-
-function signalStateMeta(value: number) {
-  if (value === 1) {
-    return { label: "LONG", tone: "positive" as const };
-  }
-  if (value === -1) {
-    return { label: "SHORT", tone: "negative" as const };
-  }
-  return { label: "-", tone: "neutral" as const };
 }
 
 function latestSeriesTime(activeSeries: Record<string, { time: string; value: number }[]>) {

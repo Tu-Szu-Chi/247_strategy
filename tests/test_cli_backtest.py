@@ -17,14 +17,14 @@ class BacktestCliTest(unittest.TestCase):
         ]
         replay = MagicMock()
         replay.build_backtest_indicator_series.return_value = {
-            "signal_state": [{"time": start.isoformat(), "value": 1}],
+            "flow_state": [{"time": start.isoformat(), "value": 1}],
         }
         result = SimpleNamespace(ending_cash=1000.0)
         args = _args(
             start=start,
             end=end,
             with_option_power_indicators=True,
-            indicator_series="signal_state,bias_signal",
+            indicator_series="flow_state,range_state",
         )
 
         with patch("qt_platform.cli.main.build_bar_repository", return_value=store), patch(
@@ -45,7 +45,7 @@ class BacktestCliTest(unittest.TestCase):
         replay.build_backtest_indicator_series.assert_called_once_with(
             start=start,
             end=end,
-            names=["signal_state", "bias_signal"],
+            names=["flow_state", "range_state"],
             interval="1m",
             wait_timeout=3.0,
         )
@@ -72,37 +72,6 @@ class BacktestCliTest(unittest.TestCase):
         replay_service.assert_not_called()
         self.assertIsNone(run.call_args.kwargs["indicator_series"])
         fill_summary.assert_not_called()
-
-    def test_option_power_signal_strategy_builds_indicators_without_extra_flag(self) -> None:
-        start = datetime(2026, 4, 16, 9, 0, 0)
-        end = start + timedelta(minutes=2)
-        store = MagicMock()
-        store.list_bars.return_value = [
-            Bar(start, date(2026, 4, 16), "MTX", "202604", "day", 100, 101, 99, 100, 10, None, "test"),
-        ]
-        replay = MagicMock()
-        replay.build_backtest_indicator_series.return_value = {
-            "signal_state": [{"time": start.isoformat(), "value": 1}],
-        }
-        result = SimpleNamespace(ending_cash=1000.0)
-        args = _args(start=start, end=end)
-        args.strategy = "option-power-signal"
-
-        with patch("qt_platform.cli.main.build_bar_repository", return_value=store), patch(
-            "qt_platform.cli.main.OptionPowerReplayService", return_value=replay
-        ), patch("qt_platform.cli.main.run_backtest", return_value=result) as run, patch(
-            "qt_platform.cli.main.write_backtest_report_bundle",
-            return_value=("report.html", "report.json"),
-        ), patch(
-            "qt_platform.cli.main.write_annotated_fill_summary_csv",
-            return_value="fills.csv",
-        ) as fill_summary:
-            _backtest(args, _settings())
-
-        replay.build_backtest_indicator_series.assert_called_once()
-        self.assertEqual(run.call_args.kwargs["strategy"].trade_size, 1)
-        self.assertEqual(run.call_args.kwargs["indicator_series"], replay.build_backtest_indicator_series.return_value)
-        fill_summary.assert_called_once_with(result, "reports", "MTX-backtest")
 
     def test_fill_summary_csv_flag_writes_summary_for_any_strategy(self) -> None:
         start = datetime(2026, 4, 16, 9, 0, 0)
@@ -153,8 +122,6 @@ def _args(
         long_only=False,
         reference_symbol="2330",
         with_option_power_indicators=with_option_power_indicators,
-        no_bias_alignment=False,
-        hold_through_neutral=False,
         option_root="AUTO",
         expiry_count=2,
         indicator_snapshot_interval_seconds=60.0,

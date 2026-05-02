@@ -7,10 +7,12 @@ import threading
 from dataclasses import dataclass
 from dataclasses import replace
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from qt_platform.domain import Bar, CanonicalTick, LiveRunMetadata
 from qt_platform.features import compute_minute_force_feature_series
+from qt_platform.kronos import ProbabilityTarget, calculate_probability_metrics
 from qt_platform.live.recorder import aggregate_ticks_to_bars
 from qt_platform.live.shioaji_provider import ShioajiLiveProvider, _contract_month
 from qt_platform.option_power.aggregator import OptionPowerAggregator
@@ -56,6 +58,20 @@ class _MinuteBarState:
     down_ticks: float
 
 
+@dataclass(frozen=True)
+class KronosLiveSettings:
+    predictor: Any
+    lookback: int
+    targets: tuple[ProbabilityTarget, ...]
+    sample_count: int
+    interval_minutes: int = 1
+    temperature: float = 1.0
+    top_k: int = 0
+    top_p: float = 0.9
+    verbose: bool = False
+    output_path: str | None = None
+
+
 class OptionPowerRuntimeService:
     def __init__(
         self,
@@ -73,6 +89,7 @@ class OptionPowerRuntimeService:
         log_callback,
         registry_path: str | None = None,
         registry_stock_symbols: list[str] | None = None,
+        kronos_live_settings: KronosLiveSettings | None = None,
     ) -> None:
         self.provider = provider
         self.store = store
@@ -87,6 +104,7 @@ class OptionPowerRuntimeService:
         self.batch_size = batch_size
         self.snapshot_interval_seconds = snapshot_interval_seconds
         self.log_callback = log_callback
+        self.kronos_live_settings = kronos_live_settings
 
         self.run_id: str | None = None
         self.subscription_reference_price: float | None = None
@@ -115,6 +133,16 @@ class OptionPowerRuntimeService:
         self._open_bar_state: _MinuteBarState | None = None
         self._day_indicator_bar_state: _MinuteBarState | None = None
         self._next_snapshot_at: datetime | None = None
+        self._underlying_domain_bars: deque[Bar] = deque(maxlen=MAX_LIVE_BARS)
+        self._kronos_thread: threading.Thread | None = None
+        self._kronos_last_decision_time: datetime | None = None
+        self._kronos_last_completed_at: datetime | None = None
+        self._kronos_last_duration_seconds: float | None = None
+        self._kronos_status = "disabled" if kronos_live_settings is None else "idle"
+        self._kronos_error: str | None = None
+        self._kronos_busy_skip_count = 0
+        self._kronos_series_history: dict[str, list[dict[str, Any]]] = {}
+        self._kronos_latest_metrics: dict[str, float | int] = {}
 
     def start(self, run_id: str) -> None:
         if self._thread and self._thread.is_alive():
@@ -134,7 +162,10 @@ class OptionPowerRuntimeService:
     def current_snapshot(self) -> dict[str, Any]:
         with self._history_lock:
             if self._snapshot_history:
-                return self._snapshot_history[-1]["snapshot"]
+                snapshot = dict(self._snapshot_history[-1]["snapshot"])
+                snapshot["kronos"] = self._kronos_snapshot_payload()
+                snapshot.update(self._kronos_latest_metrics)
+                return snapshot
         snapshot = self.aggregator.snapshot(
             generated_at=datetime.now(),
             run_id=self.run_id,
@@ -145,7 +176,10 @@ class OptionPowerRuntimeService:
             stop_reason=self.stop_reason,
             warning=self.warning or self.error_message,
         )
-        return snapshot.to_dict()
+        payload = snapshot.to_dict()
+        payload["kronos"] = self._kronos_snapshot_payload()
+        payload.update(self._kronos_latest_metrics)
+        return payload
 
     def live_latest_update(
         self,
@@ -187,6 +221,10 @@ class OptionPowerRuntimeService:
                 name: indicator_series.get(name, [])[-1:]
                 for name in names
             }
+            with self._history_lock:
+                for name in names:
+                    if name in self._kronos_series_history:
+                        payload["series"][name] = self._kronos_series_history[name][-1:]
         return payload
 
     def live_metadata(self) -> dict[str, Any]:
@@ -209,6 +247,7 @@ class OptionPowerRuntimeService:
             ],
             "available_series": available_series,
             "regime_schema": regime_schema_dicts(),
+            "kronos": self._kronos_snapshot_payload(),
         }
 
     def live_bars(self) -> list[dict[str, Any]]:
@@ -228,6 +267,9 @@ class OptionPowerRuntimeService:
         snapshot_times = [item["simulated_at"] for item in history]
         snapshots = [item["snapshot"] for item in history]
         full_series = _build_indicator_series(snapshot_times, snapshots)
+        with self._history_lock:
+            for name, points in self._kronos_series_history.items():
+                full_series[name] = list(points)
         if names == ["__all__"]:
             return full_series
         payload: dict[str, list[dict[str, Any]]] = {}
@@ -498,6 +540,16 @@ class OptionPowerRuntimeService:
             self._open_bar_state = None
             self._day_indicator_bar_state = None
             self._next_snapshot_at = None
+            self._underlying_domain_bars.clear()
+            self._kronos_thread = None
+            self._kronos_last_decision_time = None
+            self._kronos_last_completed_at = None
+            self._kronos_last_duration_seconds = None
+            self._kronos_status = "disabled" if self.kronos_live_settings is None else "idle"
+            self._kronos_error = None
+            self._kronos_busy_skip_count = 0
+            self._kronos_series_history = {}
+            self._kronos_latest_metrics = {}
 
     def _ingest_underlying_tick(self, tick: CanonicalTick) -> None:
         self.regime.ingest_tick(tick)
@@ -540,12 +592,18 @@ class OptionPowerRuntimeService:
 
     def _append_closed_bar(self, state: _MinuteBarState) -> None:
         bar = _bar_state_to_chart_dict(state)
+        domain_bar = _bar_state_to_domain_bar(state)
         existing_idx = self._bar_index.get(state.minute_ts)
         if existing_idx is not None and existing_idx < len(self._bars_history):
             self._bars_history[existing_idx] = bar
+            if self._underlying_domain_bars:
+                self._underlying_domain_bars[-1] = domain_bar
+            self._maybe_start_kronos_inference(state.minute_ts)
             return
         self._bars_history.append(bar)
+        self._underlying_domain_bars.append(domain_bar)
         self._bar_index = {datetime.fromisoformat(item["time"]): idx for idx, item in enumerate(self._bars_history)}
+        self._maybe_start_kronos_inference(state.minute_ts)
 
     def _upsert_day_indicator_bar(self, state: _MinuteBarState) -> None:
         self.store.upsert_bars(
@@ -590,6 +648,8 @@ class OptionPowerRuntimeService:
                 stop_reason=self.stop_reason,
                 warning=self.warning or self.error_message,
             ).to_dict()
+            snapshot["kronos"] = self._kronos_snapshot_payload()
+            snapshot.update(self._kronos_latest_metrics)
             with self._history_lock:
                 self._snapshot_history.append(
                     {
@@ -600,6 +660,164 @@ class OptionPowerRuntimeService:
                     }
                 )
             self._next_snapshot_at += timedelta(seconds=self.snapshot_interval_seconds)
+
+    def _maybe_start_kronos_inference(self, decision_bar_time: datetime) -> None:
+        settings = self.kronos_live_settings
+        if settings is None:
+            return
+        if len(self._underlying_domain_bars) < settings.lookback:
+            self._kronos_status = "waiting_for_lookback"
+            return
+        if self._kronos_last_decision_time is not None and decision_bar_time <= self._kronos_last_decision_time:
+            return
+        if self._kronos_thread is not None and self._kronos_thread.is_alive():
+            self._kronos_busy_skip_count += 1
+            self._kronos_status = "lagging"
+            self.log_callback(
+                {
+                    "status": "kronos_live_lagging",
+                    "run_id": self.run_id,
+                    "decision_bar_time": decision_bar_time.isoformat(),
+                    "busy_skip_count": self._kronos_busy_skip_count,
+                }
+            )
+            return
+        bars = list(self._underlying_domain_bars)[-settings.lookback:]
+        self._kronos_status = "running"
+        self._kronos_error = None
+        self._kronos_last_decision_time = decision_bar_time
+        self._kronos_thread = threading.Thread(
+            target=self._run_kronos_inference,
+            args=(decision_bar_time, bars),
+            name="option-power-kronos-live",
+            daemon=True,
+        )
+        self._kronos_thread.start()
+
+    def _run_kronos_inference(self, decision_bar_time: datetime, bars: list[Bar]) -> None:
+        settings = self.kronos_live_settings
+        if settings is None:
+            return
+        started = time.perf_counter()
+        try:
+            pred_len = max(target.horizon_steps(bar_minutes=1.0) for target in settings.targets)
+            paths = settings.predictor.predict_paths(
+                bars,
+                pred_len=pred_len,
+                sample_count=settings.sample_count,
+                temperature=settings.temperature,
+                top_k=settings.top_k,
+                top_p=settings.top_p,
+                verbose=settings.verbose,
+            )
+            metrics = calculate_probability_metrics(
+                paths,
+                current_close=bars[-1].close,
+                targets=settings.targets,
+                bar_minutes=1.0,
+                include_status_metrics=False,
+                include_sample_count=False,
+                include_path_delta_percentiles=False,
+            )
+            duration = time.perf_counter() - started
+            with self._history_lock:
+                for name, value in metrics.items():
+                    point = {"time": decision_bar_time.isoformat(), "value": value}
+                    series = self._kronos_series_history.setdefault(name, [])
+                    if series and series[-1]["time"] == point["time"]:
+                        series[-1] = point
+                    else:
+                        series.append(point)
+                self._kronos_latest_metrics = dict(metrics)
+                self._kronos_last_completed_at = datetime.now()
+                self._kronos_last_duration_seconds = duration
+                self._kronos_status = "ready"
+                self._kronos_error = None
+                completed_at = self._kronos_last_completed_at
+                self._append_kronos_snapshot_locked(completed_at)
+                self._persist_kronos_series_locked(settings.output_path, decision_bar_time, completed_at)
+            self.log_callback(
+                {
+                    "status": "kronos_live_ready",
+                    "run_id": self.run_id,
+                    "decision_bar_time": decision_bar_time.isoformat(),
+                    "duration_seconds": round(duration, 4),
+                    "series_names": sorted(metrics.keys()),
+                }
+            )
+        except Exception as exc:
+            duration = time.perf_counter() - started
+            self._kronos_last_duration_seconds = duration
+            self._kronos_status = "error"
+            self._kronos_error = str(exc)
+            self.log_callback(
+                {
+                    "status": "kronos_live_error",
+                    "run_id": self.run_id,
+                    "decision_bar_time": decision_bar_time.isoformat(),
+                    "duration_seconds": round(duration, 4),
+                    "message": str(exc),
+                }
+            )
+
+    def _kronos_snapshot_payload(self) -> dict[str, Any]:
+        return {
+            "status": self._kronos_status,
+            "last_decision_time": self._kronos_last_decision_time.isoformat() if self._kronos_last_decision_time is not None else None,
+            "last_completed_at": self._kronos_last_completed_at.isoformat() if self._kronos_last_completed_at is not None else None,
+            "last_duration_seconds": self._kronos_last_duration_seconds,
+            "error": self._kronos_error,
+            "busy_skip_count": self._kronos_busy_skip_count,
+            "available_series": sorted(self._kronos_series_history.keys()),
+        }
+
+    def _append_kronos_snapshot_locked(self, completed_at: datetime) -> None:
+        if self._snapshot_history:
+            snapshot = dict(self._snapshot_history[-1]["snapshot"])
+        else:
+            snapshot = self.aggregator.snapshot(
+                generated_at=completed_at,
+                run_id=self.run_id,
+                underlying_reference_price=self.underlying_reference_price,
+                underlying_reference_source=self.underlying_reference_source,
+                status=self.status,
+                regime=self.regime.snapshot(completed_at),
+                stop_reason=self.stop_reason,
+                warning=self.warning or self.error_message,
+            ).to_dict()
+        snapshot["generated_at"] = completed_at.isoformat()
+        snapshot["kronos"] = self._kronos_snapshot_payload()
+        snapshot.update(self._kronos_latest_metrics)
+        self._snapshot_history.append(
+            {
+                "session_id": self.run_id,
+                "index": len(self._snapshot_history),
+                "simulated_at": completed_at.isoformat(),
+                "snapshot": snapshot,
+            }
+        )
+
+    def _persist_kronos_series_locked(
+        self,
+        output_path: str | None,
+        decision_bar_time: datetime,
+        completed_at: datetime,
+    ) -> None:
+        if not output_path:
+            return
+        payload = {
+            "metadata": {
+                "mode": "live",
+                "run_id": self.run_id,
+                "generated_at": completed_at.isoformat(),
+                "decision_time": self._kronos_last_decision_time.isoformat() if self._kronos_last_decision_time is not None else None,
+                "available_series": sorted(self._kronos_series_history.keys()),
+            },
+            "series": self._kronos_series_history,
+        }
+        path = _resolve_kronos_daily_output_path(output_path, decision_bar_time)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _refresh_day_indicator_snapshot(self, now: datetime) -> None:
         if self._day_indicator_contract is None or classify_session(now) != "day":
@@ -713,6 +931,14 @@ def _bar_state_to_domain_bar(state: _MinuteBarState) -> Bar:
     )
 
 
+def _resolve_kronos_daily_output_path(output_path: str, decision_bar_time: datetime) -> Path:
+    base_path = Path(output_path)
+    date_token = decision_bar_time.date().isoformat()
+    if base_path.suffix.lower() == ".json":
+        stem = base_path.stem
+        filename = f"{stem}-{date_token}.json"
+        return base_path.with_name(filename)
+    return base_path / f"kronos-live-{date_token}.json"
 
 
 def _canonical_underlying_symbol(value: str) -> str:
@@ -743,6 +969,10 @@ def _compact_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         "status": snapshot.get("status"),
         "stop_reason": snapshot.get("stop_reason"),
         "warning": snapshot.get("warning"),
+        "kronos": snapshot.get("kronos"),
+        "mtx_up_50_in_10m_probability": snapshot.get("mtx_up_50_in_10m_probability"),
+        "mtx_down_50_in_10m_probability": snapshot.get("mtx_down_50_in_10m_probability"),
+        "mtx_expected_close_delta_10m": snapshot.get("mtx_expected_close_delta_10m"),
     }
 
 

@@ -5,8 +5,6 @@ from time import perf_counter
 from qt_platform.option_power.indicator_backend import (
     build_indicator_series,
     compute_pressure_metrics,
-    derive_bias_value,
-    derive_signal_state_value,
 )
 
 
@@ -49,7 +47,7 @@ class OptionPowerIndicatorBackendTest(unittest.TestCase):
             },
         )
 
-    def test_build_indicator_series_adds_backend_derived_decision_series(self) -> None:
+    def test_build_indicator_series_adds_backend_derived_state_series(self) -> None:
         snapshots = [
             _snapshot(
                 pressure_index=-20,
@@ -84,43 +82,6 @@ class OptionPowerIndicatorBackendTest(unittest.TestCase):
         self.assertAlmostEqual(series["trend_quality_score"][0]["value"], 39.0)
         self.assertEqual(series["flow_state"][0]["value"], -1)
         self.assertEqual(series["range_state"][0]["value"], 1)
-        self.assertEqual(series["bias_signal"][1]["value"], -1)
-        self.assertEqual(series["signal_state"][1]["value"], 0)
-
-    def test_frontend_signal_helper_cases_are_ported(self) -> None:
-        self.assertEqual(
-            derive_bias_value(
-                pressure_index=-15,
-                previous_pressure_index=-20,
-                regime_state=-1,
-                structure_state=-1,
-                intensity_ratio=1.1,
-            ),
-            -1,
-        )
-        self.assertEqual(
-            derive_signal_state_value(
-                bias_value=1,
-                regime_state=1,
-                structure_state=1,
-                intensity_ratio=1.2,
-                chop_score=31,
-                pressure_index=18,
-                previous_pressure_index=12,
-                raw_pressure=20,
-                adx_value=24,
-                choppiness_value=40,
-                di_bias_value=12,
-                cvd_slope_value=3,
-                cvd_alignment_value=1,
-                cvd_divergence_value=0,
-                range_state_value=1,
-                strong_pressure_threshold=8,
-                raw_pressure_threshold=8,
-                flow_threshold=1,
-            ),
-            0,
-        )
 
     def test_build_indicator_series_benchmark_smoke(self) -> None:
         start = datetime(2025, 4, 11, 9, 0, 0)
@@ -147,7 +108,7 @@ class OptionPowerIndicatorBackendTest(unittest.TestCase):
         series = build_indicator_series(snapshot_times, snapshots)
         elapsed = perf_counter() - started
 
-        self.assertEqual(len(series["signal_state"]), snapshot_count)
+        self.assertEqual(len(series["flow_state"]), snapshot_count)
         self.assertEqual(len(series["trend_quality_score"]), snapshot_count)
         self.assertLess(elapsed, 5.0)
 
