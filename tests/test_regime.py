@@ -2,7 +2,7 @@ import unittest
 from datetime import date, datetime, timedelta
 
 from qt_platform.domain import Bar, CanonicalTick
-from qt_platform.regime import MtxRegimeAnalyzer
+from qt_platform.market_state.mtx import MtxRegimeAnalyzer
 
 
 def _bar(ts: datetime, close: float, session: str = "day") -> Bar:

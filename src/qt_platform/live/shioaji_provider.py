@@ -12,7 +12,7 @@ from typing import Any, Iterable
 
 from qt_platform.domain import CanonicalTick
 from qt_platform.live.base import BaseLiveProvider, LiveUsageStatus
-from qt_platform.session import classify_session, trading_day_for
+from qt_platform.trading_calendar import classify_session, trading_day_for
 from qt_platform.settings import ShioajiSettings
 
 

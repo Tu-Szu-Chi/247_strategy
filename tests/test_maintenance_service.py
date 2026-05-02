@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 
 from qt_platform.domain import Bar
 from qt_platform.maintenance.service import MaintenanceService
-from qt_platform.session import trading_day_for
+from qt_platform.trading_calendar import trading_day_for
 from qt_platform.storage.bar_store import SQLiteBarStore
 
 

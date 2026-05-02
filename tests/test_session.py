@@ -1,7 +1,7 @@
 import unittest
 from datetime import datetime, timedelta
 
-from qt_platform.session import (
+from qt_platform.trading_calendar import (
     is_in_activation_scope,
     iter_expected_bar_timestamps,
     next_activation_start,

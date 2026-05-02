@@ -8,7 +8,7 @@ from typing import Iterable
 
 from qt_platform.contracts import resolve_mtx_monthly_contract
 from qt_platform.domain import Bar
-from qt_platform.session import classify_session, trading_day_for
+from qt_platform.trading_calendar import classify_session, trading_day_for
 from qt_platform.storage.base import BarRepository
 
 

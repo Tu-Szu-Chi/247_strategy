@@ -9,7 +9,7 @@ class IndicatorRegistry:
 
     @classmethod
     def register(cls, indicator_cls: Type[Indicator]):
-        cls._registry[indicator_cls.name] = indicator_cls
+        cls._registry[_resolve_indicator_name(indicator_cls)] = indicator_cls
         return indicator_cls
 
     @classmethod
@@ -23,3 +23,16 @@ class IndicatorRegistry:
 
 def register_indicator(cls: Type[Indicator]):
     return IndicatorRegistry.register(cls)
+
+
+def _resolve_indicator_name(indicator_cls: Type[Indicator]) -> str:
+    try:
+        instance = indicator_cls()
+    except TypeError as exc:  # pragma: no cover - defensive failure for future indicators
+        raise TypeError(
+            f"Indicator '{indicator_cls.__name__}' must be default-constructible to use @register_indicator."
+        ) from exc
+    name = getattr(instance, "name", None)
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError(f"Indicator '{indicator_cls.__name__}' produced an invalid registry name: {name!r}")
+    return name

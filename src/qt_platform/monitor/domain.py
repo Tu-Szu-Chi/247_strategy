@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 
 from qt_platform.option_iv.domain import OptionIvSurfaceSnapshot
-from qt_platform.regime import RegimeFeatureSnapshot
+from qt_platform.market_state.mtx import RegimeFeatureSnapshot
 
 
 @dataclass(frozen=True)

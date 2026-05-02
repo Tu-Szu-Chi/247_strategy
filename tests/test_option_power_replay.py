@@ -424,6 +424,183 @@ class MonitorReplayServiceTest(unittest.TestCase):
         self.assertEqual(series["raw_pressure"][1]["value"], 10)
         self.assertEqual(len(series["flow_state"]), 2)
 
+    def test_background_replay_snapshot_does_not_seed_future_contracts_into_early_pressure(self) -> None:
+        base_ts = datetime(2026, 4, 16, 9, 0, 0)
+        store = DummyStore(
+            [
+                _tick(
+                    ts=base_ts,
+                    symbol="TXX",
+                    price=120.0,
+                    size=10,
+                    instrument_key="TXX20260419450C",
+                    contract_month="202604",
+                    strike_price=19450.0,
+                    call_put="call",
+                    tick_direction="up",
+                ),
+                _tick(
+                    ts=base_ts + timedelta(minutes=1),
+                    symbol="TXX",
+                    price=121.0,
+                    size=10,
+                    instrument_key="TXX20260419400C",
+                    contract_month="202604",
+                    strike_price=19400.0,
+                    call_put="call",
+                    tick_direction="up",
+                ),
+            ],
+            bars=[
+                Bar(
+                    ts=base_ts,
+                    trading_day=date(2026, 4, 16),
+                    symbol="TWII",
+                    contract_month="",
+                    session="day",
+                    open=19380.0,
+                    high=19410.0,
+                    low=19370.0,
+                    close=19400.0,
+                    volume=0.0,
+                    open_interest=None,
+                    source="stub_replay",
+                    instrument_key="index:TWII",
+                    build_source="live_snapshot_agg",
+                ),
+                Bar(
+                    ts=base_ts + timedelta(minutes=1),
+                    trading_day=date(2026, 4, 16),
+                    symbol="TWII",
+                    contract_month="",
+                    session="day",
+                    open=19380.0,
+                    high=19410.0,
+                    low=19370.0,
+                    close=19400.0,
+                    volume=0.0,
+                    open_interest=None,
+                    source="stub_replay",
+                    instrument_key="index:TWII",
+                    build_source="live_snapshot_agg",
+                ),
+            ],
+        )
+        service = MonitorReplayService(
+            store=store,
+            option_root="AUTO",
+            expiry_count=2,
+            underlying_symbol="MTX",
+            snapshot_interval_seconds=60.0,
+        )
+
+        metadata = service.create_session(
+            start=base_ts,
+            end=base_ts + timedelta(minutes=1),
+            set_as_default=True,
+        )
+        self.assertTrue(service.wait_until_ready(metadata["session_id"], timeout=2.0))
+
+        first_snapshot = service.get_snapshot_at(metadata["session_id"], base_ts)
+        second_snapshot = service.get_snapshot_at(metadata["session_id"], base_ts + timedelta(minutes=1))
+
+        self.assertIsNotNone(first_snapshot)
+        self.assertIsNotNone(second_snapshot)
+        self.assertEqual(first_snapshot["snapshot"]["raw_pressure"], 0)
+        self.assertEqual(second_snapshot["snapshot"]["raw_pressure"], 19)
+
+    def test_chart_series_does_not_seed_future_contracts_into_early_pressure(self) -> None:
+        base_ts = datetime(2026, 4, 16, 9, 0, 0)
+        store = DummyStore(
+            [
+                _tick(
+                    ts=base_ts,
+                    symbol="TXX",
+                    price=120.0,
+                    size=10,
+                    instrument_key="TXX20260419450C",
+                    contract_month="202604",
+                    strike_price=19450.0,
+                    call_put="call",
+                    tick_direction="up",
+                ),
+                _tick(
+                    ts=base_ts + timedelta(minutes=1),
+                    symbol="TXX",
+                    price=121.0,
+                    size=10,
+                    instrument_key="TXX20260419400C",
+                    contract_month="202604",
+                    strike_price=19400.0,
+                    call_put="call",
+                    tick_direction="up",
+                ),
+            ],
+            bars=[
+                Bar(
+                    ts=base_ts,
+                    trading_day=date(2026, 4, 16),
+                    symbol="TWII",
+                    contract_month="",
+                    session="day",
+                    open=19380.0,
+                    high=19410.0,
+                    low=19370.0,
+                    close=19400.0,
+                    volume=0.0,
+                    open_interest=None,
+                    source="stub_replay",
+                    instrument_key="index:TWII",
+                    build_source="live_snapshot_agg",
+                ),
+                Bar(
+                    ts=base_ts + timedelta(minutes=1),
+                    trading_day=date(2026, 4, 16),
+                    symbol="TWII",
+                    contract_month="",
+                    session="day",
+                    open=19380.0,
+                    high=19410.0,
+                    low=19370.0,
+                    close=19400.0,
+                    volume=0.0,
+                    open_interest=None,
+                    source="stub_replay",
+                    instrument_key="index:TWII",
+                    build_source="live_snapshot_agg",
+                ),
+            ],
+        )
+        service = MonitorReplayService(
+            store=store,
+            option_root="AUTO",
+            expiry_count=2,
+            underlying_symbol="MTX",
+            snapshot_interval_seconds=60.0,
+        )
+        metadata = service.create_session(
+            start=base_ts,
+            end=base_ts + timedelta(minutes=1),
+            set_as_default=True,
+        )
+
+        payload = service.get_series_payload(
+            metadata["session_id"],
+            ["raw_pressure"],
+            start=base_ts,
+            end=base_ts + timedelta(minutes=1),
+            interval="1m",
+        )
+
+        self.assertIsNotNone(payload)
+        self.assertEqual(
+            payload["series"]["raw_pressure"],
+            [
+                {"time": "2026-04-16T09:00:00", "value": 0.0},
+                {"time": "2026-04-16T09:01:00", "value": 19.0},
+            ],
+        )
+
     def test_create_session_normalizes_aware_inputs_to_local_domain_time(self) -> None:
         local_start = datetime(2026, 4, 16, 9, 0, 0)
         store = DummyStore(

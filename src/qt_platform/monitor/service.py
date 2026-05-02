@@ -17,8 +17,9 @@ from qt_platform.live.recorder import aggregate_ticks_to_bars
 from qt_platform.live.shioaji_provider import ShioajiLiveProvider, _contract_month
 from qt_platform.monitor.aggregator import MonitorAggregator
 from qt_platform.monitor.replay import _build_indicator_series
-from qt_platform.regime import MtxRegimeAnalyzer, regime_schema_dicts
-from qt_platform.session import (
+from qt_platform.monitor.snapshot_builder import materialize_monitor_snapshot
+from qt_platform.market_state.mtx import MtxRegimeAnalyzer, regime_schema_dicts
+from qt_platform.trading_calendar import (
     classify_session,
     is_in_activation_scope,
     is_in_session_scope,
@@ -71,25 +72,6 @@ class KronosLiveSettings:
     verbose: bool = False
     output_path: str | None = None
 
-
-from qt_platform.indicators import DataManager, IndicatorRunner
-from qt_platform.indicators.collection import (
-    PressureIndicator,
-    RegimeIndicator,
-    ForceScoreIndicator,
-    TrendQualityIndicator,
-    StructureStateIndicator,
-    ChopScoreIndicator,
-    TrendScoreIndicator,
-    AdxIndicator,
-    ChoppinessIndicator,
-    ExpansionScoreIndicator,
-    CompressionScoreIndicator,
-    ReversalRiskIndicator,
-    VwapDistanceIndicator,
-    SessionCvdIndicator,
-)
-
 class RealtimeMonitorService:
     def __init__(
         self,
@@ -140,11 +122,7 @@ class RealtimeMonitorService:
         self.error_message: str | None = None
 
         self.aggregator = MonitorAggregator(option_root=option_root)
-        self.regime = MtxRegimeAnalyzer()
-        
-        # New Indicator Infrastructure
-        self.data_manager = DataManager(store=store)
-        self.runner = IndicatorRunner(self.data_manager)
+        self.market_state_adapter = MtxRegimeAnalyzer()
         
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
@@ -189,20 +167,7 @@ class RealtimeMonitorService:
                 snapshot["kronos"] = self._kronos_snapshot_payload()
                 snapshot.update(self._kronos_latest_metrics)
                 return snapshot
-        snapshot = self.aggregator.snapshot(
-            generated_at=datetime.now(),
-            run_id=self.run_id,
-            underlying_reference_price=self.underlying_reference_price,
-            underlying_reference_source=self.underlying_reference_source,
-            status=self.status,
-            regime=self.regime.snapshot(datetime.now()),
-            stop_reason=self.stop_reason,
-            warning=self.warning or self.error_message,
-        )
-        payload = snapshot.to_dict()
-        payload["kronos"] = self._kronos_snapshot_payload()
-        payload.update(self._kronos_latest_metrics)
-        return payload
+        return self._build_live_snapshot(datetime.now())
 
     def live_latest_update(
         self,
@@ -507,8 +472,6 @@ class RealtimeMonitorService:
             )
             self.status = "running"
             
-            # Initialize Default Monitor Pipeline
-            option_keys = []
             for contract in contracts:
                 code = str(getattr(contract, "code", ""))
                 cp = _normalize_call_put(getattr(contract, "option_right", None))
@@ -521,33 +484,11 @@ class RealtimeMonitorService:
                     call_put=cp,
                     session=classify_session(datetime.now()),
                 )
-                option_keys.append(f"shioaji:ticks:{code}")
-            
-            underlying_key = f"shioaji:ticks:{underlying_code}"
-            self.runner.add_pipeline("default", [
-                {"indicator": PressureIndicator(), "mapping": {"options": option_keys, "underlying": underlying_key}},
-                {"indicator": RegimeIndicator(), "mapping": {"bar": underlying_key, "tick": underlying_key}},
-                {"indicator": TrendQualityIndicator(), "mapping": {}},
-                {"indicator": StructureStateIndicator(), "mapping": {}},
-                {"indicator": ChopScoreIndicator(), "mapping": {}},
-                {"indicator": TrendScoreIndicator(), "mapping": {}},
-                {"indicator": AdxIndicator(), "mapping": {}},
-                {"indicator": ChoppinessIndicator(), "mapping": {}},
-                {"indicator": SessionCvdIndicator(), "mapping": {}},
-                {"indicator": ExpansionScoreIndicator(), "mapping": {}},
-                {"indicator": CompressionScoreIndicator(), "mapping": {}},
-                {"indicator": ReversalRiskIndicator(), "mapping": {}},
-                {"indicator": VwapDistanceIndicator(), "mapping": {}},
-            ])
 
             if not self._ready.is_set():
                 self._ready.set()
             self._next_snapshot_at = datetime.now()
             for tick in self.provider.stream_ticks_from_contracts(contracts=all_contracts, max_events=None):
-                # Update New Data Manager
-                stream_key = f"shioaji:ticks:{tick.instrument_key or tick.symbol}"
-                self.data_manager.get_stream(stream_key).append(tick)
-                
                 if (tick.instrument_key or tick.symbol) in underlying_identifiers:
                     self._underlying_future_price = tick.price
                     self._underlying_future_tick_ts = tick.ts
@@ -583,7 +524,7 @@ class RealtimeMonitorService:
         )
 
     def _reset_live_cache(self) -> None:
-        self.regime = MtxRegimeAnalyzer()
+        self.market_state_adapter = MtxRegimeAnalyzer()
         with self._history_lock:
             self._snapshot_history.clear()
             self._bars_history.clear()
@@ -603,7 +544,7 @@ class RealtimeMonitorService:
             self._kronos_latest_metrics = {}
 
     def _ingest_underlying_tick(self, tick: CanonicalTick) -> None:
-        self.regime.ingest_tick(tick)
+        self.market_state_adapter.ingest_tick(tick)
         minute_ts = tick.ts.replace(second=0, microsecond=0)
         with self._history_lock:
             if self._open_bar_state is None or self._open_bar_state.minute_ts != minute_ts:
@@ -627,7 +568,7 @@ class RealtimeMonitorService:
                     up_ticks=1.0 if tick.tick_direction == "up" else 0.0,
                     down_ticks=1.0 if tick.tick_direction == "down" else 0.0,
                 )
-                self.regime.ingest_bar(_bar_state_to_domain_bar(self._open_bar_state))
+                self.market_state_adapter.ingest_bar(_bar_state_to_domain_bar(self._open_bar_state))
                 return
 
             state = self._open_bar_state
@@ -639,7 +580,7 @@ class RealtimeMonitorService:
                 state.up_ticks += 1
             elif tick.tick_direction == "down":
                 state.down_ticks += 1
-            self.regime.ingest_bar(_bar_state_to_domain_bar(state))
+            self.market_state_adapter.ingest_bar(_bar_state_to_domain_bar(state))
 
     def _append_closed_bar(self, state: _MinuteBarState) -> None:
         bar = _bar_state_to_chart_dict(state)
@@ -689,37 +630,7 @@ class RealtimeMonitorService:
         while self._next_snapshot_at is not None and tick_ts >= self._next_snapshot_at:
             self._refresh_day_indicator_snapshot(self._next_snapshot_at)
             self._refresh_indicator_reference(self._next_snapshot_at)
-            
-            # Update New Indicator Infrastructure
-            self.runner.update_all(self._next_snapshot_at)
-            pipeline = self.runner.get_pipeline("default")
-            indicator_snapshot = pipeline.get_snapshot() if pipeline else {}
-
-            snapshot = self.aggregator.snapshot(
-                generated_at=self._next_snapshot_at,
-                run_id=self.run_id,
-                underlying_reference_price=self.underlying_reference_price,
-                underlying_reference_source=self.underlying_reference_source,
-                status=self.status,
-                regime=self.regime.snapshot(self._next_snapshot_at),
-                stop_reason=self.stop_reason,
-                warning=self.warning or self.error_message,
-            ).to_dict()
-            
-            # Merge New Indicators
-            # Filter out base indicators like 'regime' that are already handled specially if needed
-            # but generally we want all of them available at the top level for the frontend.
-            for key, val in indicator_snapshot.items():
-                if key == "regime":
-                    snapshot["regime_v2"] = val
-                elif key == "option_pressure":
-                    if isinstance(val, dict):
-                        snapshot.update(val)
-                else:
-                    snapshot[key] = val
-
-            snapshot["kronos"] = self._kronos_snapshot_payload()
-            snapshot.update(self._kronos_latest_metrics)
+            snapshot = self._build_live_snapshot(self._next_snapshot_at)
             with self._history_lock:
                 self._snapshot_history.append(
                     {
@@ -845,16 +756,7 @@ class RealtimeMonitorService:
         if self._snapshot_history:
             snapshot = dict(self._snapshot_history[-1]["snapshot"])
         else:
-            snapshot = self.aggregator.snapshot(
-                generated_at=completed_at,
-                run_id=self.run_id,
-                underlying_reference_price=self.underlying_reference_price,
-                underlying_reference_source=self.underlying_reference_source,
-                status=self.status,
-                regime=self.regime.snapshot(completed_at),
-                stop_reason=self.stop_reason,
-                warning=self.warning or self.error_message,
-            ).to_dict()
+            snapshot = self._build_live_snapshot(completed_at)
         snapshot["generated_at"] = completed_at.isoformat()
         snapshot["kronos"] = self._kronos_snapshot_payload()
         snapshot.update(self._kronos_latest_metrics)
@@ -944,6 +846,24 @@ class RealtimeMonitorService:
                 return
         self.underlying_reference_price = self._underlying_future_price
         self.underlying_reference_source = self.underlying_future_symbol.lower() if self._underlying_future_price is not None else None
+
+    def _build_live_snapshot(self, generated_at: datetime) -> dict[str, Any]:
+        market_state = self.market_state_adapter.snapshot(generated_at)
+        base_snapshot = self.aggregator.snapshot(
+            generated_at=generated_at,
+            run_id=self.run_id,
+            underlying_reference_price=self.underlying_reference_price,
+            underlying_reference_source=self.underlying_reference_source,
+            status=self.status,
+            regime=market_state,
+            stop_reason=self.stop_reason,
+            warning=self.warning or self.error_message,
+        ).to_dict()
+        return materialize_monitor_snapshot(
+            base_snapshot,
+            kronos_snapshot=self._kronos_snapshot_payload(),
+            kronos_metrics=self._kronos_latest_metrics,
+        )
 
 
 def _normalize_call_put(option_right) -> str:

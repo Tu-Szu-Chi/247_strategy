@@ -105,6 +105,28 @@ class StreamingProvider(DummyProvider):
 
 
 class RealtimeMonitorServiceTest(unittest.TestCase):
+    def test_current_snapshot_materializes_market_state_without_history(self) -> None:
+        service = RealtimeMonitorService(
+            provider=DummyProvider(),
+            store=DummyStore(),
+            option_root="AUTO",
+            expiry_count=2,
+            atm_window=20,
+            underlying_future_symbol="MXFR1",
+            call_put="both",
+            session_scope="day_and_night",
+            batch_size=500,
+            snapshot_interval_seconds=5.0,
+            log_callback=lambda payload: None,
+        )
+        service.run_id = "test-run"
+
+        snapshot = service.current_snapshot()
+
+        self.assertIn("regime", snapshot)
+        self.assertIn("adx_14", snapshot)
+        self.assertIn("trend_quality_score", snapshot)
+
     def test_run_cycle_waits_for_option_roots_instead_of_crashing(self) -> None:
         logs = []
         provider = DummyProvider()

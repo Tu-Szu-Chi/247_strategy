@@ -72,7 +72,7 @@ class KronosPathPredictor:
 
 
 def _load_kronos_classes(kronos_root: Path | None) -> tuple[Any, Any, Any]:
-    root = kronos_root or Path(__file__).resolve().parents[3] / "Kronos"
+    root = kronos_root or Path(__file__).resolve().parents[3] / "vendor" / "Kronos"
     if not root.exists():
         raise RuntimeError(f"Kronos repository not found at {root}")
     root_text = str(root)

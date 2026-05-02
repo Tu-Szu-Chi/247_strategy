@@ -27,7 +27,7 @@ NOTE.md有些提示可以參考
 > python -m pip install kgisuperpy
 
 * **歷史資料**：FinMind API（Sponsor 專案）
-> ./finmind_doc.txt
+> ./docs/reference/finmind_doc.txt
 
 * **回測引擎**
 
@@ -220,6 +220,6 @@ secrets:
 
 ### Reference
 以下三個專案都是github上開源的, 跟量化交易/回測有關
-./Kronos 
+./vendor/Kronos
 ./backtrader
 ./phandas

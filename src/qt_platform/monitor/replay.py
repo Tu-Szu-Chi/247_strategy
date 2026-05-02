@@ -14,9 +14,13 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from qt_platform.domain import Bar, CanonicalTick
+from qt_platform.indicators.catalog import (
+    MONITOR_INDICATOR_SERIES_NAMES,
+    STATEFUL_MONITOR_SERIES_NAMES,
+    requires_market_state,
+)
 from qt_platform.monitor.aggregator import MonitorAggregator
 from qt_platform.monitor.indicator_backend import (
-    INDICATOR_SERIES_NAMES,
     build_indicator_series,
     compression_expansion_state_value,
     cvd_price_alignment_value,
@@ -25,8 +29,8 @@ from qt_platform.monitor.indicator_backend import (
     rolling_quantile,
     structure_state_value,
 )
-from qt_platform.regime import MtxRegimeAnalyzer, regime_schema_dicts
-from qt_platform.session import classify_session, session_windows_for, trading_day_for
+from qt_platform.market_state.mtx import MtxRegimeAnalyzer, regime_schema_dicts
+from qt_platform.trading_calendar import classify_session, session_windows_for, trading_day_for
 from qt_platform.storage.base import BarRepository
 
 
@@ -37,14 +41,7 @@ TX_OPTION_ROOT_CANDIDATES = [
 DAY_INDICATOR_SYMBOL = "TWII"
 LOCAL_TIMEZONE = ZoneInfo("Asia/Taipei")
 STATE_SERIES_NAMES = {
-    "regime_state",
-    "structure_state",
-    "compression_expansion_state",
-    "cvd_price_alignment",
-    "price_cvd_divergence_15b",
-    "trend_bias_state",
-    "flow_state",
-    "range_state",
+    *STATEFUL_MONITOR_SERIES_NAMES,
 }
 PRESSURE_SERIES_NAMES = {
     "pressure_index",
@@ -124,10 +121,10 @@ class ReplaySession:
 class ChartStateCheckpoint:
     session_window_start: datetime
     interval: str
-    include_regime: bool
+    include_market_state: bool
     processed_until: datetime
     aggregator: MonitorAggregator
-    regime: MtxRegimeAnalyzer | None
+    market_state_adapter: MtxRegimeAnalyzer | None
     latest_future_reference_price: float | None
     latest_day_indicator_price: float | None
 
@@ -636,7 +633,7 @@ class MonitorReplayService:
             "query_start": query_start.isoformat(),
             "query_end": query_end.isoformat(),
             "interval": interval,
-            "include_regime": int(_series_requires_regime(names)),
+            "include_market_state": int(_series_requires_market_state(names)),
             "include_iv_surface": int("iv_skew" in names),
             "tick_fetch_db_seconds": 0.0,
             "tick_fetch_decode_seconds": 0.0,
@@ -657,7 +654,7 @@ class MonitorReplayService:
             start=query_start,
             end=query_end,
             interval=interval,
-            include_regime=bool(profile["include_regime"]),
+            include_market_state=bool(profile["include_market_state"]),
             include_iv_surface=bool(profile["include_iv_surface"]),
             profile=profile,
         )
@@ -825,7 +822,7 @@ class MonitorReplayService:
 
         aggregator = MonitorAggregator(option_root=",".join(session.selected_option_roots) or session.option_root)
         replay_session = classify_session(start)
-        for contract in _contract_seeds(option_ticks):
+        for contract in _contract_seeds(option_ticks, not_after=start):
             aggregator.seed_contract(
                 instrument_key=contract.instrument_key or "",
                 symbol=contract.symbol,
@@ -847,7 +844,7 @@ class MonitorReplayService:
         underlying_bars = self.store.list_bars("1m", session.underlying_symbol, start, end)
         underlying_tick_index = 0
         underlying_bar_index = 0
-        regime = MtxRegimeAnalyzer()
+        market_state_adapter = MtxRegimeAnalyzer()
 
         while boundary <= end:
             while tick_index < len(replay_ticks) and replay_ticks[tick_index].ts <= boundary:
@@ -859,11 +856,11 @@ class MonitorReplayService:
                 tick_index += 1
 
             while underlying_tick_index < len(underlying_ticks) and underlying_ticks[underlying_tick_index].ts <= boundary:
-                regime.ingest_tick(underlying_ticks[underlying_tick_index])
+                market_state_adapter.ingest_tick(underlying_ticks[underlying_tick_index])
                 underlying_tick_index += 1
 
             while underlying_bar_index < len(underlying_bars) and underlying_bars[underlying_bar_index].ts <= boundary:
-                regime.ingest_bar(underlying_bars[underlying_bar_index])
+                market_state_adapter.ingest_bar(underlying_bars[underlying_bar_index])
                 underlying_bar_index += 1
 
             while day_indicator_index < len(day_indicator_bars) and day_indicator_bars[day_indicator_index].ts <= boundary:
@@ -883,7 +880,7 @@ class MonitorReplayService:
                 underlying_reference_price=reference_price,
                 underlying_reference_source=reference_source,
                 status="replay_ready",
-                regime=regime.snapshot(boundary),
+                regime=market_state_adapter.snapshot(boundary),
             ).to_dict()
             if boundary >= start:
                 snapshots.append(snapshot)
@@ -952,14 +949,14 @@ class MonitorReplayService:
         request_id: str | None,
     ) -> dict:
         builtin_names = [name for name in names if name not in self.external_indicator_series]
-        include_regime = _series_requires_regime(builtin_names)
+        include_market_state = _series_requires_market_state(builtin_names)
         include_iv_surface = "iv_skew" in builtin_names
         cache_key = (
             "chart-series",
             query_start,
             query_end,
             interval,
-            int(include_regime),
+            int(include_market_state),
             int(include_iv_surface),
         )
         cached = self._chart_cache_get(session, cache_key)
@@ -969,7 +966,7 @@ class MonitorReplayService:
                 start=query_start,
                 end=query_end,
                 interval=interval,
-                include_regime=include_regime,
+                include_market_state=include_market_state,
                 include_iv_surface=include_iv_surface,
             )
             self._chart_cache_put(
@@ -1035,7 +1032,7 @@ class MonitorReplayService:
         start: datetime,
         end: datetime,
         interval: str,
-        include_regime: bool,
+        include_market_state: bool,
         include_iv_surface: bool,
         profile: dict | None = None,
     ) -> dict[str, list[dict]]:
@@ -1055,7 +1052,7 @@ class MonitorReplayService:
                 emit_start=emit_start,
                 emit_end=emit_end,
                 interval=interval,
-                include_regime=include_regime,
+                include_market_state=include_market_state,
                 include_iv_surface=include_iv_surface,
                 profile=profile,
             )
@@ -1079,7 +1076,7 @@ class MonitorReplayService:
         emit_start: datetime,
         emit_end: datetime,
         interval: str,
-        include_regime: bool,
+        include_market_state: bool,
         include_iv_surface: bool,
         profile: dict | None = None,
     ) -> tuple[list[str], list[dict]]:
@@ -1087,7 +1084,7 @@ class MonitorReplayService:
             session,
             session_window_start=warm_start,
             interval=interval,
-            include_regime=include_regime,
+            include_market_state=include_market_state,
             not_after=emit_start,
         )
         cache_end = emit_end
@@ -1107,16 +1104,20 @@ class MonitorReplayService:
                 cache_end=cache_end,
                 profile=profile,
             )
-        needs_underlying_ticks = include_regime or classify_session(warm_start) != "day" or not day_indicator_bars
+        needs_underlying_ticks = include_market_state or classify_session(warm_start) != "day" or not day_indicator_bars
         if checkpoint is not None:
             aggregator = checkpoint.aggregator.clone()
             replay_start = checkpoint.processed_until + timedelta(microseconds=1)
             latest_future_reference_price = checkpoint.latest_future_reference_price
             latest_day_indicator_price = checkpoint.latest_day_indicator_price
-            if include_regime:
-                regime = checkpoint.regime.clone() if checkpoint.regime is not None else MtxRegimeAnalyzer()
+            if include_market_state:
+                market_state_adapter = (
+                    checkpoint.market_state_adapter.clone()
+                    if checkpoint.market_state_adapter is not None
+                    else MtxRegimeAnalyzer()
+                )
             else:
-                regime = MtxRegimeAnalyzer()
+                market_state_adapter = MtxRegimeAnalyzer()
         else:
             aggregator = MonitorAggregator(option_root=",".join(session.selected_option_roots) or session.option_root)
             replay_session = classify_session(warm_start)
@@ -1136,7 +1137,7 @@ class MonitorReplayService:
                 for tick in raw_ticks
                 if tick.symbol in session.selected_option_roots and tick.strike_price is not None and tick.call_put is not None
             ]
-            for contract in _contract_seeds(option_seed_ticks):
+            for contract in _contract_seeds(option_seed_ticks, not_after=replay_start):
                 aggregator.seed_contract(
                     instrument_key=contract.instrument_key or "",
                     symbol=contract.symbol,
@@ -1150,7 +1151,7 @@ class MonitorReplayService:
                     float(profile.get("contract_seed_seconds", 0.0) or 0.0)
                     + (perf_counter() - seed_started)
                 )
-            regime = MtxRegimeAnalyzer()
+            market_state_adapter = MtxRegimeAnalyzer()
 
         if raw_ticks is None:
             raw_ticks = self._session_replay_ticks(
@@ -1175,7 +1176,7 @@ class MonitorReplayService:
         )
 
         underlying_bars: list[Bar] = []
-        if include_regime and replay_start <= emit_end:
+        if include_market_state and replay_start <= emit_end:
             underlying_bars = self._session_symbol_bars(
                 session,
                 symbol=session.underlying_symbol,
@@ -1206,13 +1207,13 @@ class MonitorReplayService:
                     aggregator.ingest_tick(tick)
                 tick_index += 1
 
-            if include_regime:
+            if include_market_state:
                 while underlying_tick_index < len(underlying_ticks) and underlying_ticks[underlying_tick_index].ts <= evaluation_time:
-                    regime.ingest_tick(underlying_ticks[underlying_tick_index])
+                    market_state_adapter.ingest_tick(underlying_ticks[underlying_tick_index])
                     underlying_tick_index += 1
 
                 while underlying_bar_index < len(underlying_bars) and underlying_bars[underlying_bar_index].ts <= evaluation_time:
-                    regime.ingest_bar(underlying_bars[underlying_bar_index])
+                    market_state_adapter.ingest_bar(underlying_bars[underlying_bar_index])
                     underlying_bar_index += 1
 
             while day_indicator_index < len(day_indicator_bars) and day_indicator_bars[day_indicator_index].ts <= evaluation_time:
@@ -1233,7 +1234,7 @@ class MonitorReplayService:
                     generated_at=evaluation_time,
                     underlying_reference_price=reference_price,
                     underlying_reference_source=reference_source,
-                    regime=regime.snapshot(evaluation_time) if include_regime else None,
+                    regime=market_state_adapter.snapshot(evaluation_time) if include_market_state else None,
                     include_iv_surface=include_iv_surface,
                 )
             )
@@ -1256,10 +1257,10 @@ class MonitorReplayService:
                 ChartStateCheckpoint(
                     session_window_start=warm_start,
                     interval=interval,
-                    include_regime=include_regime,
+                    include_market_state=include_market_state,
                     processed_until=last_processed_until,
                     aggregator=aggregator.clone(),
-                    regime=regime.clone() if include_regime else None,
+                    market_state_adapter=market_state_adapter.clone() if include_market_state else None,
                     latest_future_reference_price=latest_future_reference_price,
                     latest_day_indicator_price=latest_day_indicator_price,
                 ),
@@ -1559,19 +1560,19 @@ class MonitorReplayService:
         *,
         session_window_start: datetime,
         interval: str,
-        include_regime: bool,
+        include_market_state: bool,
         not_after: datetime,
     ) -> ChartStateCheckpoint | None:
         best_key: tuple | None = None
         best_checkpoint: ChartStateCheckpoint | None = None
         with self._lock:
             for key, checkpoint in session.chart_state_cache.items():
-                _, key_window_start, key_interval, key_include_regime, key_processed_until = key
+                _, key_window_start, key_interval, key_include_market_state, key_processed_until = key
                 if key_window_start != session_window_start or key_interval != interval:
                     continue
                 if key_processed_until > not_after:
                     continue
-                if include_regime and not key_include_regime:
+                if include_market_state and not key_include_market_state:
                     continue
                 if best_checkpoint is None or checkpoint.processed_until > best_checkpoint.processed_until:
                     best_key = key
@@ -1589,7 +1590,7 @@ class MonitorReplayService:
             "chart-state",
             checkpoint.session_window_start,
             checkpoint.interval,
-            checkpoint.include_regime,
+            checkpoint.include_market_state,
             checkpoint.processed_until,
         )
         with self._lock:
@@ -1656,9 +1657,15 @@ class MonitorReplayService:
         return [root for root, _ in ranked[: self.expiry_count]]
 
 
-def _contract_seeds(ticks: list[CanonicalTick]) -> list[CanonicalTick]:
+def _contract_seeds(
+    ticks: list[CanonicalTick],
+    *,
+    not_after: datetime | None = None,
+) -> list[CanonicalTick]:
     seeds: dict[str, CanonicalTick] = {}
     for tick in ticks:
+        if not_after is not None and tick.ts > not_after:
+            continue
         key = tick.instrument_key or ""
         if key and key not in seeds:
             seeds[key] = tick
@@ -1680,7 +1687,7 @@ def load_external_indicator_series(path: str | Path | None) -> dict[str, list[di
 
 
 def _indicator_series_names(external_series: dict[str, list[dict]] | None = None) -> list[str]:
-    names = set(INDICATOR_SERIES_NAMES)
+    names = set(MONITOR_INDICATOR_SERIES_NAMES)
     names.update((external_series or {}).keys())
     return sorted(names)
 
@@ -1708,8 +1715,8 @@ def _build_indicator_series(snapshot_times: list[str], snapshots: list[dict]) ->
     return build_indicator_series(snapshot_times, snapshots)
 
 
-def _series_requires_regime(names: list[str]) -> bool:
-    return any(name not in PRESSURE_SERIES_NAMES and name != "iv_skew" for name in names)
+def _series_requires_market_state(names: list[str]) -> bool:
+    return requires_market_state(names)
 
 
 def _iv_surface_value(snapshot: dict, field: str) -> float:

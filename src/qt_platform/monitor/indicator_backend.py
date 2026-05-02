@@ -12,6 +12,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only before deps are
     pl = None  # type: ignore[assignment]
 
 
+from qt_platform.indicators.catalog import MONITOR_INDICATOR_SERIES_NAMES
 from qt_platform.indicators.collection.pressure_logic import (
     compute_pressure_metrics,
     normalized_pressure,
@@ -25,52 +26,7 @@ from qt_platform.indicators.collection.pressure_logic import (
     PRESSURE_SIGMA,
 )
 
-BASE_INDICATOR_SERIES_NAMES = [
-    "pressure_index",
-    "raw_pressure",
-    "pressure_index_weighted",
-    "raw_pressure_weighted",
-    "regime_state",
-    "structure_state",
-    "trend_score",
-    "chop_score",
-    "reversal_risk",
-    "vwap_distance_bps",
-    "directional_efficiency_15b",
-    "tick_imbalance_5b",
-    "trade_intensity_ratio_30b",
-    "range_ratio_5b_30b",
-    "adx_14",
-    "plus_di_14",
-    "minus_di_14",
-    "di_bias_14",
-    "choppiness_14",
-    "compression_score",
-    "expansion_score",
-    "compression_expansion_state",
-    "session_cvd",
-    "cvd_5b_delta",
-    "cvd_15b_delta",
-    "cvd_5b_slope",
-    "cvd_price_alignment",
-    "price_cvd_divergence_15b",
-    "iv_skew",
-    "trend_quality",
-    "structure_state",
-]
-
-DERIVED_INDICATOR_SERIES_NAMES = [
-    "trend_quality_score",
-    "trend_bias_state",
-    "flow_impulse_score",
-    "flow_state",
-    "range_state",
-]
-
-INDICATOR_SERIES_NAMES = [
-    *BASE_INDICATOR_SERIES_NAMES,
-    *DERIVED_INDICATOR_SERIES_NAMES,
-]
+INDICATOR_SERIES_NAMES = list(MONITOR_INDICATOR_SERIES_NAMES)
 
 REGIME_NUMERIC_FIELDS = [
     "trend_score",

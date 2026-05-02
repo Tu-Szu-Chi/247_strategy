@@ -21,7 +21,7 @@ Backend indicators before this phase:
 
 - Option pressure from `MonitorAggregator`: `pressure_index`, `raw_pressure`, `pressure_index_weighted`, `raw_pressure_weighted`.
 - Replay series mapping in `src/qt_platform/option_power/replay.py`: pressure fields, `regime_state`, `structure_state`, regime numeric fields, string-state encodings, and `iv_skew`.
-- MTX regime fields from `src/qt_platform/regime.py`: `trend_score`, `chop_score`, `reversal_risk`, `adx_14`, `di_bias_14`, CVD fields, compression/expansion fields, and related context.
+- MTX regime fields from `src/qt_platform/market_state/mtx.py`: `trend_score`, `chop_score`, `reversal_risk`, `adx_14`, `di_bias_14`, CVD fields, compression/expansion fields, and related context.
 
 Frontend-derived indicators in `frontend/src/pages/OptionPowerResearchWorkspace.tsx`:
 
@@ -277,7 +277,7 @@ Completed change:
 Files touched in this segment:
 
 - `src/qt_platform/option_power/aggregator.py`
-- `src/qt_platform/regime.py`
+- `src/qt_platform/market_state/mtx.py`
 - `src/qt_platform/option_power/replay.py`
 - `tests/test_option_power_replay.py`
 - `docs/POLARS_INDICATOR_BACKEND_PLAN.md`
@@ -285,7 +285,7 @@ Files touched in this segment:
 Tests run:
 
 - `PYTHONPATH=src .venv/bin/pytest tests/test_option_power_replay.py -q` passed (`15 passed`)
-- `PYTHONPATH=src .venv/bin/python -m compileall -q src/qt_platform/option_power src/qt_platform/regime.py tests/test_option_power_replay.py` passed
+- `PYTHONPATH=src .venv/bin/python -m compileall -q src/qt_platform/option_power src/qt_platform/market_state/mtx.py tests/test_option_power_replay.py` passed
 - `PYTHONPATH=src .venv/bin/pytest tests/test_web_app.py -q` passed (`3 skipped`)
 
 Real replay measurements on a patched local replay server (`127.0.0.1:8013`):

@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta
 
 from qt_platform.domain import Gap
 from qt_platform.providers.base import BaseProvider
-from qt_platform.session import iter_expected_bar_timestamps
+from qt_platform.trading_calendar import iter_expected_bar_timestamps
 from qt_platform.storage.base import BarRepository
 
 

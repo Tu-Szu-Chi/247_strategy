@@ -19,7 +19,7 @@ from qt_platform.monitor.indicator_backend import (
     directional_flow,
     normalized_pressure,
 )
-from qt_platform.regime import RegimeFeatureSnapshot
+from qt_platform.market_state.mtx import RegimeFeatureSnapshot
 
 
 MONTH_CONTRACT_PATTERN = re.compile(r"^(?P<year>\d{4})(?P<month>\d{2})$")

@@ -36,7 +36,7 @@ Recommended integration pattern:
 
 ## 3. Kronos Constraint
 
-`Kronos/model/kronos.py` currently averages generated samples before returning:
+`vendor/Kronos/model/kronos.py` currently averages generated samples before returning:
 
 - `auto_regressive_inference()` reshapes decoded output to `(batch, sample_count, seq_len, features)`.
 - It then performs `np.mean(preds, axis=1)`.
@@ -46,7 +46,7 @@ That is not sufficient for probability indicators because the distribution and p
 
 Required low-level extension:
 
-- Add a project-owned raw path inference wrapper instead of changing the ignored vendored `Kronos/` source.
+- Add a project-owned raw path inference wrapper instead of changing the ignored vendored `vendor/Kronos/` source.
 - Preserve existing default Kronos behavior for normal averaged forecasts.
 - Return raw paths with a stable shape before averaging.
 
@@ -76,7 +76,7 @@ Suggested files:
 - `raw_inference.py`: mirrors Kronos autoregressive inference but keeps the `sample_count` path dimension.
 - `series.py`: builds storage/backtest indicator series over a bar window.
 
-Keep the vendored `Kronos/` directory isolated. The project adapter should hide Kronos import path details and optional dependencies from the rest of `qt_platform`.
+Keep the vendored `vendor/Kronos/` directory isolated. The project adapter should hide Kronos import path details and optional dependencies from the rest of `qt_platform`.
 
 ### 4.2 Probability calculator
 

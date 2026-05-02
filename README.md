@@ -11,32 +11,118 @@ Research-first quantitative trading platform for Taiwan index futures.
 
 ## Quick Start
 
+### 新電腦 / 新環境啟用步驟
+
 先講清楚：
 
 - `config/config.yaml` 目前預設 `database.url = sqlite:///local.db`
 - 所以你如果沒有額外帶 `--database-url postgresql://...`，資料會先寫進 `local.db`
 - 若你要把 `TimescaleDB` 當正式主庫，建議直接把 `config/config.yaml` 改成 PostgreSQL
 - Windows 主機若是你接下來要長時間跑正式流程，應該直接使用 PostgreSQL/TimescaleDB，不要再用 SQLite 當主庫
+- `pytest` 現在是 required dependency，基本安裝就會帶進來
 
-1. Copy `config/config.yaml.example` to `config/config.yaml`
-2. Copy `config/symbols.csv.example` to `config/symbols.csv`
-3. Copy `.env.example` to `.env` and set `FINMIND_TOKEN`
-4. If you want live recording through Shioaji, also set `SH_API_KEY` and `SH_SECRET_KEY`
-5. If this machine is your formal runtime host, change `database.url` to PostgreSQL
-6. Start TimescaleDB
-7. Run `history-sync`, `runtime`, or backtest commands against either `sqlite:///local.db` or `postgresql://...`
+1. 安裝 Python 3.10+ 與 Docker Desktop。
+2. Clone 專案並切到 repo 根目錄。
+3. 建立虛擬環境並啟用。
+4. 安裝專案依賴。
+5. 複製設定檔模板。
+6. 在 `.env` 設定 `FINMIND_TOKEN`。
+7. 若要跑 live recording，再補 `SH_API_KEY` 與 `SH_SECRET_KEY`。
+8. 若這台是正式主機，把 `config/config.yaml` 的 `database.url` 改成 PostgreSQL。
+9. 啟動 TimescaleDB。
+10. 先跑 `doctor` 確認 config、DB、schema、token 都正常。
+11. 再依用途執行 `history-sync`、`runtime`、`serve-option-power` 或 `backtest`。
+
+### 1. 建立 Python 環境
+
+Windows PowerShell:
+
+```powershell
+py -3.10 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -e .[web,live,reports,kronos]
+```
+
+macOS / Linux:
+
+```bash
+python3.10 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -e .[web,live,reports,kronos]
+```
+
+若你只需要核心功能，可改成：
+
+```bash
+pip install -e .
+```
+
+### 2. 複製設定檔
+
+Windows PowerShell:
+
+```powershell
+Copy-Item config/config.yaml.example config/config.yaml
+Copy-Item config/symbols.csv.example config/symbols.csv
+Copy-Item .env.example .env
+```
+
+macOS / Linux:
+
+```bash
+cp config/config.yaml.example config/config.yaml
+cp config/symbols.csv.example config/symbols.csv
+cp .env.example .env
+```
+
+接著編輯：
+
+- `.env`
+  - 必填：`FINMIND_TOKEN`
+  - live 才需要：`SH_API_KEY`、`SH_SECRET_KEY`
+- `config/config.yaml`
+  - 本機簡單測試可保留 `sqlite:///local.db`
+  - 正式環境建議改成 `postgresql://postgres:postgres@localhost:5432/trading`
+
+### 3. 啟動資料庫
 
 ```bash
 docker compose up -d
-PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml scan-gaps --symbol MTX --start 2024-01-01T08:45:00 --end 2024-01-02T13:45:00 --session-scope day_and_night
-PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml history-sync --database-url postgresql://postgres:postgres@localhost:5432/trading --start-date 2024-01-01
-PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml history-sync --database-url postgresql://postgres:postgres@localhost:5432/trading --start-date 2024-01-01 --run-forever --sync-time 15:05
-PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml runtime --database-url postgresql://postgres:postgres@localhost:5432/trading --registry config/symbols.csv
-PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml runtime --database-url postgresql://postgres:postgres@localhost:5432/trading --registry config/symbols.csv --max-events 200
-PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml import-csv-folder --database-url postgresql://postgres:postgres@localhost:5432/trading --folder tmp --pattern '*.csv' --chunk-size 10000
-PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml doctor --database-url postgresql://postgres:postgres@localhost:5432/trading --symbol MTX --timeframe 1m
-PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml resolve-contract --symbol MTX --date 2024-01-18
-PYTHONPATH=src python3.10 -m qt_platform.cli.main --config config/config.yaml backtest --database-url postgresql://postgres:postgres@localhost:5432/trading --symbol MTX_MAIN --start 2024-01-03T08:45:00 --end 2024-01-03T13:44:00 --timeframe 1m
+```
+
+### 4. 驗證環境
+
+先用 `doctor` 做第一次驗證：
+
+```bash
+PYTHONPATH=src python -m qt_platform.cli.main --config config/config.yaml doctor --database-url postgresql://postgres:postgres@localhost:5432/trading --symbol MTX --timeframe 1m
+```
+
+若你暫時只用 SQLite，可拿掉 `--database-url ...`：
+
+```bash
+PYTHONPATH=src python -m qt_platform.cli.main --config config/config.yaml doctor --symbol MTX --timeframe 1m
+```
+
+也可以順手確認測試框架已可用：
+
+```bash
+PYTHONPATH=src python -m pytest tests/test_option_power_replay.py -q
+```
+
+### 5. 常用啟動指令
+
+```bash
+PYTHONPATH=src python -m qt_platform.cli.main --config config/config.yaml scan-gaps --symbol MTX --start 2024-01-01T08:45:00 --end 2024-01-02T13:45:00 --session-scope day_and_night
+PYTHONPATH=src python -m qt_platform.cli.main --config config/config.yaml history-sync --database-url postgresql://postgres:postgres@localhost:5432/trading --start-date 2024-01-01
+PYTHONPATH=src python -m qt_platform.cli.main --config config/config.yaml history-sync --database-url postgresql://postgres:postgres@localhost:5432/trading --start-date 2024-01-01 --run-forever --sync-time 15:05
+PYTHONPATH=src python -m qt_platform.cli.main --config config/config.yaml runtime --database-url postgresql://postgres:postgres@localhost:5432/trading --registry config/symbols.csv
+PYTHONPATH=src python -m qt_platform.cli.main --config config/config.yaml runtime --database-url postgresql://postgres:postgres@localhost:5432/trading --registry config/symbols.csv --max-events 200
+PYTHONPATH=src python -m qt_platform.cli.main --config config/config.yaml import-csv-folder --database-url postgresql://postgres:postgres@localhost:5432/trading --folder tmp --pattern '*.csv' --chunk-size 10000
+PYTHONPATH=src python -m qt_platform.cli.main --config config/config.yaml resolve-contract --symbol MTX --date 2024-01-18
+PYTHONPATH=src python -m qt_platform.cli.main --config config/config.yaml backtest --database-url postgresql://postgres:postgres@localhost:5432/trading --symbol MTX_MAIN --start 2024-01-03T08:45:00 --end 2024-01-03T13:44:00 --timeframe 1m
 ```
 
 若你要搬到 Windows 主機，請直接看 [OPERATIONS.md](/Users/quentin-tu/Documents/247_strategy/docs/OPERATIONS.md)。那份文件已補：

@@ -9,7 +9,7 @@ from typing import Iterable
 
 from qt_platform.domain import Bar, CanonicalTick, LiveRunMetadata
 from qt_platform.features import MinuteForceFeatures
-from qt_platform.session import trading_day_for
+from qt_platform.trading_calendar import trading_day_for
 from qt_platform.storage.base import BarRepository
 
 

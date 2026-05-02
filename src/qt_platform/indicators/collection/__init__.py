@@ -15,7 +15,7 @@ from qt_platform.indicators.collection.market_regime import (
     VwapDistanceIndicator,
 )
 from qt_platform.indicators.collection.pressure import PressureIndicator
-from qt_platform.indicators.collection.regime import RegimeIndicator
+from qt_platform.indicators.collection.market_state import RegimeIndicator
 from qt_platform.indicators.collection.sma import SmaIndicator
 
 __all__ = [
