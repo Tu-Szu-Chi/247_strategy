@@ -12,10 +12,12 @@ from typing import Any
 
 from qt_platform.domain import Bar, CanonicalTick, LiveRunMetadata
 from qt_platform.features import compute_minute_force_feature_series
+from qt_platform.indicators.catalog import MONITOR_INDICATOR_SERIES_NAMES
 from qt_platform.kronos import ProbabilityTarget, calculate_probability_metrics
 from qt_platform.live.recorder import aggregate_ticks_to_bars
 from qt_platform.live.shioaji_provider import ShioajiLiveProvider, _contract_month
 from qt_platform.monitor.aggregator import MonitorAggregator
+from qt_platform.monitor.indicator_backend import _snapshot_indicator_row
 from qt_platform.monitor.replay import _build_indicator_series
 from qt_platform.monitor.snapshot_builder import materialize_monitor_snapshot
 from qt_platform.market_state.mtx import MtxRegimeAnalyzer, regime_schema_dicts
@@ -219,7 +221,11 @@ class RealtimeMonitorService:
         with self._history_lock:
             first_ts = self._snapshot_history[0]["simulated_at"] if self._snapshot_history else None
             last_ts = self._snapshot_history[-1]["simulated_at"] if self._snapshot_history else None
-        available_series = sorted(self.live_series(["__all__"]).keys())
+            kronos_series_history = {
+                name: list(points)
+                for name, points in self._kronos_series_history.items()
+            }
+        available_series = _live_available_series_names(kronos_series_history)
         return {
             "mode": "live",
             "run_id": self.run_id,
@@ -252,12 +258,22 @@ class RealtimeMonitorService:
     def live_series(self, names: list[str]) -> dict[str, list[dict[str, Any]]]:
         with self._history_lock:
             history = list(self._snapshot_history)
-        snapshot_times = [item["simulated_at"] for item in history]
-        snapshots = [item["snapshot"] for item in history]
-        full_series = _build_indicator_series(snapshot_times, snapshots)
-        with self._history_lock:
-            for name, points in self._kronos_series_history.items():
-                full_series[name] = list(points)
+            kronos_series_history = {
+                name: list(points)
+                for name, points in self._kronos_series_history.items()
+            }
+        full_series: dict[str, list[dict[str, Any]]] = {
+            name: [] for name in _live_available_series_names(kronos_series_history)
+        }
+        for item in history:
+            snapshot_time = item["simulated_at"]
+            snapshot = item["snapshot"]
+            row = _snapshot_indicator_row(snapshot_time, snapshot)
+            for name in MONITOR_INDICATOR_SERIES_NAMES:
+                value = snapshot.get(name, row.get(name, 0))
+                full_series[name].append({"time": snapshot_time, "value": value})
+        for name, points in kronos_series_history.items():
+            full_series[name] = points
         if names == ["__all__"]:
             return full_series
         payload: dict[str, list[dict[str, Any]]] = {}
@@ -938,6 +954,10 @@ def _canonical_underlying_symbol(value: str) -> str:
     if normalized.startswith("TXF"):
         return "MTX"
     return normalized
+
+
+def _live_available_series_names(kronos_series_history: dict[str, list[dict[str, Any]]]) -> list[str]:
+    return sorted({*MONITOR_INDICATOR_SERIES_NAMES, *kronos_series_history.keys()})
 
 
 def _compact_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:

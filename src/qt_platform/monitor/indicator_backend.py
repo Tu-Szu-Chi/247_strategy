@@ -300,20 +300,6 @@ def _populate_python_windowed_indicators(rows: list[dict[str, Any]]) -> None:
             field="cvd_5b_slope",
             minutes=30,
         )
-        pressure_history = _rolling_window_values(
-            rows=rows,
-            parsed_times=parsed_times,
-            index=index,
-            field="pressure_index",
-            minutes=30,
-        )
-        raw_history = _rolling_window_values(
-            rows=rows,
-            parsed_times=parsed_times,
-            index=index,
-            field="raw_pressure",
-            minutes=30,
-        )
         slope_threshold = max(rolling_quantile([abs(value) for value in slope_history], 0.8), 1)
         current_slope = float(row.get("cvd_5b_slope", 0) or 0)
         row["flow_impulse_score"] = clamp_number((current_slope / slope_threshold) * 100, -100, 100)

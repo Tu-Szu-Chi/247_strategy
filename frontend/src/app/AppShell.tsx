@@ -16,16 +16,16 @@ export function AppShell({ children }: AppShellProps) {
         </div>
         <nav className={styles.nav}>
           <NavLink
-            to="/research/replay"
-            className={({ isActive }) => (isActive ? styles.activeLink : styles.link)}
-          >
-            Research Replay
-          </NavLink>
-          <NavLink
             to="/research/live"
             className={({ isActive }) => (isActive ? styles.activeLink : styles.link)}
           >
             Research Live
+          </NavLink>
+          <NavLink
+            to="/research/replay"
+            className={({ isActive }) => (isActive ? styles.activeLink : styles.link)}
+          >
+            Research Replay
           </NavLink>
           <NavLink
             to="/portfolio"

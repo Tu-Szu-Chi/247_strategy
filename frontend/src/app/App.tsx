@@ -8,8 +8,8 @@ export function App() {
   return (
     <AppShell>
       <Routes>
-        <Route path="/" element={<Navigate to="/research/replay" replace />} />
-        <Route path="/research" element={<Navigate to="/research/replay" replace />} />
+        <Route path="/" element={<Navigate to="/research/live" replace />} />
+        <Route path="/research" element={<Navigate to="/research/live" replace />} />
         <Route path="/research/live" element={<ResearchLivePage />} />
         <Route path="/research/replay" element={<ResearchReplayPage />} />
         <Route
