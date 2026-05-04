@@ -126,6 +126,18 @@ def _handle_live(args: argparse.Namespace, settings: Settings):
     if not runtime.wait_until_ready(timeout=args.ready_timeout_seconds):
         emit_status({"status": "error", "message": "Monitor service timed out during startup."}, args.log_file)
         return
+    if kronos_live_settings is not None:
+        emit_status(
+            {
+                "status": "kronos_live_enabled",
+                "run_id": run_id,
+                "lookback_bars": kronos_live_settings.lookback,
+                "sample_count": kronos_live_settings.sample_count,
+                "interval_minutes": kronos_live_settings.interval_minutes,
+                "targets": [str(target) for target in kronos_live_settings.targets],
+            },
+            args.log_file,
+        )
         
     app = build_option_power_app(runtime_service=runtime, replay_service=replay)
     emit_status({"status": "web_ready", "url": f"http://{args.host}:{args.port}/"}, args.log_file)

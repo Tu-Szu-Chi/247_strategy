@@ -136,7 +136,9 @@ class RealtimeMonitorService:
         self._open_bar_state: _MinuteBarState | None = None
         self._day_indicator_bar_state: _MinuteBarState | None = None
         self._next_snapshot_at: datetime | None = None
-        self._underlying_domain_bars: deque[Bar] = deque(maxlen=MAX_LIVE_BARS)
+        self._underlying_domain_bars: deque[Bar] = deque(
+            maxlen=_kronos_underlying_bar_capacity(kronos_live_settings)
+        )
         self._kronos_thread: threading.Thread | None = None
         self._kronos_last_decision_time: datetime | None = None
         self._kronos_last_completed_at: datetime | None = None
@@ -146,6 +148,7 @@ class RealtimeMonitorService:
         self._kronos_busy_skip_count = 0
         self._kronos_series_history: dict[str, list[dict[str, Any]]] = {}
         self._kronos_latest_metrics: dict[str, float | int] = {}
+        self._kronos_waiting_log_emitted = False
 
     def start(self, run_id: str) -> None:
         if self._thread and self._thread.is_alive():
@@ -558,6 +561,7 @@ class RealtimeMonitorService:
             self._kronos_busy_skip_count = 0
             self._kronos_series_history = {}
             self._kronos_latest_metrics = {}
+            self._kronos_waiting_log_emitted = False
 
     def _ingest_underlying_tick(self, tick: CanonicalTick) -> None:
         self.market_state_adapter.ingest_tick(tick)
@@ -662,9 +666,25 @@ class RealtimeMonitorService:
         settings = self.kronos_live_settings
         if settings is None:
             return
-        if len(self._underlying_domain_bars) < settings.lookback:
-            self._kronos_status = "waiting_for_lookback"
+        if not _is_kronos_interval_boundary(decision_bar_time, settings.interval_minutes):
             return
+        bars = self._kronos_context_bars(decision_bar_time)
+        if len(bars) < settings.lookback:
+            self._kronos_status = "waiting_for_lookback"
+            if not self._kronos_waiting_log_emitted:
+                self.log_callback(
+                    {
+                        "status": "kronos_live_waiting_for_lookback",
+                        "run_id": self.run_id,
+                        "decision_bar_time": decision_bar_time.isoformat(),
+                        "current_lookback_bars": len(bars),
+                        "required_lookback_bars": settings.lookback,
+                        "interval_minutes": settings.interval_minutes,
+                    }
+                )
+                self._kronos_waiting_log_emitted = True
+            return
+        self._kronos_waiting_log_emitted = False
         if self._kronos_last_decision_time is not None and decision_bar_time <= self._kronos_last_decision_time:
             return
         if self._kronos_thread is not None and self._kronos_thread.is_alive():
@@ -679,10 +699,23 @@ class RealtimeMonitorService:
                 }
             )
             return
-        bars = list(self._underlying_domain_bars)[-settings.lookback:]
+        pred_len = max(target.horizon_steps(bar_minutes=float(settings.interval_minutes)) for target in settings.targets)
         self._kronos_status = "running"
         self._kronos_error = None
         self._kronos_last_decision_time = decision_bar_time
+        self.log_callback(
+            {
+                "status": "kronos_live_triggered",
+                "run_id": self.run_id,
+                "decision_bar_time": decision_bar_time.isoformat(),
+                "lookback_bars": len(bars),
+                "required_lookback_bars": settings.lookback,
+                "interval_minutes": settings.interval_minutes,
+                "sample_count": settings.sample_count,
+                "pred_len": pred_len,
+                "targets": [str(target) for target in settings.targets],
+            }
+        )
         self._kronos_thread = threading.Thread(
             target=self._run_kronos_inference,
             args=(decision_bar_time, bars),
@@ -697,7 +730,8 @@ class RealtimeMonitorService:
             return
         started = time.perf_counter()
         try:
-            pred_len = max(target.horizon_steps(bar_minutes=1.0) for target in settings.targets)
+            bar_minutes = float(settings.interval_minutes)
+            pred_len = max(target.horizon_steps(bar_minutes=bar_minutes) for target in settings.targets)
             paths = settings.predictor.predict_paths(
                 bars,
                 pred_len=pred_len,
@@ -711,7 +745,7 @@ class RealtimeMonitorService:
                 paths,
                 current_close=bars[-1].close,
                 targets=settings.targets,
-                bar_minutes=1.0,
+                bar_minutes=bar_minutes,
                 include_status_metrics=False,
                 include_sample_count=False,
                 include_path_delta_percentiles=False,
@@ -739,6 +773,7 @@ class RealtimeMonitorService:
                     "run_id": self.run_id,
                     "decision_bar_time": decision_bar_time.isoformat(),
                     "duration_seconds": round(duration, 4),
+                    "interval_minutes": settings.interval_minutes,
                     "series_names": sorted(metrics.keys()),
                 }
             )
@@ -753,9 +788,68 @@ class RealtimeMonitorService:
                     "run_id": self.run_id,
                     "decision_bar_time": decision_bar_time.isoformat(),
                     "duration_seconds": round(duration, 4),
+                    "interval_minutes": settings.interval_minutes,
                     "message": str(exc),
                 }
             )
+
+    def _kronos_context_bars(self, decision_bar_time: datetime) -> list[Bar]:
+        settings = self.kronos_live_settings
+        if settings is None:
+            return []
+        required_1m_bars = max(settings.lookback * max(settings.interval_minutes, 1), settings.lookback)
+        with self._history_lock:
+            current_bars = [
+                bar
+                for bar in self._underlying_domain_bars
+                if bar.ts <= decision_bar_time
+            ]
+        if len(current_bars) < required_1m_bars:
+            historical_bars = self._load_kronos_historical_bars(
+                decision_bar_time=decision_bar_time,
+                required_1m_bars=required_1m_bars,
+                live_bars=current_bars,
+            )
+            if historical_bars:
+                merged = _merge_domain_bars(historical_bars, current_bars)
+                with self._history_lock:
+                    self._underlying_domain_bars = deque(
+                        merged[-self._underlying_domain_bars.maxlen:],
+                        maxlen=self._underlying_domain_bars.maxlen,
+                    )
+                    current_bars = [
+                        bar
+                        for bar in self._underlying_domain_bars
+                        if bar.ts <= decision_bar_time
+                    ]
+        aggregated = _aggregate_domain_bars(
+            current_bars,
+            interval_minutes=max(settings.interval_minutes, 1),
+        )
+        return aggregated[-settings.lookback:]
+
+    def _load_kronos_historical_bars(
+        self,
+        *,
+        decision_bar_time: datetime,
+        required_1m_bars: int,
+        live_bars: list[Bar],
+    ) -> list[Bar]:
+        settings = self.kronos_live_settings
+        if settings is None:
+            return []
+        symbol = live_bars[-1].symbol if live_bars else _canonical_underlying_symbol(self.underlying_future_symbol)
+        window_days = max(1, (required_1m_bars // 288) + 1)
+        fetched: list[Bar] = []
+        for _ in range(5):
+            start = decision_bar_time - timedelta(days=window_days)
+            fetched = self.store.list_bars("1m", symbol, start, decision_bar_time)
+            fetched = [bar for bar in fetched if bar.session in {"day", "night"}]
+            merged = _merge_domain_bars(fetched, live_bars)
+            if len(merged) >= required_1m_bars:
+                return merged
+            window_days *= 2
+        return _merge_domain_bars(fetched, live_bars)
 
     def _kronos_snapshot_payload(self) -> dict[str, Any]:
         return {
@@ -954,6 +1048,73 @@ def _canonical_underlying_symbol(value: str) -> str:
     if normalized.startswith("TXF"):
         return "MTX"
     return normalized
+
+
+def _kronos_underlying_bar_capacity(settings: KronosLiveSettings | None) -> int:
+    if settings is None:
+        return MAX_LIVE_BARS
+    required_1m_bars = max(settings.lookback * max(settings.interval_minutes, 1), settings.lookback)
+    return max(MAX_LIVE_BARS, required_1m_bars + max(settings.interval_minutes, 1))
+
+
+def _is_kronos_interval_boundary(decision_bar_time: datetime, interval_minutes: int) -> bool:
+    if interval_minutes <= 1:
+        return True
+    return (decision_bar_time.minute + 1) % interval_minutes == 0
+
+
+def _merge_domain_bars(*groups: list[Bar]) -> list[Bar]:
+    merged: dict[datetime, Bar] = {}
+    for group in groups:
+        for bar in group:
+            merged[bar.ts] = bar
+    return [merged[ts] for ts in sorted(merged)]
+
+
+def _aggregate_domain_bars(bars: list[Bar], *, interval_minutes: int) -> list[Bar]:
+    if interval_minutes <= 1:
+        return list(bars)
+    buckets: dict[datetime, list[Bar]] = {}
+    ordered_buckets: list[datetime] = []
+    for bar in sorted(bars, key=lambda item: item.ts):
+        bucket = bar.ts.replace(
+            minute=(bar.ts.minute // interval_minutes) * interval_minutes,
+            second=0,
+            microsecond=0,
+        )
+        if bucket not in buckets:
+            buckets[bucket] = []
+            ordered_buckets.append(bucket)
+        buckets[bucket].append(bar)
+
+    aggregated: list[Bar] = []
+    for bucket in ordered_buckets:
+        group = buckets[bucket]
+        first = group[0]
+        last = group[-1]
+        aggregated.append(
+            Bar(
+                ts=bucket,
+                trading_day=last.trading_day,
+                symbol=last.symbol,
+                instrument_key=last.instrument_key,
+                contract_month=last.contract_month,
+                strike_price=last.strike_price,
+                call_put=last.call_put,
+                session=last.session,
+                open=first.open,
+                high=max(item.high for item in group),
+                low=min(item.low for item in group),
+                close=last.close,
+                volume=sum(item.volume for item in group),
+                open_interest=last.open_interest,
+                source=last.source,
+                up_ticks=sum(float(item.up_ticks or 0.0) for item in group),
+                down_ticks=sum(float(item.down_ticks or 0.0) for item in group),
+                build_source="kronos_live_interval_agg",
+            )
+        )
+    return aggregated
 
 
 def _live_available_series_names(kronos_series_history: dict[str, list[dict[str, Any]]]) -> list[str]:

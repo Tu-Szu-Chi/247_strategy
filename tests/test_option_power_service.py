@@ -40,6 +40,7 @@ class DummyStore:
     def __init__(self) -> None:
         self.upserted_bars = []
         self.live_runs = []
+        self.bars = []
 
     def append_ticks(self, ticks):
         return 0
@@ -50,6 +51,13 @@ class DummyStore:
 
     def upsert_minute_force_features(self, features):
         return 0
+
+    def list_bars(self, timeframe, symbol, start, end):
+        return [
+            bar
+            for bar in self.bars
+            if bar.symbol == symbol and start <= bar.ts <= end
+        ]
 
     def create_live_run(self, metadata) -> None:
         self.live_runs.append(metadata)
@@ -800,6 +808,7 @@ class RealtimeMonitorServiceTest(unittest.TestCase):
             )
 
     def test_kronos_live_starts_every_closed_minute(self) -> None:
+        logs = []
         service = RealtimeMonitorService(
             provider=DummyProvider(),
             store=DummyStore(),
@@ -811,7 +820,7 @@ class RealtimeMonitorServiceTest(unittest.TestCase):
             session_scope="day_and_night",
             batch_size=500,
             snapshot_interval_seconds=5.0,
-            log_callback=lambda payload: None,
+            log_callback=logs.append,
             kronos_live_settings=KronosLiveSettings(
                 predictor=object(),
                 lookback=2,
@@ -843,6 +852,10 @@ class RealtimeMonitorServiceTest(unittest.TestCase):
         with patch("qt_platform.monitor.service.threading.Thread") as thread_cls:
             service._maybe_start_kronos_inference(datetime(2026, 4, 20, 8, 45))
             self.assertTrue(thread_cls.called)
+        self.assertEqual(logs[0]["status"], "kronos_live_triggered")
+        self.assertEqual(logs[0]["lookback_bars"], 2)
+        self.assertEqual(logs[0]["required_lookback_bars"], 2)
+        self.assertEqual(logs[0]["sample_count"], 2)
 
         service._kronos_thread = None
         with patch("qt_platform.monitor.service.threading.Thread") as thread_cls:
@@ -891,8 +904,181 @@ class RealtimeMonitorServiceTest(unittest.TestCase):
         )
 
         with patch("qt_platform.monitor.service.threading.Thread") as thread_cls:
-            service._maybe_start_kronos_inference(datetime(2026, 4, 20, 21, 0))
+            service._maybe_start_kronos_inference(datetime(2026, 4, 20, 21, 1))
             self.assertTrue(thread_cls.called)
+
+    def test_kronos_live_logs_waiting_for_lookback_once(self) -> None:
+        logs = []
+        service = RealtimeMonitorService(
+            provider=DummyProvider(),
+            store=DummyStore(),
+            option_root="AUTO",
+            expiry_count=2,
+            atm_window=20,
+            underlying_future_symbol="MXFR1",
+            call_put="both",
+            session_scope="day_and_night",
+            batch_size=500,
+            snapshot_interval_seconds=5.0,
+            log_callback=logs.append,
+            kronos_live_settings=KronosLiveSettings(
+                predictor=object(),
+                lookback=3,
+                targets=(ProbabilityTarget(minutes=10, points=50),),
+                sample_count=2,
+                interval_minutes=1,
+            ),
+        )
+        service._underlying_domain_bars.extend(
+            [
+                Bar(
+                    ts=datetime(2026, 4, 20, 8, 44) + timedelta(minutes=index),
+                    trading_day=date(2026, 4, 20),
+                    symbol="MTX",
+                    contract_month="202604",
+                    session="day",
+                    open=20000.0,
+                    high=20005.0,
+                    low=19995.0,
+                    close=20000.0,
+                    volume=10.0,
+                    open_interest=None,
+                    source="test",
+                )
+                for index in range(2)
+            ]
+        )
+
+        service._maybe_start_kronos_inference(datetime(2026, 4, 20, 8, 45))
+        service._maybe_start_kronos_inference(datetime(2026, 4, 20, 8, 46))
+
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(logs[0]["status"], "kronos_live_waiting_for_lookback")
+        self.assertEqual(logs[0]["current_lookback_bars"], 2)
+        self.assertEqual(logs[0]["required_lookback_bars"], 3)
+
+    def test_kronos_live_backfills_lookback_from_store_before_trigger(self) -> None:
+        logs = []
+        store = DummyStore()
+        store.bars = [
+            Bar(
+                ts=datetime(2026, 4, 20, 9, 34) + timedelta(minutes=index),
+                trading_day=date(2026, 4, 20),
+                symbol="MTX",
+                contract_month="202604",
+                session="day",
+                open=20000.0 + index,
+                high=20005.0 + index,
+                low=19995.0 + index,
+                close=20000.0 + index,
+                volume=10.0,
+                open_interest=None,
+                source="historical",
+            )
+            for index in range(3)
+        ]
+        service = RealtimeMonitorService(
+            provider=DummyProvider(),
+            store=store,
+            option_root="AUTO",
+            expiry_count=2,
+            atm_window=20,
+            underlying_future_symbol="MXFR1",
+            call_put="both",
+            session_scope="day_and_night",
+            batch_size=500,
+            snapshot_interval_seconds=5.0,
+            log_callback=logs.append,
+            kronos_live_settings=KronosLiveSettings(
+                predictor=object(),
+                lookback=3,
+                targets=(ProbabilityTarget(minutes=10, points=50),),
+                sample_count=2,
+                interval_minutes=1,
+            ),
+        )
+        service._underlying_domain_bars.append(
+            Bar(
+                ts=datetime(2026, 4, 20, 9, 37),
+                trading_day=date(2026, 4, 20),
+                symbol="MTX",
+                contract_month="202604",
+                session="day",
+                open=20003.0,
+                high=20008.0,
+                low=19998.0,
+                close=20003.0,
+                volume=10.0,
+                open_interest=None,
+                source="live",
+            )
+        )
+
+        with patch("qt_platform.monitor.service.threading.Thread") as thread_cls:
+            service._maybe_start_kronos_inference(datetime(2026, 4, 20, 9, 37))
+            self.assertTrue(thread_cls.called)
+
+        self.assertEqual(logs[0]["status"], "kronos_live_triggered")
+        self.assertEqual(logs[0]["lookback_bars"], 3)
+        self.assertGreaterEqual(len(service._underlying_domain_bars), 3)
+
+    def test_kronos_live_uses_interval_boundary_and_aggregated_context(self) -> None:
+        logs = []
+        store = DummyStore()
+        store.bars = [
+            Bar(
+                ts=datetime(2026, 4, 20, 9, 30) + timedelta(minutes=index),
+                trading_day=date(2026, 4, 20),
+                symbol="MTX",
+                contract_month="202604",
+                session="day",
+                open=20000.0 + index,
+                high=20005.0 + index,
+                low=19995.0 + index,
+                close=20000.0 + index,
+                volume=10.0,
+                open_interest=None,
+                source="historical",
+            )
+            for index in range(10)
+        ]
+        service = RealtimeMonitorService(
+            provider=DummyProvider(),
+            store=store,
+            option_root="AUTO",
+            expiry_count=2,
+            atm_window=20,
+            underlying_future_symbol="MXFR1",
+            call_put="both",
+            session_scope="day_and_night",
+            batch_size=500,
+            snapshot_interval_seconds=5.0,
+            log_callback=logs.append,
+            kronos_live_settings=KronosLiveSettings(
+                predictor=object(),
+                lookback=2,
+                targets=(ProbabilityTarget(minutes=10, points=50),),
+                sample_count=2,
+                interval_minutes=5,
+            ),
+        )
+        service._underlying_domain_bars.extend(store.bars[-2:])
+
+        with patch("qt_platform.monitor.service.threading.Thread") as thread_cls:
+            service._maybe_start_kronos_inference(datetime(2026, 4, 20, 9, 37))
+            self.assertFalse(thread_cls.called)
+
+        with patch("qt_platform.monitor.service.threading.Thread") as thread_cls:
+            service._maybe_start_kronos_inference(datetime(2026, 4, 20, 9, 39))
+            self.assertTrue(thread_cls.called)
+            triggered_args = thread_cls.call_args.kwargs["args"]
+            self.assertEqual(len(triggered_args[1]), 2)
+            self.assertEqual(triggered_args[1][0].ts, datetime(2026, 4, 20, 9, 30))
+            self.assertEqual(triggered_args[1][1].ts, datetime(2026, 4, 20, 9, 35))
+
+        self.assertEqual(logs[0]["status"], "kronos_live_triggered")
+        self.assertEqual(logs[0]["interval_minutes"], 5)
+        self.assertEqual(logs[0]["pred_len"], 2)
 
 
 if __name__ == "__main__":
